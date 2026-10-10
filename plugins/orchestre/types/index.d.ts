@@ -1,5 +1,5 @@
 // Contrat du mod d'orchestre : ce qu'il garde dans $.state, et le modèle qu'il tire de suivi.json
-// (orchestre-suivi/1, voir hooks/modele.mjs). Dates en millisecondes depuis l'époque.
+// (orchestre-suivi/2, ou /1 d'avant la 0.11.0, voir hooks/modele.mjs). Dates en millisecondes depuis l'époque.
 
 export type Statut = 'à-faire' | 'ajoutée' | 'fusionnée' | 'bloquée' | 'échec' | 'besoin-humain' | 'annulée'
 
@@ -15,6 +15,9 @@ export type TacheVue = {
   fin: number | null
   attend: string[]
   blocage: string[]
+  // Modèle prévu par le plan, null s'il n'en donne pas ; dernier modèle lancé sur la tâche, null avant le worker (0.11.0)
+  modele: string | null
+  modeleUtilise: string | null
 }
 
 export type RunVue = {

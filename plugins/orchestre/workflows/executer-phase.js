@@ -4,12 +4,13 @@ export const meta = {
   phases: [{ title: 'Lecture du plan' }, { title: 'Tâches' }, { title: 'Clôture' }],
 }
 
-// Orchestrateur 0.8.0 (plugin orchestre)
+// Orchestrateur 0.11.0 (plugin orchestre)
 // args : { plan, phase, mode: 'auto'|'devia'|'phase', parallelisme, integration, base, decisions, corrections_max, escalade, decisions_office_max, arbitrages, relancer, lint, prefixe_agents, suivi }
 // base : branche d'où part la branche d'intégration (main par défaut, lu par plan-lint)
 // arbitrages : options choisies par l'utilisateur depuis le run précédent, [{ tache, titre, option }] ; le scribe les applique avant la lecture du plan
 // relancer : ids de tâches « besoin-humain » que l'utilisateur fait repartir, après sa décision
-// suivi (0.8.0) : chemin de scripts/suivi.mjs, seul écrivain de suivi.json et de la vue SUIVI.md (contrat orchestre-suivi/1).
+// suivi (0.8.0) : chemin de scripts/suivi.mjs, seul écrivain de suivi.json et de la vue SUIVI.md (contrat orchestre-suivi/2 depuis la 0.11.0,
+//   qui migre un fichier /1).
 //   Le workflow ne lance rien : il écrit dans la consigne de ses agents la commande à lancer, et lit son résultat dans suivi_ok.
 //   Sans suivi : suivi de la 0.6.3, le scribe édite SUIVI.md lui-même.
 // preparation (0.8.0) : commandes du projet qui remettent un dossier de travail à jour (dépendances, code généré), tirées de
@@ -17,6 +18,10 @@ export const meta = {
 //   et le contrôle post-fusion. Le plugin ne connaît aucune stack : il lance ce que le projet déclare.
 // preparation_partagee : { <ressource> : [commandes] } pour un service commun (base de test) ; lancées seulement par les agents
 //   d'une tâche qui déclare cette ressource, donc sous son verrou : deux tâches ne préparent jamais la même base en même temps.
+// Modèles (0.11.0) : le worker tourne sur le modele de la tâche (plan-lint), tel quel. Après chaque essai refusé, le replanificateur
+//   choisit le modèle de la correction suivante d'après le refus ; le modèle de la tâche sert de plancher, et sans réponse valide
+//   l'échelle escalade s'applique. Le choix vaut pour le run. Tâche sans modele : sonnet, puis l'échelle, sans appel (0.10 et avant).
+//   Le worker et chaque correction passent leur modèle, et le changement s'il y en a un, dans leur commande etape.
 const A = args || {}
 const PLAN = A.plan
 const PHASE = Number(A.phase)
@@ -70,7 +75,7 @@ const S = (properties, required) => ({ type: 'object', properties, required })
 const str = { type: 'string' }, bool = { type: 'boolean' }, strs = { type: 'array', items: str }
 // Résultat de la commande de suivi lancée par l'agent (0.8.0) ; ouverture_ok pour le premier agent du run, qui lance debut-run
 const SUIVI_P = { suivi_ok: bool, suivi_erreur: str }
-const PLAN_S = S({ ok: bool, erreurs: strs, taches: { type: 'array', items: S({ id: str, titre: str, fichier: str, phase: { type: 'integer' }, modele: str, effort: str, depend_de: strs, ressources: strs, statut: str, verification: strs, prerequis_ouverts: strs }, ['id', 'fichier', 'depend_de', 'statut', 'verification', 'prerequis_ouverts']) }, tous: { type: 'array', items: S({ id: str, phase: { type: 'integer' }, statut: str }, ['id']) }, phase_max: { type: 'integer' }, ouverture_ok: bool, suivi_erreur: str }, ['ok', 'taches'])
+const PLAN_S = S({ ok: bool, erreurs: strs, taches: { type: 'array', items: S({ id: str, titre: str, fichier: str, phase: { type: 'integer' }, modele: str, raison_modele: str, effort: str, depend_de: strs, ressources: strs, statut: str, verification: strs, prerequis_ouverts: strs }, ['id', 'fichier', 'depend_de', 'statut', 'verification', 'prerequis_ouverts']) }, tous: { type: 'array', items: S({ id: str, phase: { type: 'integer' }, statut: str }, ['id']) }, phase_max: { type: 'integer' }, ouverture_ok: bool, suivi_erreur: str }, ['ok', 'taches'])
 const RAPPORT_S = S({
   statut: { type: 'string', enum: ['done', 'partial', 'blocked'] }, resume: str, branche: str, commit: str, chemin: str, fichiers_modifies: strs,
   ecarts: { type: 'array', items: S({ type: { type: 'string', enum: ['écart', 'angle-mort', 'décision', 'dette', 'besoin-humain', 'relecture'] }, description: str, taches_impactees: strs }, ['type', 'description']) },
@@ -82,6 +87,9 @@ const EVAL_S = S({ verdict: { type: 'string', enum: ['ok', 'ko'] }, manques: str
 const INTEG_S = S({ ok: bool, fusionne: bool, controle_ok: bool, conflit: bool, commit: str, detail: str, ...SUIVI_P }, ['ok', 'fusionne'])
 const SCRIBE_S = S({ ok: bool, commit: str, refuses: { type: 'array', items: S({ id: str, raison: str }, ['id', 'raison']) }, ecartes: { type: 'array', items: S({ id: str, raison: str }, ['id', 'raison']) }, ...SUIVI_P, ouverture_ok: bool }, ['ok'])
 const GREFFIER_S = S({ suivi_ok: bool, suivi_erreur: str, commit: str, detail: str, worktrees: str }, ['suivi_ok'])
+// Choix du modèle d'une correction (0.11.0) : haiku, sonnet ou opus ; fable ne vient que du plan, comme plancher
+const MODELES_CHOIX = ['haiku', 'sonnet', 'opus']
+const CHOIX_S = S({ modele: { type: 'string', enum: MODELES_CHOIX }, raison: str }, ['modele', 'raison'])
 // Avec le suivi, le résultat de la commande est requis quand il décide de la suite : ouverture (premier agent), clôture et arbitrage (scribe)
 const exiger = (schema, ...champs) => (SUIVI ? { ...schema, required: [...schema.required, ...champs] } : schema)
 const ENTREES_S = { type: 'array', items: S({ type: str, gravite: { type: 'string', enum: ['mineur', 'majeur'] }, description: str }, ['type', 'gravite', 'description']) }
@@ -131,7 +139,7 @@ const pBranche = t => `Branche : si aucune branche \`tache/${t.id}\` n'existe, c
 // Préparation de l'environnement, déclarée par le projet ; une commande en échec ne s'interrompt pas en silence
 const pPrep = (t, quand, siEchec) => { const c = prepDe(t); return c.length ? `
 Préparation de l'environnement, ${quand} : lance une à une, telles quelles, ces commandes du projet : ${c.map(x => '`' + x + '`').join(', ')}. ${siEchec}` : '' }
-const pWorker = (t, isole) => `${pEtape(t.id, 'worker', { isole: !!isole })}Tâche ${t.id} du plan ${PLAN}. Lis d'abord ${PLAN}/DISCOVERY.md et les décisions de ${PLAN}/HANDOFF.md, puis ${t.fichier}, et suis son « Prompt de lancement ».
+const pWorker = (t, isole, modele) => `${pEtape(t.id, 'worker', { isole: !!isole, modele })}Tâche ${t.id} du plan ${PLAN}. Lis d'abord ${PLAN}/DISCOVERY.md et les décisions de ${PLAN}/HANDOFF.md, puis ${t.fichier}, et suis son « Prompt de lancement ».
 ${isole ? "Tu es dans un worktree isolé : la garde d'isolement de Claude Code n'y accepte que des commandes simples (voir tes règles)." : `Tu es dans le checkout principal, sur ${INTEG}.`} ${pBranche(t)}${pPrep(t, 'une fois sur ta branche, avant tout autre travail', "Si l'une échoue, continue, et décris l'échec (commande et extrait de sa sortie) dans un écart. Si elles modifient des fichiers suivis que tu ne possèdes pas, ne les commite pas et décris-le dans un écart.")}
 Décisions prises : ${JSON.stringify(decisionsRun())}.
 Un fichier que tes permissions t'interdisent de lire ou de modifier (réglages de l'organisation ou du projet) : ne contourne jamais l'interdiction, par aucune commande ni script ; décris la modification attendue dans un écart de type « relecture », l'humain la fera avant la PR.
@@ -145,7 +153,7 @@ Résultats du vérificateur, relevés sur cette branche juste avant toi ; ils va
 ${(v && (v.interdites || []).length) ? `Commandes refusées aux agents par leurs permissions, que l'humain lancera avant la PR : ${JSON.stringify(v.interdites)}. Un critère que seules elles démontrent n'est ni un manque ni un critère non vérifiable.
 ` : ''}Rapport du worker ; c'est un livrable, pas une preuve : ses affirmations d'exécution ne démontrent rien. ${JSON.stringify({ resume: r.resume, decouvertes: r.decouvertes || [], ecarts: r.ecarts || [] })}
 Pour chaque critère, cherche une preuve : fichier:ligne du diff, test qui le couvre, ou résultat du vérificateur ci-dessus. Un critère qui demande un contenu de rapport est rempli si ce contenu figure dans le rapport du worker. SUIVI.md, HANDOFF.md et DISCOVERY.md ne sont écrits par le scribe qu'en fin de tâche : leur état ne prouve rien, dans un sens comme dans l'autre. Un critère qu'aucune commande de vérification ni le diff ne peut démontrer dans le contexte de cette tâche, quoi que fasse le worker (par exemple un comportement en worktree pour une tâche du checkout principal), n'est pas un manque : cite-le dans « non_verifiables » avec la raison. C'est rare : un critère seulement non prouvé reste un manque. Un fichier du diff que tes permissions t'interdisent de lire (réglages de l'organisation ou du projet) : ne contourne jamais l'interdiction ; ce n'est ni un manque ni un critère non vérifiable : cite-le dans « illisibles », l'humain le relira avant la PR. Un critère qui ne se démontre qu'en lisant un tel fichier suit la même règle. Vérifie aussi que les commentaires, en-têtes, entrées de DECISIONS et procédures ajoutés ou modifiés par le diff disent vrai : ils décrivent ce que le code fait vraiment, et chaque commande d'une procédure destinée à un humain existe dans le dépôt et fait ce que le texte annonce. Un texte faux est un manque. Verdict ko si un seul critère démontrable n'est pas démontré ; liste alors les manques précis. Ne modifie rien.`
-const pCorr = (t, r, manques, refus) => `${pEtape(t.id, 'correction', { refus: refus && { ...refus, manques: courts(refus.manques) } })}Correction de la tâche ${t.id}. Travaille dans ${r.chemin}, sur la branche ${r.branche} : préfixe chaque commande par \`cd "${r.chemin}" &&\` et édite les fichiers par leur chemin absolu sous ce dossier. Relis ${t.fichier} et ${PLAN}/DISCOVERY.md.
+const pCorr = (t, r, manques, refus, choix) => `${pEtape(t.id, 'correction', { refus: refus && { ...refus, manques: courts(refus.manques) }, modele: choix.modele, ...(choix.changement ? { changement: choix.changement } : {}) })}Correction de la tâche ${t.id}. Travaille dans ${r.chemin}, sur la branche ${r.branche} : préfixe chaque commande par \`cd "${r.chemin}" &&\` et édite les fichiers par leur chemin absolu sous ce dossier. Relis ${t.fichier} et ${PLAN}/DISCOVERY.md.
 Manques à corriger :
 ${liste(manques)}
 Mêmes règles que la tâche : fichiers possédés seulement, commits sur ${r.branche}, rien dans les fichiers de suivi${SUIVI ? ' (la commande de suivi ci-dessus mise à part)' : ''}, ni fusion dans une autre branche ni push.${prepDe(t).length ? ` Si ta correction change les dépendances ou ce qui se génère, relance d'abord, dans ce dossier, ces commandes de préparation du projet : ${prepDe(t).map(x => '\`' + x + '\`').join(', ')}.` : ''} Relance les vérifications, puis rends le même format de rapport.${(r.ecarts || []).length ? `
@@ -156,6 +164,9 @@ En cas de conflit : \`git merge --abort\`, puis rends ok=false, fusionne=false, 
 Sinon, rends fusionne=true.${pPrep(t, `sur ${INTEG}, après la fusion et avant le contrôle`, "Si l'une échoue, ne lance pas le contrôle : rends controle_ok=false, avec « préparation : » suivi de la commande et d'un extrait de sa sortie dans detail. Après elles, \`git status --porcelain\` doit être vide : une préparation ne modifie aucun fichier suivi et ne laisse aucun fichier non ignoré ; sinon, ne lance pas le contrôle et rends controle_ok=false, avec « préparation : fichiers modifiés » et leur liste dans detail.")}
 Puis lance sur ${INTEG} cette commande de contrôle, sans pipe (ajoute \`; echo "code=$?"\`) : ${controle}. Rends controle_ok selon son code de sortie, un extrait utile dans detail en cas d'échec, et ok=true seulement si la fusion et le contrôle ont réussi.${isole ? `
 Supprime ensuite le worktree : \`git worktree unlock "${r.chemin}"\` (ignore l'erreur), puis \`git worktree remove --force "${r.chemin}"\`. Garde la branche.` : ''}`
+// Choix du modèle de la correction suivante (0.11.0) : le refus de l'essai, les refus précédents et leurs modèles
+const pChoix = (t, refus, avant, precedents) => `Choix du modèle de la correction ${refus.essai} de la tâche ${t.id} (${t.fichier}). Modèle prévu par le plan : ${t.modele}${t.raison_modele ? ` (« ${uneLigne(t.raison_modele)} »)` : ''} ; c'est un plancher : la correction ne tournera jamais sur un modèle plus faible. L'essai ${refus.essai}, sur ${avant}, a été refusé par ${refus.par === 'vérification' ? 'la vérification' : "l'évaluation"}. Manques : ${JSON.stringify(refus.manques)}.${precedents.length ? ` Essais refusés avant lui : ${JSON.stringify(precedents)}.` : ''}
+Rends modele (haiku, sonnet ou opus) et raison, en une ligne : haiku pour un manque mécanique (texte, format, renommage, configuration), sonnet pour un manque d'implémentation, opus pour un manque d'architecture, ambigu, qui touche plusieurs modules, ou qui revient après une correction sur le même modèle. Tu peux lire le fichier de la tâche. Ne classe aucun écart, ne prépare aucun point et ne modifie rien.`
 const pReplan = (t, r, statut, manques, nonVerif, sensibles = []) => `Replanification après ${t.id} (statut : ${statut}, phase ${PHASE}${DERNIERE ? ', dernière phase du plan' : ''}, mode ${MODE}). Tâche : ${t.fichier} ; son code est sur la branche ${r.branche}${statut === 'fusionnée' ? `, fusionnée dans ${INTEG} (checkout principal)` : `, dans ${r.chemin}`}. Écarts remontés : ${JSON.stringify(r.ecarts || [])}. Manques : ${JSON.stringify(manques)}. Critères non vérifiables dans le contexte de la tâche : ${JSON.stringify(nonVerif || [])}.${sensibles.length ? ` Écarts sensibles (données, base, prod, secret), majeurs d'office : rends un point pour chacun, sauf pour un écart qui ne porte que sur un fichier interdit aux agents (voir plus bas) : ${JSON.stringify(sensibles)}.` : ''}
 Lis ${PLAN}/SUIVI.md, les décisions de ${PLAN}/HANDOFF.md, ${PLAN}/PREREQUIS.md s'il existe, et les tâches restantes de ${PLAN}/taches/. Classe chaque écart mineur ou majeur selon ta grille et rends une entrée par écart, sauf pour ceux que tu rends dans « relectures ».
 Pour chaque écart majeur et chaque critère non vérifiable, rends un point dans « points » : titre, contexte, 2 ou 3 options dont une seule recommandée. Chaque option porte ses actions : entrées HANDOFF, tâches à ajouter (phase ${PHASE} ou plus, jamais une phase passée ; une tâche ajoutée cite dans « prerequis » les prérequis de PREREQUIS.md dont elle a besoin), amendements de tâches pas encore lancées, autres que ${t.id} (critères, fichiers possédés, commandes de vérification ou dépendances à ajouter, jamais rien à retirer). Pour une tâche déjà fusionnée, propose une tâche à ajouter plutôt qu'un amendement. Une option ne cite que des tâches et des fichiers qui existent déjà ou qu'elle crée elle-même. Aucune option ne fait lire, restaurer ou copier des données de production ou personnelles réelles par un agent : ce geste revient à l'humain. Recommande l'option la plus prudente pour la sécurité et les données : un test ou une garde de plus plutôt qu'un risque accepté.${MODE === 'auto' ? ` Mode autonome : l'option recommandée sera appliquée telle quelle, sans relecture humaine avant la PR.` : ''}${DERNIERE ? ` Dernière phase : ne propose une tâche que pour un point qui protège le déploiement, la sécurité ou les données ; pour les autres, une entrée de type « ticket » (à ouvrir après la PR), sans tâche.` : ''}
@@ -392,11 +403,34 @@ async function clore(t, statut, essais, r, manques = [], trace = {}) {
   return { id: t.id, statut: final, essais, branche: r ? r.branche : null, resume: r ? r.resume : '', ...(final !== 'fusionnée' ? { blocage: manques } : {}), ...(instables.length ? { instables } : {}), ...(refus.length ? { refus } : {}), ...(nonVerif.length ? { non_verifiables: nonVerif } : {}), ...(rels.length ? { relectures: rels } : {}) }
 }
 
+// Modèle de la correction qui suit l'essai refusé (0.11.0). Tâche sans modèle : l'échelle escalade, comme avant, sans appel.
+// Tâche avec modèle : le replanificateur choisit d'après le refus ; jamais sous le modèle de la tâche (plancher) ; sans réponse
+// valide, l'échelle. Rend { modele, raison, changement? } : changement { de, vers, raison } quand le modèle diffère de celui de l'essai.
+async function choisirModele(t, refus, modeles, precedents) {
+  const avant = modeles[modeles.length - 1], echelle = auMoins(ESC[Math.min(refus.essai - 1, ESC.length - 1)], t.modele)
+  let modele = echelle, raison = `pas de modèle dans le plan : échelle d'escalade, correction ${refus.essai}`
+  if (t.modele) {
+    const c = await agent(pChoix(t, refus, avant, precedents.map((x, i) => ({ essai: x.essai, modele: modeles[i], par: x.par, manques: courts(x.manques) }))), { label: `${t.id} · choix du modèle ${refus.essai}`, agentType: AG('replanificateur'), model: 'opus', schema: CHOIX_S })
+    if (c && MODELES_CHOIX.includes(c.modele)) {
+      modele = auMoins(c.modele, t.modele)
+      raison = court(c.raison || 'sans raison', 200) + (modele !== c.modele ? ` ; relevé au modèle de la tâche (${t.modele})` : '')
+    } else {
+      raison = `${c ? `choix invalide (${court(String(c.modele), 30)})` : 'choix du modèle sans réponse'} : échelle d'escalade, correction ${refus.essai}`
+      log(`${t.id} : ${raison}`)
+    }
+  }
+  return { modele, raison, ...(modele !== avant ? { changement: { de: avant, vers: modele, raison } } : {}) }
+}
+
 async function executer(t, isole) {
   try {
     log(`${t.id} démarre (${isole ? 'worktree' : 'checkout principal'})`)
-    let r = await agent(pWorker(t, isole), { label: `${t.id} · worker`, agentType: AG(isole ? 'worker-isole' : 'worker'), model: t.modele || 'sonnet', schema: RAPPORT_S, ...(isole ? { isolation: 'worktree' } : {}), ...effort(t) })
+    // Le modèle de la tâche, tel quel ; sans modèle dans le plan, sonnet (0.10 et avant)
+    const modeleWorker = t.modele || 'sonnet'
+    let r = await agent(pWorker(t, isole, modeleWorker), { label: `${t.id} · worker`, agentType: AG(isole ? 'worker-isole' : 'worker'), model: modeleWorker, schema: RAPPORT_S, ...(isole ? { isolation: 'worktree' } : {}), ...effort(t) })
     noterSuivi(t.id, 'worker', r)
+    // Modèle de chaque essai, dans l'ordre : le worker, puis chaque correction
+    const modeles = [modeleWorker]
     let essais = 1
     const trace = { instables: [], refus: [], nonVerif: [], illisibles: [], interdites: [], points: [] }
     for (;;) {
@@ -428,10 +462,12 @@ async function executer(t, isole) {
       if (essais > MAXFIX) return await clore(t, 'bloquée', essais, r, manques, trace)
       const refusEssai = { essai: essais, par, manques }
       trace.refus.push(refusEssai)
-      const modele = auMoins(ESC[Math.min(essais - 1, ESC.length - 1)], t.modele)
-      log(`${t.id} : correction ${essais} sur ${modele}`)
-      const c = await agent(pCorr(t, r, manques, refusEssai), { label: `${t.id} · correction ${essais}`, agentType: AG('worker'), model: modele, schema: RAPPORT_S, ...effort(t) })
+      const choix = await choisirModele(t, refusEssai, modeles, trace.refus.slice(0, -1))
+      // Chaque choix au log, changement de modèle ou non : un choix relevé au plancher, égal à l'essai précédent, n'a pas d'autre trace
+      log(`${t.id} : correction ${essais} sur ${choix.modele}${choix.changement ? ` (au lieu de ${choix.changement.de})` : ''} : ${choix.raison}`)
+      const c = await agent(pCorr(t, r, manques, refusEssai, choix), { label: `${t.id} · correction ${essais}`, agentType: AG('worker'), model: choix.modele, schema: RAPPORT_S, ...effort(t) })
       noterSuivi(t.id, 'correction', c)
+      modeles.push(choix.modele)
       essais++
       // Correction sans réponse : on garde le rapport des essais précédents (écarts, relectures, branche)
       if (!c) return await clore(t, 'échec', essais, r, ['correction sans réponse (limite d’usage ou erreur API)'], trace)

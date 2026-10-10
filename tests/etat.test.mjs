@@ -82,6 +82,15 @@ try {
     assert.ok(r.out.includes('plan-lint : 1 erreur'), r.out)
     rmSync(join(d, 'taches', 'T09-x.md'))
   })
+  cas('tâche sans modèle (0.11.0) : un avertissement de plan-lint, pas une erreur ; modèle inconnu : une erreur', () => {
+    writeFileSync(join(d, 'taches', 'T09-x.md'), tache('T09', 3).replace('modele: sonnet\n', ''))
+    let r = etat(['plans/demo'])
+    assert.ok(r.out.includes('| ○ 3 | `░░░░░░░░░░` 0 % | 0/2 |') && !r.out.includes('plan-lint'), r.out)
+    writeFileSync(join(d, 'taches', 'T09-x.md'), tache('T09', 3).replace('modele: sonnet', 'modele: gpt-5'))
+    r = etat(['plans/demo'])
+    assert.ok(r.out.includes('plan-lint : 1 erreur'), r.out)
+    rmSync(join(d, 'taches', 'T09-x.md'))
+  })
   cas('plan terminé', () => {
     for (const id of ['T03', 'T04', 'T05', 'T06', 'T07']) git('commit', '-q', '--allow-empty', '-m', `tâche ${id} : Tâche ${id}`)
     const r = etat(['plans/demo'])

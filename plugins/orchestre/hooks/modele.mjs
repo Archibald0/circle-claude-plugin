@@ -1,5 +1,5 @@
 // @ts-check
-// Modèle du mod de suivi d'orchestre : lit plans/<nom>/suivi.json (contrat orchestre-suivi/1, écrit par
+// Modèle du mod de suivi d'orchestre : lit plans/<nom>/suivi.json (contrat orchestre-suivi/2, ou /1 d'avant la 0.11.0, écrit par
 // scripts/suivi.mjs du plugin orchestre) et en tire ce que le mod affiche. Fonctions pures, sans `$` :
 // register.tsx s'occupe du moteur (fichiers, minuteur, dessin), tests/modele.test.mjs les vérifie sous Node.
 
@@ -11,7 +11,9 @@
 /** @typedef {import('../types/index.d.ts').Ligne} Ligne */
 /** @typedef {import('../types/index.d.ts').Carte} Carte */
 
-export const FORMAT = 'orchestre-suivi/1'
+export const FORMAT = 'orchestre-suivi/2'
+// Les formats que ce mod lit : /1 (0.10 et avant, sans modèle utilisé) et /2 (0.11.0)
+export const FORMATS = ['orchestre-suivi/1', FORMAT]
 export const STATUTS = ['à-faire', 'ajoutée', 'fusionnée', 'bloquée', 'échec', 'besoin-humain', 'annulée']
 const ATTENTION = { 'besoin-humain': 'attend un humain', bloquée: 'bloquée', échec: 'en échec' }
 // Tout le journal de suivi.json (200 entrées au plus) : la frise des étapes du run en a besoin
@@ -37,12 +39,12 @@ const entier = (x, d) => (Number.isInteger(x) ? /** @type {number} */ (x) : d)
 export const formatDe = brut => (estObjet(brut) && typeof brut.format === 'string' ? brut.format : null)
 
 /**
- * suivi.json (orchestre-suivi/1) → ce que le mod affiche ; null si le format n'est pas celui-là.
+ * suivi.json (orchestre-suivi/1 ou /2) → ce que le mod affiche ; null si le format n'est pas l'un d'eux.
  * Les champs inconnus sont ignorés, les champs manquants pris vides : un lecteur ne refuse que le format.
  * @param {unknown} brut @returns {Instantane | null}
  */
 export function normaliser(brut) {
-  if (!estObjet(brut) || brut.format !== FORMAT || !Array.isArray(brut.taches)) return null
+  if (!estObjet(brut) || !FORMATS.includes(/** @type {string} */ (brut.format)) || !Array.isArray(brut.taches)) return null
   const runs = (Array.isArray(brut.runs) ? brut.runs : []).filter(estObjet)
   const dernier = runs.length ? runs[runs.length - 1] : null
   /** @type {TacheVue[]} */
@@ -51,6 +53,8 @@ export function normaliser(brut) {
     statut: STATUTS.includes(t.statut) ? t.statut : 'à-faire', essais: entier(t.essais, 0),
     etape: typeof t.etape === 'string' ? t.etape : null, isole: t.isole === true,
     debut: date(t.debut), fin: date(t.fin), attend: textes(t.attend), blocage: textes(t.blocage),
+    // Modèle prévu par le plan et dernier modèle lancé (0.11.0) ; un /1 n'a que le prévu
+    modele: typeof t.modele === 'string' && t.modele ? t.modele : null, modeleUtilise: typeof t.modele_utilise === 'string' && t.modele_utilise ? t.modele_utilise : null,
   }))
   const majeures = /** @type {Record<string, number>} */ ({})
   let tickets = 0
@@ -271,6 +275,7 @@ const GENRES = /** @type {Record<string, Morceau>} */ ({
   run: { t: '▶', c: 'claude' }, tache: { t: '▶', c: 'suggestion' }, etape: { t: '·', d: true }, refus: { t: '↻', c: 'merged' },
   statut: { t: '●', c: 'success' }, ajout: { t: '+', c: 'suggestion' }, amendement: { t: '~', c: 'merged' }, relecture: { t: '⚑', c: 'warning' },
   'decision-office': { t: '⇒', c: 'warning' }, point: { t: '?', c: 'warning' }, arbitrage: { t: '✓', c: 'success' }, pilote: { t: '✎', c: 'suggestion' }, erreur: { t: '✗', c: 'error' },
+  modele: { t: '⇄', c: 'merged' },
 })
 /** Glyphe et couleur d'une entrée du journal, d'après son genre et ce qu'elle dit. @param {{ genre: string, texte: string }} j @returns {Morceau} */
 function marque(j) {
@@ -637,6 +642,29 @@ export function carteRun(inst, maintenant, colonnes, anime) {
   }
 }
 
+// La colonne du modèle, dans les lignes de tâches : 14 cellules tiennent « haiku → sonnet »
+const LARG_MODELE = 14
+/**
+ * Le modèle d'une tâche (0.11.0) : le modèle utilisé, ou « prévu → utilisé » quand ils diffèrent (« — » si le plan n'en
+ * prévoit pas) ; avant le worker, le modèle prévu, estompé. Vide si rien n'est connu.
+ * @param {TacheVue} t @returns {Ligne}
+ */
+export function modeleDe(t) {
+  if (!t.modeleUtilise) return t.modele ? [{ t: t.modele, d: true }] : []
+  if (t.modeleUtilise === t.modele) return [{ t: t.modeleUtilise, c: 'subtle' }]
+  return [{ t: `${t.modele ?? '—'} → `, d: true }, { t: t.modeleUtilise, c: 'merged', b: true }]
+}
+/** La cellule du modèle, coupée et complétée à n cellules, suivie de deux espaces ; rien si n vaut 0. @param {TacheVue} t @param {number} n @returns {Ligne} */
+function celluleModele(t, n) {
+  if (!n) return []
+  /** @type {Ligne} */
+  const l = []
+  let reste = n
+  // Coupé seulement s'il dépasse : court() retirerait l'espace qui suit la flèche
+  for (const m of modeleDe(t)) { if (reste <= 0) break; const x = [...m.t].length > reste ? court(m.t, reste) : m.t; l.push({ ...m, t: x }); reste -= [...x].length }
+  return [...l, { t: ' '.repeat(Math.max(0, reste) + 2) }]
+}
+
 /**
  * Les tâches : une ligne par phase (une case par tâche), puis, sous les phases où il se passe quelque chose, une ligne
  * par tâche avec sa frise sur le temps du dernier run, sa durée et ce qu'elle fait. Une tâche close dans un run
@@ -647,7 +675,14 @@ export function lignesTaches(inst, maintenant, colonnes, anime = false) {
   const s = resumer(inst, maintenant), actif = !!s.run, f = fenetre(inst, maintenant)
   const cur = actif ? phaseDuRun(inst) : s.courante?.numero ?? null
   const classe = classeur(inst, maintenant)
-  const larg = Math.max(10, Math.min(22, colonnes - 60)), W = Math.max(8, Math.min(26, colonnes - larg - 42))
+  // Colonne du modèle (0.11.0) : à la largeur du plus long des modèles connus, prise sur la frise puis sur le titre, pour que
+  // ce que fait la tâche garde sa place (30 cellules quand la largeur le permet, 20 au moins) ; absente si aucun modèle n'est
+  // connu, ou si elle ne tient pas. La frise retrouve ses 26 cellules dès que la place le permet
+  const MW0 = Math.min(LARG_MODELE, Math.max(0, ...inst.taches.map(t => largeur(modeleDe(t)))))
+  const MW = MW0 && colonnes >= 60 + MW0 + 2 ? MW0 : 0
+  const MC = MW ? MW + 2 : 0
+  const larg = Math.max(10, Math.min(22, colonnes - 60 - MC)), W = Math.max(8, Math.min(26, colonnes - larg - 42 - (MC ? MC + 10 : 0)))
+  const QW = Math.max(10, colonnes - larg - W - 22 - MC)
   const touchee = /** @param {TacheVue} t */ t => !!f && ((t.debut != null && t.debut >= f.debut) || (t.fin != null && t.fin >= f.debut) || (actif && !!t.etape))
   const vient = /** @param {TacheVue} t */ t => fait(t) && t.fin != null && maintenant - t.fin < NOUVELLE_MS / 2
   /** @type {Ligne[]} */
@@ -676,12 +711,13 @@ export function lignesTaches(inst, maintenant, colonnes, anime = false) {
       if (segs.length) ligne.push(...frise(inst, t, maintenant, W, anime))
       else if (avant) ligne.push({ t: `── run ${avant.numero} `.padEnd(W, '─').slice(0, W), c: 'subtle' })
       else ligne.push({ t: '·'.repeat(W), c: 'subtle' })
-      ligne.push({ t: `  ${chrono(temps).padStart(7)}  `, d: true })
+      ligne.push({ t: `  ${chrono(temps).padStart(7)}  `, d: true }, ...celluleModele(t, MW))
       if (vient(t)) ligne.push({ t: ' fusionnée ', c: 'inverseText', f: 'success', b: true })
-      else ligne.push(...quoiColore(t, actif, arbitree(inst, t), Math.max(10, colonnes - larg - W - 22)))
+      else ligne.push(...quoiColore(t, actif, arbitree(inst, t), QW))
       out.push(ligne)
     }
-    for (const t of aFaire.slice(0, 6)) out.push([{ t: '  ' }, glyphe(t, actif), { t: ` ${colonne(t.id, 6)}${colonne(t.titre, larg)} `, d: true }, { t: '·'.repeat(W), c: 'subtle' }, { t: `  ${court(quoi(t, actif), Math.max(10, colonnes - larg - W - 14))}`, d: true }])
+    // Le modèle prévu, dans la même colonne que les lignes détaillées (à la place de la durée, vide)
+    for (const t of aFaire.slice(0, 6)) out.push([{ t: '  ' }, glyphe(t, actif), { t: ` ${colonne(t.id, 6)}${colonne(t.titre, larg)} `, d: true }, { t: '·'.repeat(W), c: 'subtle' }, ...(MW ? [{ t: ' '.repeat(11) }, ...celluleModele(t, MW)] : [{ t: '  ' }]), { t: court(quoi(t, actif), MW ? QW : Math.max(10, colonnes - larg - W - 14)), d: true }])
     if (aFaire.length > 6) out.push([{ t: `    ○ ${aFaire.length - 6} autres à faire`, d: true }])
   }
   if (!out.length) return [[{ t: 'Aucune tâche dans suivi.json.', d: true }]]

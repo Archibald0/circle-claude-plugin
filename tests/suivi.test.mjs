@@ -1,4 +1,4 @@
-// Tests de suivi.mjs (suivi.json au format orchestre-suivi/1, vue SUIVI.md), dans des dépôts git temporaires.
+// Tests de suivi.mjs (suivi.json au format orchestre-suivi/2, migration du /1, vue SUIVI.md), dans des dépôts git temporaires.
 // Usage : node tests/suivi.test.mjs [chemin de suivi.mjs]
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, unlinkSync } from 'node:fs'
@@ -15,12 +15,12 @@ const longueur = s => [...s].length
 let n = 0
 const cas = async (nom, fn) => { await fn(); n++; console.log('ok ·', nom) }
 
-const tache = ({ id, titre = `Tâche ${id}`, phase = 1, modele = 'sonnet', depend_de = [], lot = null, estimation = '1.0M', prerequis = null }) => `---
+// modele null : pas de ligne modele dans le frontmatter (0.11.0) ; raison : la ligne raison_modele
+const tache = ({ id, titre = `Tâche ${id}`, phase = 1, modele = 'sonnet', raison = null, depend_de = [], lot = null, estimation = '1.0M', prerequis = null }) => `---
 id: ${id}
 titre: ${titre}
 phase: ${phase}
-modele: ${modele}
-depend_de: [${depend_de.join(', ')}]
+${modele ? `modele: ${modele}\n` : ''}${raison ? `raison_modele: ${raison}\n` : ''}depend_de: [${depend_de.join(', ')}]
 ${lot ? `lot_parallele: ${lot}\n` : ''}fichiers_possedes:
   - src/${id}/**
 ressources: []
@@ -134,7 +134,7 @@ async function main() {
     assert.equal(P.lire('SUIVI.md'), PILOTE_SUIVI, 'un début de run ne touche pas SUIVI.md')
     assert.equal(P.propre(), '', 'suivi.json est ignoré par git')
     const doc = P.doc()
-    assert.equal(doc.format, 'orchestre-suivi/1')
+    assert.equal(doc.format, 'orchestre-suivi/2')
     assert.deepEqual([doc.plan, doc.dossier, doc.integration, doc.base], ['acces-par-metier', 'plans/acces-par-metier', 'plan/acces-par-metier', null])
     assert.deepEqual(doc.taches.map(t => t.id), ['T00', 'T01', 'T00B', 'T02', 'T03', 'T04', 'T05', 'T05B', 'T06', 'T06B', 'T06C', 'T07', 'T08', 'T09', 'T10'], 'ordre des lignes de SUIVI.md')
     const t = id => doc.taches.find(x => x.id === id)
@@ -465,11 +465,11 @@ async function main() {
     assert.deepEqual(doc.taches.map(t => [t.id, t.statut]), [['T01', 'fusionnée'], ['T02', 'bloquée'], ['T03', 'fusionnée'], ['T03B', 'fusionnée'], ['T03D', 'ajoutée'], ['T03C', 'ajoutée'], ['T04', 'fusionnée'], ['T05', 'bloquée'], ['T06', 'à-faire'], ['T07', 'à-faire'], ['T08', 'annulée']])
     assert.deepEqual([doc.runs, doc.points, doc.taches.find(t => t.id === 'T03C').ajoutee_par], [[], [], null], 'les champs de run repartent vides')
     assert.equal(doc.taches.find(t => t.id === 'T06').etape, 'worker')
-    writeFileSync(join(C.d, 'suivi.json'), JSON.stringify({ ...doc, format: 'orchestre-suivi/2' }))
+    writeFileSync(join(C.d, 'suivi.json'), JSON.stringify({ ...doc, format: 'orchestre-suivi/3' }))
     const avant = C.lire('suivi.json')
     const r = C.suivi('etape', { tache: 'T06', etape: 'vérification' })
     assert.equal(r.code, 1)
-    assert.equal(r.err, 'suivi : suivi.json est au format orchestre-suivi/2, ce lecteur lit orchestre-suivi/1')
+    assert.equal(r.err, 'suivi : suivi.json est au format orchestre-suivi/3, ce lecteur lit orchestre-suivi/2 et orchestre-suivi/1')
     assert.equal(C.suivi('valider').code, 1)
     assert.equal(C.lire('suivi.json'), avant)
     // SUIVI.md avec un statut écrit à la main hors des 7 : la reconstruction cite la ligne
@@ -585,6 +585,111 @@ Statuts : à-faire · ajoutée · fusionnée · bloquée · échec · besoin-hum
     const fin = F.lire('SUIVI.md')
     assert.ok(fin.endsWith(notes), 'notes du pilote gardées octet pour octet')
     assert.equal(fin.split('\n').filter(l => l.startsWith('| T02 ')).length, 1)
+  })
+
+  // ─── 0.11.0 : modèle prévu par le plan, modèle utilisé, format orchestre-suivi/2 ───────────────────────────────────
+  await cas('modèle utilisé (0.11.0) : noté par le worker et chaque correction, changement au journal ; changement incohérent refusé', () => {
+    const M = depot('modeles', { taches: [{ id: 'T01', modele: 'sonnet', raison: 'implémentation simple' }, { id: 'T02', modele: 'opus' }], suivi: SUIVI_GABARIT(['T01', 'T02']) })
+    assert.equal(M.suivi('debut-run', RUN).code, 0)
+    const t = id => M.doc().taches.find(x => x.id === id)
+    assert.deepEqual([t('T01').modele, t('T01').modele_utilise, t('T02').modele], ['sonnet', null, 'opus'], 'null avant le worker')
+    assert.equal(M.suivi('etape', { tache: 'T01', etape: 'worker', isole: false, modele: 'sonnet' }).out, 'suivi : T01 → worker (sonnet)')
+    assert.equal(t('T01').modele_utilise, 'sonnet')
+    assert.equal(M.suivi('etape', { tache: 'T01', etape: 'vérification' }).code, 0)
+    assert.equal(t('T01').modele_utilise, 'sonnet', 'une étape sans modèle le garde')
+    const R = { essai: 1, par: 'évaluation', manques: ['architecture à revoir'] }
+    const c = M.suivi('etape', { tache: 'T01', etape: 'correction', refus: R, modele: 'opus', changement: { de: 'sonnet', vers: 'opus', raison: 'manque d\'architecture' } })
+    assert.equal(c.code, 0, c.err)
+    let doc = M.doc()
+    assert.equal(t('T01').modele_utilise, 'opus'); assert.equal(t('T01').modele, 'sonnet', 'le modèle du plan ne bouge pas')
+    assert.deepEqual(doc.journal.filter(e => e.tache === 'T01').slice(-3).map(e => [e.genre, e.texte]), [
+      ['refus', 'T01 : essai 1 refusé (évaluation) : 1 manque(s)'], ['modele', "T01 : sonnet → opus (manque d'architecture)"], ['etape', 'T01 : correction (essai 2)']])
+    // Correction sur le même modèle : pas d'événement
+    assert.equal(M.suivi('etape', { tache: 'T01', etape: 'correction', refus: { ...R, essai: 2 }, modele: 'opus' }).code, 0)
+    assert.equal(M.doc().journal.filter(e => e.genre === 'modele').length, 1)
+    // Changement incohérent ou mal formé : refusé, fichier intact
+    const avant = M.lire('suivi.json')
+    for (const E of [{ modele: 'opus', changement: { de: 'opus', vers: 'haiku', raison: 'x' } }, { modele: '' }, { changement: 'opus' }, { changement: { de: 'opus', raison: 'x' } }]) {
+      const r = M.suivi('etape', { tache: 'T01', etape: 'correction', ...E })
+      assert.equal(r.code, 1, JSON.stringify(E)); assert.match(r.err, /^suivi : etape : /)
+    }
+    assert.equal(M.lire('suivi.json'), avant)
+    // Changement sans modele : le modèle d'arrivée vaut modele_utilise ; de absent : « — »
+    assert.equal(M.suivi('etape', { tache: 'T01', etape: 'correction', changement: { vers: 'sonnet', raison: '' } }).code, 0)
+    assert.deepEqual([t('T01').modele_utilise, M.doc().journal.filter(e => e.genre === 'modele').pop().texte], ['sonnet', 'T01 : — → sonnet'])
+    // Un nouveau worker (run suivant) repart du modèle qu'il lance
+    assert.equal(M.suivi('debut-run', RUN).code, 0)
+    assert.equal(M.suivi('etape', { tache: 'T01', etape: 'worker', isole: true, modele: 'sonnet' }).code, 0)
+    assert.equal(t('T01').modele_utilise, 'sonnet')
+    assert.equal(M.suivi('etape', { tache: 'T02', etape: 'worker', isole: true }).code, 0)
+    assert.equal(t('T02').modele_utilise, null, 'worker sans modèle : null')
+    assert.equal(M.suivi('valider').code, 0)
+    assert.equal(M.propre(), '', 'le modèle utilisé ne touche que suivi.json')
+  })
+
+  await cas('tâche sans modèle (0.11.0) : entre dans le suivi avec modele null, « — » dans SUIVI.md, relue telle quelle', () => {
+    const S = depot('sansmodele', { taches: [{ id: 'T01', modele: null }, { id: 'T02' }], suivi: SUIVI_GABARIT(['T01', 'T02']).replace('| T01 | Tâche T01 | 1 | 1A | — | sonnet |', '| T01 | Tâche T01 | 1 | 1A | — | — |') })
+    assert.equal(S.lint().ok, true, 'plan-lint : un avertissement, pas une erreur')
+    assert.equal(S.suivi('debut-run', RUN).code, 0)
+    assert.deepEqual(S.doc().taches.map(t => [t.id, t.modele, t.modele_utilise]), [['T01', null, null], ['T02', 'sonnet', null]])
+    assert.ok(!S.doc().journal.some(e => e.genre === 'erreur'), 'pas de « non ajoutée au suivi »')
+    assert.equal(S.suivi('etape', { tache: 'T01', etape: 'worker', isole: false, modele: 'sonnet' }).code, 0)
+    assert.equal(S.suivi('cloture', { tache: 'T01', statut: 'fusionnée', essais: 1, branche: 'tache/T01' }).code, 0)
+    const l = S.lire('SUIVI.md').split('\n').find(x => x.startsWith('| T01 '))
+    assert.deepEqual(cellulesDe(l).slice(5, 7), ['—', 'fusionnée'], 'Modèle « — », pas « null » ni vide')
+    // Reconstruction depuis SUIVI.md : « — » relu comme null ; un frontmatter qui gagne un modèle le donne au suivi
+    rmSync(join(S.d, 'suivi.json'))
+    S.ecrireTache({ id: 'T01', modele: 'haiku' })
+    assert.equal(S.suivi('vue', undefined, { args: ['--stdout'] }).code, 0)
+    S.ecrireTache({ id: 'T01', modele: null })
+    assert.equal(S.suivi('vue').code, 0)
+    assert.equal(S.doc().taches[0].modele, null)
+    assert.equal(cellulesDe(S.lire('SUIVI.md').split('\n').find(x => x.startsWith('| T01 ')))[5], '—')
+    S.ecrireTache({ id: 'T01', modele: 'haiku' })
+    assert.equal(S.suivi('vue').code, 0)
+    assert.equal(S.doc().taches[0].modele, 'haiku')
+    // Un frontmatter qui perd son modèle : null dans le suivi existant, pas l'ancienne valeur
+    S.ecrireTache({ id: 'T01', modele: null })
+    assert.equal(S.suivi('vue').code, 0)
+    assert.equal(S.doc().taches[0].modele, null)
+    // Tâche sans modèle et sans ligne dans SUIVI.md (créée par un scribe) : elle entre dans le suivi, sans erreur au journal
+    S.ecrireTache({ id: 'T03', modele: null })
+    assert.equal(S.suivi('vue').code, 0)
+    assert.deepEqual(S.doc().taches.map(t => [t.id, t.modele]), [['T01', null], ['T02', 'sonnet'], ['T03', null]])
+    assert.ok(!S.doc().journal.some(e => e.genre === 'erreur'), 'pas de « non ajoutée au suivi »')
+    // État en lecture : rien ne casse sans modèle
+    assert.equal(S.suivi('etat').code, 0)
+    assert.equal(S.suivi('valider').code, 0)
+  })
+
+  await cas('migration orchestre-suivi/1 → /2 (0.11.0) : lu et validé tel quel, écrit en /2 à la première écriture, avec modele_utilise et une note', () => {
+    const G = depot('migration', { taches: [{ id: 'T01' }, { id: 'T02' }], suivi: SUIVI_GABARIT(['T01', 'T02']) })
+    assert.equal(G.suivi('debut-run', RUN).code, 0)
+    assert.equal(G.suivi('etape', { tache: 'T01', etape: 'worker', isole: false, modele: 'sonnet' }).code, 0)
+    // Le fichier tel qu'une 0.10 l'aurait écrit : format /1, sans modele_utilise
+    const v2 = G.doc(), v1 = { ...v2, format: 'orchestre-suivi/1', taches: v2.taches.map(({ modele_utilise, ...t }) => t) }
+    writeFileSync(join(G.d, 'suivi.json'), JSON.stringify(v1, null, 2) + '\n')
+    const val = G.suivi('valider')
+    assert.equal(val.code, 0, val.err)
+    assert.equal(val.out, 'suivi : suivi.json valide (orchestre-suivi/1, migré en orchestre-suivi/2 à la prochaine écriture, 2 tâches, 1 run)')
+    assert.equal(G.suivi('etat').code, 0)
+    assert.equal(G.lire('suivi.json'), JSON.stringify(v1, null, 2) + '\n', 'lecture et validation n\'écrivent rien')
+    // Un /1 invalide reste refusé ; un modèle utilisé vide aussi
+    writeFileSync(join(G.d, 'suivi.json'), JSON.stringify({ ...v1, taches: [{ ...v1.taches[0], statut: 'en-cours' }] }))
+    assert.equal(G.suivi('valider').code, 1)
+    writeFileSync(join(G.d, 'suivi.json'), JSON.stringify({ ...v2, taches: v2.taches.map(t => ({ ...t, modele_utilise: '' })) }))
+    assert.match(G.suivi('valider').err, /modele_utilise : texte vide/)
+    writeFileSync(join(G.d, 'suivi.json'), JSON.stringify(v1, null, 2) + '\n')
+    const r = G.suivi('etape', { tache: 'T01', etape: 'vérification' })
+    assert.equal(r.code, 0, r.err)
+    const doc = G.doc()
+    assert.equal(doc.format, 'orchestre-suivi/2')
+    assert.deepEqual(doc.taches.map(t => [t.id, t.modele, t.modele_utilise, t.etape]), [['T01', 'sonnet', null, 'vérification'], ['T02', 'sonnet', null, null]], 'champ présent, null : le /1 ne le notait pas')
+    assert.deepEqual(doc.runs.map(x => [x.numero, x.statut]), [[1, 'en-cours']], 'le run en cours continue')
+    assert.equal(doc.journal.filter(e => e.texte === "suivi.json migré de orchestre-suivi/1 à orchestre-suivi/2 : modèle utilisé inconnu jusqu'ici").length, 1)
+    assert.equal(G.suivi('etape', { tache: 'T01', etape: 'évaluation' }).code, 0)
+    assert.equal(G.doc().journal.filter(e => /migré/.test(e.texte)).length, 1, 'une seule fois')
+    assert.equal(G.suivi('valider').out, 'suivi : suivi.json valide (orchestre-suivi/2, 2 tâches, 1 run)')
   })
 
   console.log(`suivi : TOUT EST VERT (${n} cas)`)

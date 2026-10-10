@@ -12,7 +12,7 @@ plans/<nom>/
 └── orchestre.config.json
 ```
 
-plan-lint (`node <plugin>/scripts/plan-lint.mjs plans/<nom>`) lit le frontmatter des tâches et la colonne Statut de SUIVI.md ; avec `--integration`, une tâche dont le commit « tâche <id> : » est sur la branche d'intégration, et pas sur la branche de base, compte comme fusionnée. Il refuse : tâche sans `id`, `phase`, `modele`, `verification` ou `definition_du_fini` ; identifiant en double ; dépendance inconnue, cyclique ou vers une phase ultérieure ; deux tâches d'une même phase, sans dépendance entre elles ni ressource commune, qui possèdent les mêmes fichiers ; un prérequis inconnu, en double, de type ou de statut inconnu, ou une décision marquée « fait » qu'aucune entrée « décision » de HANDOFF.md ne cite. Il dit aussi, phase par phase, quelles tâches attendent un prérequis ouvert.
+plan-lint (`node <plugin>/scripts/plan-lint.mjs plans/<nom>`) lit le frontmatter des tâches et la colonne Statut de SUIVI.md ; avec `--integration`, une tâche dont le commit « tâche <id> : » est sur la branche d'intégration, et pas sur la branche de base, compte comme fusionnée. Il refuse : tâche sans `id`, `phase`, `verification` ou `definition_du_fini` ; `modele` hors de `haiku`, `sonnet`, `opus` et `fable` ; identifiant en double ; dépendance inconnue, cyclique ou vers une phase ultérieure ; deux tâches d'une même phase, sans dépendance entre elles ni ressource commune, qui possèdent les mêmes fichiers ; un prérequis inconnu, en double, de type ou de statut inconnu, ou une décision marquée « fait » qu'aucune entrée « décision » de HANDOFF.md ne cite. Il dit aussi, phase par phase, quelles tâches attendent un prérequis ouvert. Il avertit, sans rien bloquer, d'une tâche restante sans `modele` ou sans `raison_modele`, et d'une commande de vérification composée ; il ne juge jamais le choix d'un modèle.
 
 ## Règles de découpage
 
@@ -25,7 +25,20 @@ plan-lint (`node <plugin>/scripts/plan-lint.mjs plans/<nom>`) lit le frontmatter
 - Un test n'écrit pas dans une base partagée comme la base de dev : il utilise une base de test dédiée, que le script de test recrée.
 - Une dernière tâche de revue globale, sur opus, en lecture seule. Elle vérifie aussi que commentaires, DECISIONS et procédures disent vrai.
 - Identifiants : lettres majuscules puis chiffres, suffixe de lettres permis (T01, T02, T02B). Les tâches ajoutées en cours de run prennent un suffixe.
+- Un modèle par tâche, avec sa raison : voir « Modèle de chaque tâche ».
 - Estimation de tokens par tâche : 0,5 × max_tours × taille de contexte visée, plus 30 % pour la vérification et l'évaluation. Sur le pilote, le réel a été de 3 à 8 fois plus élevé : c'est un ordre de grandeur, pas un budget.
+
+## Modèle de chaque tâche
+
+Chaque tâche porte `modele` et `raison_modele`, une ligne qui dit pourquoi ce modèle. `/orchestre:preparer` les remplit tous les deux, avec ces critères :
+
+- `haiku` pour le mécanique : renommage, documentation, configuration ;
+- `sonnet` par défaut pour implémenter ;
+- `opus` pour l'architecture, les tâches ambiguës et celles qui touchent plusieurs modules.
+
+`fable` reste lu dans un plan existant ; `/orchestre:preparer` ne le choisit jamais.
+
+Pendant un run, le worker tourne sur le modèle de la tâche, tel quel. Après un essai refusé, le replanificateur choisit le modèle de la correction suivante, d'après le refus, sans jamais descendre sous celui de la tâche, qui sert de plancher ; sans réponse valide de sa part, l'échelle `escalade` s'applique. Ce choix ne vaut que pour le run : le plan n'est pas modifié, et le run suivant repart du modèle du plan. Une tâche sans `modele` (plan plus ancien) tourne comme avant la 0.11.0 : worker sur sonnet, corrections selon l'échelle, sans appel au replanificateur.
 
 ## Gabarit de tâche
 
@@ -34,7 +47,8 @@ plan-lint (`node <plugin>/scripts/plan-lint.mjs plans/<nom>`) lit le frontmatter
 id: T01
 titre: …
 phase: 1
-modele: sonnet          # haiku | sonnet | opus | fable
+modele: sonnet          # haiku | sonnet | opus (fable : plans existants seulement)
+raison_modele: "…"      # une ligne : pourquoi ce modèle
 effort: high            # low | medium | high | xhigh | max
 depend_de: []
 lot_parallele: 1A

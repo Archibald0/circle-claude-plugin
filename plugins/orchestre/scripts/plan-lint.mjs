@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// plan-lint (plugin orchestre 0.8.1) : valide un dossier de plan et le compile en JSON. Node 18 ou plus, aucune dépendance.
+// plan-lint (plugin orchestre 0.11.0) : valide un dossier de plan et le compile en JSON. Node 18 ou plus, aucune dépendance.
 // Usage : node <racine du plugin>/scripts/plan-lint.mjs <dossier-plan> [--json] [--phase N] [--integration <branche>] [--base <branche>]
 // Avec --integration, une tâche dont le commit de fusion « tâche <id> : » est sur la branche d'intégration, et pas sur la branche de base
 // (--base, sinon main, sinon master), compte comme fusionnée : git fait foi. La base écarte les fusions des plans précédents déjà dans main.
@@ -7,7 +7,8 @@
 // PREREQUIS.md (facultatif) : ce que le plan attend d'un humain ou de l'environnement. Une tâche cite les siens dans « prerequis » ;
 // tant que l'un d'eux est « ouvert », elle attend (prerequis_ouverts) et le reste de la phase peut tourner.
 // Avertissements (n'empêchent rien) : commandes de vérification ou de préparation composées, qu'un agent isolé dans un worktree
-// se verrait refuser par la garde d'isolement de Claude Code ; ressource de préparation partagée qu'aucune tâche ne déclare.
+// se verrait refuser par la garde d'isolement de Claude Code ; ressource de préparation partagée qu'aucune tâche ne déclare ;
+// tâche restante sans modele ou sans raison_modele (0.11.0). Un modele hors de MODELES est une erreur ; le choix lui-même n'est jamais jugé.
 // orchestre.config.json (facultatif) : preparation, liste de commandes ; preparation_partagee, { ressource : [commandes] }.
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -44,6 +45,12 @@ function composee(c) {
 }
 const courte = c => (String(c).length > 100 ? String(c).slice(0, 99) + '…' : String(c))
 const fait = s => s === 'fusionnée' || s === 'annulée'
+// Modèles d'une tâche (0.11.0) : /orchestre:preparer choisit haiku, sonnet ou opus ; fable reste valide pour les plans existants
+const MODELES = ['haiku', 'sonnet', 'opus', 'fable']
+// Champ texte du frontmatter : une valeur vide (« modele: ») se lit comme une liste vide, donc comme absente
+const texteFm = x => (typeof x === 'string' && x.trim() ? x.trim() : null)
+// Modèle d'une tâche : absent (rien, ou une valeur vide), valide, ou refusé par une erreur
+const etatModele = x => (texteFm(x) === null && (x === undefined || typeof x === 'string' || (Array.isArray(x) && !x.length)) ? 'absent' : MODELES.includes(texteFm(x)) ? 'valide' : 'refusé')
 function unquote(v) {
   v = v.trim()
   if (v.startsWith('"')) { const m = v.match(/^"((?:[^"\\]|\\.)*)"/); return m ? m[1].replace(/\\(["\\])/g, '$1') : v }
@@ -144,7 +151,10 @@ if (integ) {
 }
 for (const t of T.values()) {
   if (!t.phase) erreurs.push(`${t.id} : phase manquante`)
-  if (!t.modele) erreurs.push(`${t.id} : modèle manquant`)
+  // Modèle absent (rien, « modele: », « modele: "" ») : avertissement plus bas (le worker tournera sur sonnet, puis l'échelle
+  // d'escalade) ; valeur inconnue ou liste : erreur
+  if (etatModele(t.modele) === 'refusé' && texteFm(t.modele) !== null) erreurs.push(`${t.id} : modèle inconnu « ${texteFm(t.modele)} » (${MODELES.join(', ')})`)
+  else if (etatModele(t.modele) === 'refusé') erreurs.push(`${t.id} : modèle illisible (un seul nom : ${MODELES.join(', ')})`)
   if (!arr(t.verification).length) erreurs.push(`${t.id} : aucune commande de vérification`)
   if (!arr(t.definition_du_fini).length) erreurs.push(`${t.id} : définition du fini absente`)
   for (const d of arr(t.depend_de)) {
@@ -196,7 +206,7 @@ for (const ph of [...new Set([...T.values()].filter(restant).map(t => t.phase))]
 }
 
 const taches = [...T.values()].filter(t => phaseF == null || t.phase === phaseF).map(t => ({
-  id: t.id, titre: t.titre || '', fichier: t.fichier, phase: t.phase, modele: t.modele, effort: t.effort || '',
+  id: t.id, titre: t.titre || '', fichier: t.fichier, phase: t.phase, ...(texteFm(t.modele) ? { modele: texteFm(t.modele) } : {}), ...(texteFm(t.raison_modele) ? { raison_modele: texteFm(t.raison_modele) } : {}), effort: t.effort || '',
   depend_de: arr(t.depend_de), ressources: arr(t.ressources), statut: st[t.id] || 'à-faire',
   verification: arr(t.verification), estimation_tokens: tokens(t.estimation_tokens), prerequis_ouverts: ouverts(t),
 }))
@@ -215,6 +225,11 @@ const refusable = 'un agent isolé dans un worktree se la verra refuser (garde d
 for (const t of T.values()) if (!fait(st[t.id] || 'à-faire') && (phaseF == null || t.phase === phaseF)) for (const c of arr(t.verification)) {
   const r = composee(c)
   if (r.length) avertissements.push(`${t.id} : vérification « ${courte(c)} » (${r.join(', ')}) : ${refusable}`)
+}
+// Modèle et raison des tâches restantes (0.11.0) : /orchestre:preparer les écrit ; un plan plus ancien tourne quand même
+for (const t of T.values()) if (!fait(st[t.id] || 'à-faire') && (phaseF == null || t.phase === phaseF)) {
+  if (etatModele(t.modele) === 'absent') avertissements.push(`${t.id} : pas de modele (${MODELES.slice(0, 3).join(', ')}) : le worker tournera sur sonnet, et ses corrections suivront l'échelle d'escalade`)
+  else if (etatModele(t.modele) === 'valide' && !texteFm(t.raison_modele)) avertissements.push(`${t.id} : modele ${texteFm(t.modele)} sans raison_modele (une ligne qui justifie le choix)`)
 }
 // Préparation de l'environnement (orchestre.config.json) : forme, commandes simples, ressources déclarées par une tâche
 let config = null

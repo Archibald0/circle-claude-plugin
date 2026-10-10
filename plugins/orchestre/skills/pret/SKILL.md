@@ -41,14 +41,15 @@ Relève chaque point sans t'arrêter : ils vont au verdict.
 ## 2. Prérequis
 
 1. `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-lint.mjs <plan> --json --integration <branche>`, plus `--base <branche_base>` si la config en donne une : erreurs, `avertissements`, `prerequis`, `pret`. Une commande de vérification composée (avertissement) sera refusée à un agent isolé dans un worktree : propose de la réécrire en commandes simples, ou d'en faire un script du projet possédé par la tâche (ou par une tâche d'outillage), et écris l'amendement après accord.
-2. Pas de PREREQUIS.md (plan écrit avant la v0.6.1) : construis-le. Cherche dans HANDOFF.md (entrées `besoin-humain`, décisions annoncées mais pas prises), dans les tâches restantes (décisions citées comme à trancher, accès, secrets, services externes, données réelles) et dans le plan source s'il existe. Pour chaque tâche, distingue une vraie dépendance d'une simple mention de contexte. Propose les lignes du tableau et les `prerequis` à ajouter aux tâches, écris-les après accord, puis relance plan-lint.
-3. Décisions ouvertes : propose de les trancher maintenant, avec l'outil de question, par lots de 4 questions au plus. Chaque question a 4 options au plus : 3 choix au plus, le recommandé en premier avec son impact, puis « Reporter ». L'outil ajoute de lui-même « Autre ». Pour chaque décision tranchée :
+2. Modèles : pour chaque tâche restante, le modèle et sa raison (`modele`, `raison_modele` dans les tâches de plan-lint), une ligne par tâche. Signale les tâches sans modèle, que plan-lint avertit : leur worker tournera sur sonnet, et leurs corrections suivront l'échelle `escalade` de la config, sans choix du replanificateur. Signale aussi celles qui ont un modèle sans raison. Ne juge pas les choix, sauf si l'utilisateur le demande. Un modèle à ajouter ou à changer se fait dans le frontmatter de la tâche, après accord, comme un amendement.
+3. Pas de PREREQUIS.md (plan écrit avant la v0.6.1) : construis-le. Cherche dans HANDOFF.md (entrées `besoin-humain`, décisions annoncées mais pas prises), dans les tâches restantes (décisions citées comme à trancher, accès, secrets, services externes, données réelles) et dans le plan source s'il existe. Pour chaque tâche, distingue une vraie dépendance d'une simple mention de contexte. Propose les lignes du tableau et les `prerequis` à ajouter aux tâches, écris-les après accord, puis relance plan-lint.
+4. Décisions ouvertes : propose de les trancher maintenant, avec l'outil de question, par lots de 4 questions au plus. Chaque question a 4 options au plus : 3 choix au plus, le recommandé en premier avec son impact, puis « Reporter ». L'outil ajoute de lui-même « Autre ». Pour chaque décision tranchée :
    - entrée `décision · majeur · <ID> : … (tranchée par l'utilisateur)` sous `## plan source` dans HANDOFF.md ;
    - statut `fait` et preuve « HANDOFF » dans PREREQUIS.md ;
    - si elle change une tâche pas encore lancée, montre l'amendement et écris-le après accord.
-4. Gestes ouverts : dis exactement ce que l'utilisateur doit faire, avec le préfixe `!` pour une commande qui touche un secret, des données réelles ou la prod. Quand il confirme que c'est fait : statut `fait`, preuve « confirmé par l'utilisateur le <date> » (`date +%d/%m/%Y`).
-5. Environnement ouvert : si la preuve est une commande sûre (voir la répétition), lance-la ; sinon, demande.
-6. Relance plan-lint après chaque écriture.
+5. Gestes ouverts : dis exactement ce que l'utilisateur doit faire, avec le préfixe `!` pour une commande qui touche un secret, des données réelles ou la prod. Quand il confirme que c'est fait : statut `fait`, preuve « confirmé par l'utilisateur le <date> » (`date +%d/%m/%Y`).
+6. Environnement ouvert : si la preuve est une commande sûre (voir la répétition), lance-la ; sinon, demande.
+7. Relance plan-lint après chaque écriture.
 
 ## 3. Répétition à blanc (sauf avec `--sans-repetition`)
 
@@ -62,7 +63,7 @@ Rejoue sur la branche d'intégration, une fois chacune, les commandes de `verifi
 
 ## 4. Verdict
 
-1. Le verdict, phase par phase : `prête`, ou ce qu'elle attend (prérequis ouverts, fin d'une phase précédente, échec de répétition à régler). Donne l'estimation de tokens de plan-lint, en rappelant que le réel a été de 3 à 8 fois plus élevé sur le pilote (mesuré avec `/usage`).
+1. Le verdict, phase par phase : `prête`, ou ce qu'elle attend (prérequis ouverts, fin d'une phase précédente, échec de répétition à régler), avec le modèle de chaque tâche et sa raison, et les tâches sans modèle. Donne l'estimation de tokens de plan-lint, en rappelant que le réel a été de 3 à 8 fois plus élevé sur le pilote (mesuré avec `/usage`).
 2. Ce qui reste à faire, dans l'ordre, et qui le fait.
 3. Ajoute à la fin de PREREQUIS.md la ligne « Vérifié par /orchestre:pret le <date> : <verdict en une ligne> ». Avec l'accord de l'utilisateur, commite les fichiers du plan modifiés sur la branche d'intégration (place-toi dessus si besoin), avec le message `pret(<nom>) : <verdict court>`.
 4. Si la prochaine phase est prête : `/orchestre:lancer plans/<nom>` dans une session neuve.

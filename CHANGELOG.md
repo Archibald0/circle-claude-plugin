@@ -2,6 +2,63 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.11.0 — 10/10/2026 : un modèle par tâche, choisi à la préparation
+
+Plan validé par Fabien le 10/10 (session Chat) : Opus attribue un modèle à chaque tâche quand il prépare le plan, et le workflow l'applique sans le recalculer.
+
+- Plan : chaque tâche porte `modele` (haiku, sonnet ou opus) et `raison_modele`, une ligne, dans le frontmatter existant (`format.md`, section « Modèle de chaque tâche »). `fable` reste valide pour les plans existants ; `/orchestre:preparer` ne le choisit jamais.
+- `/orchestre:preparer` tourne sur opus : `model: opus` dans son frontmatter, champ que les skills de plugin acceptent (code.claude.com/docs/en/skills). Ce réglage ne vaut que pour le tour en cours, d'où la consigne de poser les questions avec l'outil de question, qui garde le tour. Le skill remplit les deux champs, raison obligatoire, selon ces critères :
+  - haiku pour le mécanique (renommage, documentation, configuration) ;
+  - sonnet par défaut pour implémenter ;
+  - opus pour l'architecture, les tâches ambiguës et celles qui touchent plusieurs modules.
+  Une conversion garde un modèle haiku, sonnet ou opus donné par le plan source.
+- plan-lint :
+  - un `modele` hors de haiku, sonnet, opus et fable est une erreur, tout comme un modèle illisible (une liste) ;
+  - un `modele` absent (ou vide : `modele:`, `modele: ""`) ou une `raison_modele` absente ne donnent qu'un avertissement, pour les tâches restantes (avec `--phase`, celles de la phase) : « modèle manquant » n'est plus une erreur. Un modèle refusé ne reçoit pas, en plus, l'avertissement de la raison ;
+  - il ne juge jamais le choix, et son JSON rend `raison_modele`.
+- Workflow :
+  - Tâche avec modèle : le worker tourne sur ce modèle, tel quel. Après chaque essai refusé suivi d'une correction, un appel « choix du modèle » au replanificateur (opus, lecture seule) reçoit le refus : manques, refus par la vérification ou par l'évaluation, modèle de l'essai, essais refusés avant lui. Il rend `{ modele, raison }`. Le workflow ne descend jamais sous le modèle de la tâche, qui sert de plancher. Si la réponse est absente ou invalide, l'échelle `escalade` s'applique. Le choix vaut pour le run.
+  - Tâche sans modèle : comportement de la 0.10 (sonnet, puis l'échelle), sans appel au replanificateur.
+  - Le worker et chaque correction passent leur modèle dans leur commande `etape`, et le changement s'il y en a un (`{ de, vers, raison }`).
+  - Chaque choix va au log du run, avec sa raison, même quand le modèle ne change pas (choix relevé au plancher).
+- Suivi : contrat `orchestre-suivi/2` (`0.11.0/CONTRAT.md` et `suivi.v2.schema.json`, dans le dossier de travail ; `SCHEMA` de suivi.mjs en reste la copie, hors descriptions) :
+  - `tache.modele_utilise` : le dernier modèle lancé sur la tâche, null avant le worker ;
+  - `tache.modele` : null quand le plan n'en donne pas, et une tâche sans modèle entre désormais dans le suivi ;
+  - genre de journal `modele` : « T03 : sonnet → opus (raison) » ;
+  - colonne Modèle de SUIVI.md : « — » pour un modèle null.
+  suivi.mjs relit un fichier /1 et le migre en mémoire. La première écriture le passe en /2, avec une note au journal ; `valider` dit qu'il le sera.
+- `/orchestre:pret` affiche le modèle et sa raison pour chaque tâche restante, et signale les tâches sans modèle ou sans raison. `/orchestre:lancer` ne présente plus les avertissements de plan-lint comme des commandes composées à réécrire : il dit en une ligne ce que veulent dire les modèles ou raisons absents.
+- Mod :
+  - il lit /1 et /2 ;
+  - dans la carte des tâches, une colonne Modèle montre le modèle utilisé, « prévu → utilisé » quand ils diffèrent (« — → sonnet » sans modèle prévu), et le modèle prévu, estompé, avant le worker. Elle se prend sur la frise, puis sur le titre, quand la place manque (la frise garde ses 26 cellules dès 115 colonnes environ, et ce que fait la tâche garde 30 cellules quand c'est possible), et disparaît en deçà de 60 colonnes plus sa largeur ;
+  - les changements de modèle s'affichent au journal (⇄) ;
+  - dans `/suivi demo` et `tests/demo-suivi.mjs`, T05 tourne sur haiku et la correction de T02 passe de sonnet à opus.
+- Replanificateur : une section « Choix du modèle d'une correction », et une tâche qu'il ajoute porte son modèle et sa raison.
+- Dépôt jouet (`tests/depot-jouet.sh`) : T01 passe sur haiku, avec sa raison. Dans `/workflows`, on voit si son worker tourne bien sur haiku, et non sur le sonnet du frontmatter de l'agent.
+- Tests :
+  - 93 scénarios du workflow (6 nouveaux, dont un avec le vrai suivi.mjs) ;
+  - 18 cas de plan-lint, 8 de `/orchestre:etat` et 22 de suivi.mjs ;
+  - 20 cas du modèle du mod et 16 tests sous le moteur ;
+  - 70 mutations du nouveau code (workflow, suivi.mjs, plan-lint, mod, démo, hooks), toutes détectées.
+
+### Incompatible avec la 0.10
+
+Un suivi.mjs 0.10.x ou antérieur refuse un suivi.json /2 (« suivi.json est au format orchestre-suivi/2, ce lecteur lit orchestre-suivi/1 »), et le mod d'une 0.10 le refuse aussi. Une fois un plan migré, on ne revient pas à une 0.10. Si c'est nécessaire, supprimer `plans/<nom>/suivi.json` : il se reconstruit depuis SUIVI.md, HANDOFF.md et plan-lint, sans les champs de run.
+
+### Mettre à jour depuis la 0.10.1
+
+1. Entre deux runs : `/plugin marketplace update circle`, puis `/reload-plugins`. Au lancement suivant, `/orchestre:lancer` propose de remplacer les règles d'autorisation des scripts, dont le chemin contient la version.
+2. Un plan écrit avant la 0.11.0 a déjà un `modele` pour chaque tâche, puisque plan-lint l'exigeait. Ses corrections passent donc au choix du replanificateur. plan-lint avertit des `raison_modele` absentes, sans rien bloquer, et `/orchestre:pret` les liste.
+3. Le premier run migre `suivi.json` en /2.
+
+### Pas encore vérifié en réel
+
+- Le `model` passé à l'appel d'un agent remplace-t-il celui du frontmatter de l'agent (`worker.md` et `worker-isole.md` : sonnet) ?
+- Le `model: opus` de `/orchestre:preparer` est-il appliqué, et tient-il pendant les questions ?
+- Le choix du replanificateur en run réel : pertinence des raisons, coût de l'appel opus.
+- Le coût par tâche : donnée à collecter.
+- Le rendu des cartes avec la colonne du modèle.
+
 ## 0.10.1 — 10/10/2026 : boutons du bandeau à cliquer, avec une icône
 
 Demandé par Fabien après la 0.10.0 : plus de touche 1 pour « Détail » ni de touche 0 pour « Masquer », mais une icône qui dit qu'on peut cliquer.

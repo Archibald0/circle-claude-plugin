@@ -30,7 +30,7 @@ FIN_HANDOFF_MD
 cat > 'plans/demo/SUIVI.md' <<'FIN_SUIVI_MD'
 | ID  | Titre          | Phase | Lot | Dépend de | Modèle | Statut  | Essais | Branche | Tokens est. / réels |
 |-----|----------------|-------|-----|-----------|--------|---------|--------|---------|---------------------|
-| T01 | Script bonjour | 1     | 1A  | —         | sonnet | à-faire | 0      | —       | 0,2 M / —           |
+| T01 | Script bonjour | 1     | 1A  | —         | haiku  | à-faire | 0      | —       | 0,2 M / —           |
 
 Statuts : à-faire · ajoutée · fusionnée · bloquée · échec · besoin-humain · annulée
 FIN_SUIVI_MD
@@ -42,7 +42,8 @@ cat > 'plans/demo/taches/T01-bonjour.md' <<'FIN_T01_BONJOUR_MD'
 id: T01
 titre: Script bonjour
 phase: 1
-modele: sonnet
+modele: haiku
+raison_modele: script d'une ligne, mécanique
 effort: low
 depend_de: []
 lot_parallele: 1A

@@ -10,7 +10,9 @@ const body = src.replace(/^export const meta = /m, 'const meta = ')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const run = new AsyncFunction('args', 'agent', 'phase', 'log', body)
 const ARGS = { plan: 'plans/p', phase: 1, mode: 'phase', parallelisme: 4, integration: 'plan/p', corrections_max: 2, escalade: ['sonnet', 'opus'] }
-const T00 = { id: 'T00', titre: 'Outillage', fichier: 'plans/p/taches/T00.md', phase: 1, modele: 'sonnet', depend_de: [], ressources: ['base-locale', 'port-3000'], statut: 'à-faire', verification: ['sh scripts/typecheck.sh', 'sh scripts/e2e-local.sh'] }
+// T00 sans modèle (plan d'avant la 0.11.0) : worker sur sonnet, corrections selon l'échelle, sans choix du replanificateur ;
+// les scénarios M* jouent les tâches qui ont un modèle
+const T00 = { id: 'T00', titre: 'Outillage', fichier: 'plans/p/taches/T00.md', phase: 1, depend_de: [], ressources: ['base-locale', 'port-3000'], statut: 'à-faire', verification: ['sh scripts/typecheck.sh', 'sh scripts/e2e-local.sh'] }
 const T01 = { id: 'T01', titre: 'Fondations', fichier: 'plans/p/taches/T01.md', phase: 1, modele: 'opus', depend_de: ['T00'], ressources: ['base-locale', 'port-3000'], statut: 'à-faire', verification: ['pnpm test'] }
 // Copies : le workflow amende verification et depend_de en mémoire
 const plan = (...ts) => ({ ok: true, taches: ts.map(t => ({ ...t })) })
@@ -650,7 +652,7 @@ await cas("V1 : suivi — le lecteur-plan ouvre le run, chaque agent lance d'abo
   assert.ok(lp.startsWith(ENTETE + ', ouvre le run'))
   assert.deepEqual(suiviDe(calls, 'lecteur-plan'), [{ cmd: 'debut-run', plan: 'plans/p', E: { phase: 1, mode: 'phase', parallelisme: 4, corrections_max: 2, decisions_office_max: 3 } }])
   assert.ok(lp.includes('plan-lint.mjs plans/p --json --phase 1') && lp.includes('avec ouverture_ok'))
-  for (const [l, E] of [['T00 · worker', { tache: 'T00', etape: 'worker', isole: false }], ['T00 · vérification', { tache: 'T00', etape: 'vérification' }], ['T00 · évaluation', { tache: 'T00', etape: 'évaluation' }], ['T00 · fusion', { tache: 'T00', etape: 'fusion' }]]) {
+  for (const [l, E] of [['T00 · worker', { tache: 'T00', etape: 'worker', isole: false, modele: 'sonnet' }], ['T00 · vérification', { tache: 'T00', etape: 'vérification' }], ['T00 · évaluation', { tache: 'T00', etape: 'évaluation' }], ['T00 · fusion', { tache: 'T00', etape: 'fusion' }]]) {
     assert.ok(byLabel(calls, l)[0].prompt.startsWith(ENTETE), l + ' : étape en tête')
     assert.deepEqual(suiviDe(calls, l), [{ cmd: 'etape', plan: 'plans/p', E }], l)
   }
@@ -679,7 +681,7 @@ await cas("V2 : suivi — correction et son refus, texte échappé ; clôture co
   assert.equal(LONG1.length, 240)
   assert.equal(res.statut, 'à-relancer'); assert.deepEqual(res.suivi_echecs, [])
   const corr = byLabel(calls, 'T00 · correction 1')[0].prompt
-  assert.deepEqual(suiviDe(calls, 'T00 · correction 1'), [{ cmd: 'etape', plan: 'plans/p', E: { tache: 'T00', etape: 'correction', refus: { essai: 1, par: 'évaluation', manques: [M, LONG1] } } }], 'texte long sur une ligne et coupé')
+  assert.deepEqual(suiviDe(calls, 'T00 · correction 1'), [{ cmd: 'etape', plan: 'plans/p', E: { tache: 'T00', etape: 'correction', refus: { essai: 1, par: 'évaluation', manques: [M, LONG1] }, modele: 'sonnet' } }], 'texte long sur une ligne et coupé')
   assert.ok(corr.includes(LONG), 'le worker de correction reçoit le manque entier')
   assert.ok(commandes(corr).every(c => !c.includes('\n')), 'commande sur une ligne')
   assert.ok(corr.includes('l\\u0027option \\u0060--force\\u0060 coûte \\u00245'), 'apostrophe, accent grave et dollar échappés')
@@ -706,7 +708,7 @@ await cas('V3 : suivi — tâches en parallèle → étape worker avec isole=tru
   const { res, calls, q } = await scenario('V3', { 'lecteur-plan': [planS(T02, T03)], ...tt('T02'), ...tt('T03'), 'fin de run · suivi': [GOK] }, { suivi: SVE, corrections_max: '2', decisions_office_max: -1 })
   assert.equal(res.statut, 'terminé')
   assert.deepEqual(suiviDe(calls, 'lecteur-plan')[0].E, { phase: 1, mode: 'phase', parallelisme: 4, corrections_max: 2, decisions_office_max: 0 })
-  for (const id of ['T02', 'T03']) assert.deepEqual(suiviDe(calls, `${id} · worker`)[0].E, { tache: id, etape: 'worker', isole: true })
+  for (const id of ['T02', 'T03']) assert.deepEqual(suiviDe(calls, `${id} · worker`)[0].E, { tache: id, etape: 'worker', isole: true, modele: 'sonnet' })
   assert.ok(byLabel(calls, 'T02 · worker')[0].prompt.includes(`\`node "${SVE}" etape plans/p --json '`))
   vide('V3', q)
 })
@@ -1029,5 +1031,110 @@ await cas('A5 : correction — la préparation se relance si besoin ; intégrate
   assert.ok(f.includes('`git status --porcelain` doit être vide') && f.includes('« préparation : fichiers modifiés »'))
   assert.equal(res.statut, 'arbitrage'); assert.ok(res.arbitrage.contexte.startsWith('préparation ou contrôle post-fusion en échec sur plan/p'))
   vide('A5', q)
+})
+// ——— 0.11.0 : le modèle de chaque tâche, et le choix du modèle des corrections ———
+const TM = (modele, extra = {}) => ({ id: 'T05', titre: 'Modèle', fichier: 'plans/p/taches/T05.md', phase: 1, ...(modele ? { modele } : {}), raison_modele: 'implémentation courante', depend_de: [], ressources: [], statut: 'à-faire', verification: ['npm test'], ...extra })
+const rap5 = (n, extra = {}) => avecSuivi(rap(n, { branche: 'tache/T05', ...extra }))
+const ok5 = x => avecSuivi({ ok: true, resultats: [{ commande: 'npm test', code: 0, extrait: 'ok ' + x }] })
+const ko5 = m => avecSuivi({ verdict: 'ko', manques: [m] })
+const fin5 = () => ({ 'T05 · fusion': [avecSuivi(FOK)], 'T05 · suivi': [avecSuivi(SOK)], 'fin de run · suivi': [GOK] })
+const etapes = (calls, l) => byLabel(calls, l).map(c => commandes(c.prompt).map(lire)[0].E)
+await cas('M1 : le worker tourne sur le modèle de la tâche, tel quel, et le passe au suivi ; sans refus, aucun choix du modèle', async () => {
+  for (const m of ['haiku', 'opus', 'fable']) {
+    const { res, calls, q } = await scenario('M1 ' + m, { 'lecteur-plan': [planS(TM(m))], 'T05 · worker': [rap5(0)], 'T05 · vérification': [ok5(1)], 'T05 · évaluation': [avecSuivi({ verdict: 'ok' })], ...fin5() }, AS)
+    assert.equal(res.statut, 'terminé')
+    assert.equal(byLabel(calls, 'T05 · worker')[0].opts.model, m)
+    assert.deepEqual(etapes(calls, 'T05 · worker'), [{ tache: 'T05', etape: 'worker', isole: false, modele: m }])
+    assert.ok(!calls.some(c => /choix du modèle/.test(c.opts.label)))
+    vide('M1 ' + m, q)
+  }
+})
+await cas('M2 : après chaque essai refusé, le replanificateur choisit le modèle de la correction ; changement au suivi ; descente jusqu’au plancher ; pas de choix après le dernier essai', async () => {
+  const A1 = 'architecture du module à revoir', A2 = 'faute dans le message'
+  const { res, calls, logs, q } = await scenario('M2', {
+    'lecteur-plan': [planS(TM('sonnet'))], 'T05 · worker': [rap5(0)],
+    'T05 · vérification': [ok5(1), ok5(2), avecSuivi({ ok: false, resultats: [{ commande: 'npm test', code: 1, extrait: '1 failed' }], echecs: [{ commande: 'npm test', extrait: '1 failed' }] })],
+    'T05 · évaluation': [ko5(A1), ko5(A2)],
+    'T05 · choix du modèle 1': [{ modele: 'opus', raison: "manque d'architecture" }], 'T05 · choix du modèle 2': [{ modele: 'haiku', raison: 'faute de texte' }],
+    'T05 · correction 1': [rap5(1)], 'T05 · correction 2': [rap5(2)],
+    'T05 · replanification': [RIEN], 'T05 · suivi': [avecSuivi(SOK)], 'fin de run · suivi': [GOK] }, AS)
+  const t = res.taches[0]
+  assert.deepEqual([t.statut, t.essais], ['bloquée', 3])
+  const [c1, c2] = [1, 2].map(i => byLabel(calls, `T05 · choix du modèle ${i}`)[0])
+  assert.deepEqual([c1.opts.agentType, c1.opts.model, c1.opts.schema.required, c1.opts.schema.properties.modele.enum], ['orchestre:replanificateur', 'opus', ['modele', 'raison'], ['haiku', 'sonnet', 'opus']])
+  for (const x of ['Modèle prévu par le plan : sonnet (« implémentation courante »)', 'plancher', "L'essai 1, sur sonnet, a été refusé par l'évaluation", JSON.stringify([A1]), 'plans/p/taches/T05.md']) assert.ok(c1.prompt.includes(x), 'choix 1 : ' + x)
+  assert.ok(!c1.prompt.includes('Essais refusés avant lui') && !c1.prompt.includes('suivi.mjs'), 'choix 1 : pas d’historique, pas de commande de suivi')
+  assert.ok(c2.prompt.includes("L'essai 2, sur opus") && c2.prompt.includes(`Essais refusés avant lui : ${JSON.stringify([{ essai: 1, modele: 'sonnet', par: 'évaluation', manques: [A1] }])}`), 'choix 2 : refus précédents et leurs modèles')
+  assert.ok(idx(calls, 'T05 · choix du modèle 1') > idx(calls, 'T05 · évaluation') && idx(calls, 'T05 · choix du modèle 1') < idx(calls, 'T05 · correction 1'))
+  assert.deepEqual(['T05 · correction 1', 'T05 · correction 2'].map(l => byLabel(calls, l)[0].opts.model), ['opus', 'sonnet'], 'opus, puis sonnet : le choix haiku est relevé au plancher')
+  assert.deepEqual(etapes(calls, 'T05 · correction 1')[0], { tache: 'T05', etape: 'correction', refus: { essai: 1, par: 'évaluation', manques: [A1] }, modele: 'opus', changement: { de: 'sonnet', vers: 'opus', raison: "manque d'architecture" } })
+  assert.deepEqual(etapes(calls, 'T05 · correction 2')[0].changement, { de: 'opus', vers: 'sonnet', raison: 'faute de texte ; relevé au modèle de la tâche (sonnet)' })
+  assert.ok(logs.includes("T05 : correction 1 sur opus (au lieu de sonnet) : manque d'architecture"), logs.join('\n'))
+  assert.ok(logs.includes('T05 : correction 2 sur sonnet (au lieu de opus) : faute de texte ; relevé au modèle de la tâche (sonnet)'), logs.join('\n'))
+  vide('M2', q)
+})
+await cas('M3 : plancher — un choix plus faible que la tâche tourne sur la tâche, sans changement ; fable reste plancher', async () => {
+  for (const [m, choix] of [['opus', 'haiku'], ['fable', 'opus']]) {
+    const { res, calls, logs, q } = await scenario('M3 ' + m, { 'lecteur-plan': [planS(TM(m))], 'T05 · worker': [rap5(0)], 'T05 · vérification': [ok5(1), ok5(2)], 'T05 · évaluation': [ko5('M'), avecSuivi({ verdict: 'ok' })], 'T05 · choix du modèle 1': [{ modele: choix, raison: 'r' }], 'T05 · correction 1': [rap5(1)], ...fin5() }, AS)
+    assert.equal(res.statut, 'terminé')
+    assert.equal(byLabel(calls, 'T05 · correction 1')[0].opts.model, m)
+    const E = etapes(calls, 'T05 · correction 1')[0]
+    assert.deepEqual([E.modele, 'changement' in E], [m, false], 'même modèle que l’essai : pas de changement')
+    assert.ok(logs.includes(`T05 : correction 1 sur ${m} : r ; relevé au modèle de la tâche (${m})`), 'le choix relevé reste tracé au log : ' + logs.join(' | '))
+    vide('M3 ' + m, q)
+  }
+})
+await cas('M4 : choix absent ou invalide — l’échelle escalade s’applique, au-dessus du plancher, et le changement le dit', async () => {
+  const { res, calls, logs, q } = await scenario('M4', {
+    'lecteur-plan': [planS(TM('haiku'))], 'T05 · worker': [rap5(0)], 'T05 · vérification': [ok5(1), ok5(2), ok5(3)],
+    'T05 · évaluation': [ko5('M1'), ko5('M2'), avecSuivi({ verdict: 'ok' })],
+    'T05 · choix du modèle 1': [null], 'T05 · choix du modèle 2': [{ modele: 'gpt-5', raison: 'x' }],
+    'T05 · correction 1': [rap5(1)], 'T05 · correction 2': [rap5(2)], ...fin5() }, AS)
+  assert.deepEqual([res.statut, res.taches[0].essais], ['terminé', 3])
+  assert.equal(byLabel(calls, 'T05 · worker')[0].opts.model, 'haiku')
+  assert.deepEqual(['T05 · correction 1', 'T05 · correction 2'].map(l => byLabel(calls, l)[0].opts.model), ['sonnet', 'opus'])
+  assert.deepEqual(etapes(calls, 'T05 · correction 1')[0].changement, { de: 'haiku', vers: 'sonnet', raison: "choix du modèle sans réponse : échelle d'escalade, correction 1" })
+  assert.deepEqual(etapes(calls, 'T05 · correction 2')[0].changement, { de: 'sonnet', vers: 'opus', raison: "choix invalide (gpt-5) : échelle d'escalade, correction 2" })
+  assert.ok(logs.includes("T05 : choix du modèle sans réponse : échelle d'escalade, correction 1"))
+  vide('M4', q)
+  // Échelle du projet : celle de args.escalade
+  const r2 = await scenario('M4b', { 'lecteur-plan': [planS(TM('sonnet'))], 'T05 · worker': [rap5(0)], 'T05 · vérification': [ok5(1), ok5(2)], 'T05 · évaluation': [ko5('M1'), avecSuivi({ verdict: 'ok' })], 'T05 · choix du modèle 1': [null], 'T05 · correction 1': [rap5(1)], ...fin5() }, { ...AS, escalade: ['opus'] })
+  assert.equal(byLabel(r2.calls, 'T05 · correction 1')[0].opts.model, 'opus')
+  vide('M4b', r2.q)
+})
+await cas('M5 : tâche sans modèle — comportement de la 0.10 : sonnet, puis l’échelle, sans appel au replanificateur ; le changement d’échelle va au suivi', async () => {
+  const { res, calls, q } = await scenario('M5', {
+    'lecteur-plan': [planS(TM(null))], 'T05 · worker': [rap5(0)], 'T05 · vérification': [ok5(1), ok5(2), ok5(3)],
+    'T05 · évaluation': [ko5('M1'), ko5('M2'), avecSuivi({ verdict: 'ok' })], 'T05 · correction 1': [rap5(1)], 'T05 · correction 2': [rap5(2)], ...fin5() }, AS)
+  assert.equal(res.statut, 'terminé')
+  assert.ok(!calls.some(c => /choix du modèle/.test(c.opts.label) || c.opts.agentType === 'orchestre:replanificateur'))
+  assert.deepEqual(['T05 · worker', 'T05 · correction 1', 'T05 · correction 2'].map(l => byLabel(calls, l)[0].opts.model), ['sonnet', 'sonnet', 'opus'])
+  assert.deepEqual(etapes(calls, 'T05 · worker')[0].modele, 'sonnet')
+  const [e1, e2] = [etapes(calls, 'T05 · correction 1')[0], etapes(calls, 'T05 · correction 2')[0]]
+  assert.deepEqual([e1.modele, 'changement' in e1], ['sonnet', false])
+  assert.deepEqual([e2.modele, e2.changement], ['opus', { de: 'sonnet', vers: 'opus', raison: "pas de modèle dans le plan : échelle d'escalade, correction 2" }])
+  vide('M5', q)
+  // Sans suivi : aucune commande, mêmes modèles
+  const r2 = await scenario('M5b', { 'lecteur-plan': [plan(TM(null))], 'T05 · worker': [rap(0, { branche: 'tache/T05' })], 'T05 · vérification': [ok(1), ok(2)], 'T05 · évaluation': [{ verdict: 'ko', manques: ['M'] }, { verdict: 'ok' }], 'T05 · correction 1': [rap(1, { branche: 'tache/T05' })], 'T05 · fusion': [FOK], 'T05 · suivi': [SOK] })
+  assert.ok(r2.calls.every(c => !c.prompt.includes('suivi.mjs')))
+  assert.equal(byLabel(r2.calls, 'T05 · correction 1')[0].opts.model, 'sonnet')
+  vide('M5b', r2.q)
+})
+await cas('M6 : vrai suivi.mjs — modèle utilisé et changement notés dans suivi.json, au journal entre le refus et la correction ; SUIVI.md garde le modèle du plan', async () => {
+  const D = depotJouet()
+  try {
+    const { res, lances } = await joue('M6', D, {
+      'lecteur-plan': [plan({ ...T1, depend_de: [], raison_modele: 'implémentation courante' })], 'T01 · worker': [rap(1, { branche: 'tache/T01' })], 'T01 · vérification': [ok(1), ok(2)],
+      'T01 · évaluation': [{ verdict: 'ko', manques: ['architecture'] }, { verdict: 'ok' }], 'T01 · choix du modèle 1': [{ modele: 'opus', raison: "manque d'architecture" }],
+      'T01 · correction 1': [rap(2, { branche: 'tache/T01' })], 'T01 · fusion': [FOK], 'T01 · suivi': [SOK], 'fin de run · suivi': [{ commit: '', detail: '' }] })
+    assert.deepEqual(lances.filter(l => l.code !== 0), [], 'toutes les commandes de suivi passent')
+    assert.equal(res.statut, 'terminé'); assert.deepEqual(res.suivi_echecs, [])
+    const doc = D.doc(), t = doc.taches.find(x => x.id === 'T01')
+    assert.deepEqual([doc.format, t.modele, t.modele_utilise, t.statut], ['orchestre-suivi/2', 'sonnet', 'opus', 'fusionnée'])
+    assert.deepEqual(doc.journal.filter(e => e.tache === 'T01').map(e => e.texte).slice(3, 6), ['T01 : essai 1 refusé (évaluation) : 1 manque(s)', "T01 : sonnet → opus (manque d'architecture)", 'T01 : correction (essai 2)'])
+    assert.equal(doc.journal.filter(e => e.genre === 'modele').length, 1)
+    assert.match(D.ligne('T01'), /\| sonnet +\| fusionnée \|/)
+    assert.equal(spawnSync(process.execPath, [SUIVI_VRAI, 'valider', 'plans/p'], { cwd: D.racine }).status, 0)
+  } finally { fs.rmSync(D.racine, { recursive: true, force: true }) }
 })
 console.log(`TOUT EST VERT (${n} cas)`)

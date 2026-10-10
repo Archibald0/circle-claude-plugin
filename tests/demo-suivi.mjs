@@ -33,14 +33,9 @@ const entree = async texte => {
 }
 
 // ─── Le dépôt jouet : 5 tâches sur 2 phases ──────────────────────────────────────────────────────────────────────────
-const TACHES = [
-  { id: 'T01', titre: "Page d'accueil", phase: 1, dep: [] },
-  { id: 'T02', titre: 'Formulaire de contact', phase: 1, dep: [] },
-  { id: 'T03', titre: 'Envoi des e-mails', phase: 1, dep: [] },
-  { id: 'T04', titre: 'Tests de bout en bout', phase: 2, dep: ['T01', 'T02'] },
-  { id: 'T05', titre: 'Documentation', phase: 2, dep: ['T03'] },
-]
-const frontmatter = t => `---\nid: ${t.id}\ntitre: ${t.titre}\nphase: ${t.phase}\nmodele: sonnet\ndepend_de: [${t.dep.join(', ')}]\nfichiers_possedes:\n  - src/${t.id}.txt\nressources: []\nestimation_tokens: 0.4M\nverification:\n  - "test -f src/${t.id}.txt"\ndefinition_du_fini:\n  - "src/${t.id}.txt existe"\n---\n\nTâche de démonstration du suivi orchestre : rien n'est réalisé, la démo écrit le suivi elle-même.\n`
+// Les mêmes tâches que /suivi demo, modèles compris (0.11.0)
+const { TACHES, REFUS, CHANGEMENT } = await import('../plugins/orchestre/hooks/demo.mjs')
+const frontmatter = t => `---\nid: ${t.id}\ntitre: ${t.titre}\nphase: ${t.phase}\nmodele: ${t.modele}\nraison_modele: démonstration\ndepend_de: [${t.dep.join(', ')}]\nfichiers_possedes:\n  - src/${t.id}.txt\nressources: []\nestimation_tokens: 0.4M\nverification:\n  - "test -f src/${t.id}.txt"\ndefinition_du_fini:\n  - "src/${t.id}.txt existe"\n---\n\nTâche de démonstration du suivi orchestre : rien n'est réalisé, la démo écrit le suivi elle-même.\n`
 
 function creerDepot() {
   const dir = join(D, 'plans', 'demo')
@@ -53,7 +48,7 @@ function creerDepot() {
   writeFileSync(join(D, 'src', '.gitkeep'), '')
   git('add', '.'); git('commit', '-qm', 'init')
   for (const t of TACHES) writeFileSync(join(dir, 'taches', `${t.id}.md`), frontmatter(t))
-  const ligne = t => `| ${t.id} | ${t.titre} | ${t.phase} | — | ${t.dep.join(', ') || '—'} | sonnet | à-faire | 0 | — | 0,4 M / — |`
+  const ligne = t => `| ${t.id} | ${t.titre} | ${t.phase} | — | ${t.dep.join(', ') || '—'} | ${t.modele} | à-faire | 0 | — | 0,4 M / — |`
   writeFileSync(join(dir, 'SUIVI.md'), `# SUIVI — demo\n\n| ID | Titre | Phase | Lot | Dépend de | Modèle | Statut | Essais | Branche | Tokens est. / réels |\n|----|----|----|----|----|----|----|----|----|----|\n${TACHES.map(ligne).join('\n')}\n\nStatuts : à-faire · ajoutée · fusionnée · bloquée · échec · besoin-humain · annulée\n`)
   writeFileSync(join(dir, 'HANDOFF.md'), '# HANDOFF — demo\n')
   writeFileSync(join(dir, 'orchestre.config.json'), JSON.stringify({ branche_integration: 'plan/demo', parallelisme_max: 2, mode_par_defaut: 'phase' }, null, 2) + '\n')
@@ -73,28 +68,30 @@ const fusionner = id => {
 const lire = () => M.normaliser(JSON.parse(readFileSync(join(D, 'plans', 'demo', 'suivi.json'), 'utf8')))
 const CONFIG_RUN = { parallelisme: 2, corrections_max: 2, decisions_office_max: 3 }
 const BILAN_VIDE = { points_a_trancher: [], taches: [], non_lancees: [], reportees: [], taches_ajoutees: [], arbitrages_appliques: [], decisions_office: [], amendements_ecartes: [], en_attente: [], en_attente_prerequis: [] }
+const modeleDe = id => TACHES.find(t => t.id === id).modele
+const worker = (id, isole) => suivi('etape', { tache: id, etape: 'worker', isole, modele: modeleDe(id) })
 const SMTP = { tache: 'T03', titre: 'Clé SMTP de test', contexte: "les tests d'envoi ont besoin d'un serveur SMTP de test", humain: true, options: [] }
 
 const RUN1 = [
   ['Run 1 lancé, phase 1', () => suivi('debut-run', { phase: 1, mode: 'phase', ...CONFIG_RUN })],
-  ['T01 et T02 démarrent, chacune dans son worktree', () => { suivi('etape', { tache: 'T01', etape: 'worker', isole: true }); suivi('etape', { tache: 'T02', etape: 'worker', isole: true }) }],
+  ['T01 et T02 démarrent, chacune dans son worktree', () => { worker('T01', true); worker('T02', true) }],
   ['T01 en vérification', () => suivi('etape', { tache: 'T01', etape: 'vérification' })],
   ['T02 en vérification, T01 en évaluation', () => { suivi('etape', { tache: 'T02', etape: 'vérification' }); suivi('etape', { tache: 'T01', etape: 'évaluation' }) }],
-  ["T02 refusée par l'évaluation : correction", () => suivi('etape', { tache: 'T02', etape: 'correction', refus: { essai: 1, par: 'évaluation', manques: ["le message d'erreur n'est pas affiché"] } })],
+  ["T02 refusée par l'évaluation : correction sur opus, que le replanificateur a choisi", () => suivi('etape', { tache: 'T02', etape: 'correction', refus: REFUS, modele: 'opus', changement: CHANGEMENT })],
   ['T01 en fusion', () => suivi('etape', { tache: 'T01', etape: 'fusion' })],
   ['T01 fusionnée, avec une relecture avant la PR', () => { fusionner('T01'); suivi('cloture', { tache: 'T01', statut: 'fusionnée', essais: 1, branche: 'tache/T01', relectures: ['.env.example : ajouter DEMO_URL'] }) }],
-  ['T03 démarre ; T02 en vérification (essai 2)', () => { suivi('etape', { tache: 'T03', etape: 'worker', isole: true }); suivi('etape', { tache: 'T02', etape: 'vérification' }) }],
+  ['T03 démarre ; T02 en vérification (essai 2)', () => { worker('T03', true); suivi('etape', { tache: 'T02', etape: 'vérification' }) }],
   ['T02 en fusion ; T03 en vérification', () => { suivi('etape', { tache: 'T02', etape: 'fusion' }); suivi('etape', { tache: 'T03', etape: 'vérification' }) }],
-  ["T02 fusionnée au 2e essai, avec une décision prise d'office", () => { fusionner('T02'); suivi('cloture', { tache: 'T02', statut: 'fusionnée', essais: 2, branche: 'tache/T02', refus: [{ essai: 1, par: 'évaluation', manques: ["le message d'erreur n'est pas affiché"] }], decisions_office: [{ titre: 'Longueur maximale du message', option: 'B', description: '2 000 caractères' }] }) }],
+  ["T02 fusionnée au 2e essai, avec une décision prise d'office", () => { fusionner('T02'); suivi('cloture', { tache: 'T02', statut: 'fusionnée', essais: 2, branche: 'tache/T02', refus: [REFUS], decisions_office: [{ titre: 'Longueur maximale du message', option: 'B', description: '2 000 caractères' }] }) }],
   ['T03 attend un humain : la clé SMTP de test manque', () => suivi('cloture', { tache: 'T03', statut: 'besoin-humain', essais: 1, branche: 'tache/T03', blocage: ['clé SMTP de test absente'], points: [SMTP] })],
   ['Fin du run 1 : arbitrage sur T03', () => suivi('fin-run', { ...BILAN_VIDE, statut: 'arbitrage', phase: 1, mode: 'phase', arbitrage: SMTP, en_attente: ['T03'] })],
 ]
 const RUN2 = [
   ["Run 2 lancé ; le premier scribe applique l'arbitrage de T03", () => { suivi('debut-run', { phase: 1, mode: 'auto', ...CONFIG_RUN }); suivi('arbitrage', { tache: 'T03', titre: SMTP.titre, option: 'A' }) }],
-  ['T03 reprend', () => suivi('etape', { tache: 'T03', etape: 'worker', isole: true })],
+  ['T03 reprend', () => worker('T03', true)],
   ['T03 en vérification', () => suivi('etape', { tache: 'T03', etape: 'vérification' })],
   ['T03 fusionnée : la phase 1 est terminée', () => { fusionner('T03'); suivi('cloture', { tache: 'T03', statut: 'fusionnée', essais: 2, branche: 'tache/T03' }) }],
-  ['Phase 2 : T04 et T05 démarrent', () => { suivi('etape', { tache: 'T04', etape: 'worker', isole: true }); suivi('etape', { tache: 'T05', etape: 'worker', isole: false }) }],
+  ['Phase 2 : T04 et T05 démarrent', () => { worker('T04', true); worker('T05', false) }],
   ['T05 fusionnée, avec deux relectures avant la PR', () => { fusionner('T05'); suivi('cloture', { tache: 'T05', statut: 'fusionnée', essais: 1, branche: 'tache/T05', relectures: ['README.md : relire la section installation', 'docs/smtp.md : vérifier le nom de la variable'] }) }],
   ['T04 en vérification', () => suivi('etape', { tache: 'T04', etape: 'vérification' })],
   ['T04 fusionnée : la phase 2 est terminée', () => { fusionner('T04'); suivi('cloture', { tache: 'T04', statut: 'fusionnée', essais: 1, branche: 'tache/T04' }) }],

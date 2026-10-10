@@ -13,12 +13,12 @@ const lint = (...a) => {
   const r = spawnSync('node', [LINT, ...a], { cwd: racine, encoding: 'utf8' })
   return { code: r.status, out: r.stdout, err: r.stderr, json: a.includes('--json') && r.stdout ? JSON.parse(r.stdout) : null }
 }
-const tache = (id, { phase = 1, depend_de = '[]', fichiers = [`src/${id}/**`], ressources = '[]', verification = ['"npm test"'], fini = ['"le test passe"'], prerequis = null } = {}) => `---
+// modele et raison (0.11.0) : null pour omettre la ligne ; une chaîne vide écrit « modele: » sans valeur
+const tache = (id, { phase = 1, depend_de = '[]', fichiers = [`src/${id}/**`], ressources = '[]', verification = ['"npm test"'], fini = ['"le test passe"'], prerequis = null, modele = 'sonnet', raison = 'implémentation courante' } = {}) => `---
 id: ${id}
 titre: Tâche ${id}
 phase: ${phase}
-modele: sonnet
-effort: high
+${modele != null ? `modele: ${modele}\n` : ''}${raison != null ? `raison_modele: ${raison}\n` : ''}effort: high
 depend_de: ${depend_de}
 fichiers_possedes:
 ${fichiers.map(f => `  - ${f}`).join('\n')}
@@ -244,6 +244,36 @@ try {
     assert.equal(r.json.avertissements.length, 2)
     const p2 = spawnSync('node', [LINT, d, '--json', '--phase', '2'], { cwd: racine, encoding: 'utf8' })
     assert.deepEqual(JSON.parse(p2.stdout).avertissements.map(a => a.slice(0, 3)), ['T02'])
+  })
+
+  cas('modèle (0.11.0) : valeur valide, inconnue ou illisible ; modèle ou raison absents en avertissement, jamais pour une tâche faite ; le choix n’est pas jugé', () => {
+    const d = plan('modeles', {
+      T01: tache('T01', { modele: 'haiku', raison: 'renommage mécanique' }), T02: tache('T02', { modele: 'opus', raison: 'architecture' }), T03: tache('T03', { modele: 'fable', raison: 'plan existant' }),
+      T04: tache('T04', { modele: null, raison: null }), T05: tache('T05', { modele: 'sonnet', raison: null }), T06: tache('T06', { modele: '', raison: '' }),
+      T07: tache('T07', { modele: null, raison: null }), T08: tache('T08', { modele: 'haiku', raison: 'architecture de tout le système' }), T12: tache('T12', { modele: '""', raison: null }),
+    }, [['T01', 'à-faire'], ['T02', 'à-faire'], ['T03', 'à-faire'], ['T04', 'à-faire'], ['T05', 'à-faire'], ['T06', 'à-faire'], ['T07', 'fusionnée'], ['T08', 'à-faire'], ['T12', 'à-faire']])
+    let r = lint(d, '--json')
+    assert.equal(r.code, 0, r.out); assert.equal(r.json.ok, true, 'absent ou sans raison : rien n’est bloqué')
+    const t = id => r.json.taches.find(x => x.id === id)
+    assert.deepEqual(['T01', 'T02', 'T03', 'T05', 'T08'].map(id => t(id).modele), ['haiku', 'opus', 'fable', 'sonnet', 'haiku'])
+    assert.ok(!('modele' in t('T04')) && !('modele' in t('T06')) && !('modele' in t('T12')), 'absent ou vide (« modele: », « modele: "" ») : pas de champ modele')
+    assert.deepEqual([t('T01').raison_modele, 'raison_modele' in t('T05')], ['renommage mécanique', false])
+    const a = r.json.avertissements.filter(x => / modele/.test(x))
+    assert.deepEqual(a.map(x => x.slice(0, 3)), ['T04', 'T05', 'T06', 'T12'], 'T07 fusionnée : pas d’avertissement ; T08 : choix jamais jugé')
+    assert.match(a[0], /^T04 : pas de modele \(haiku, sonnet, opus\) : le worker tournera sur sonnet/)
+    assert.match(a[1], /^T05 : modele sonnet sans raison_modele/)
+    const texte = lint(d)
+    assert.equal(texte.code, 0); assert.ok(texte.out.includes('✓ plan valide') && texte.out.includes('⚠ T04 : pas de modele'), 'en texte : plan valide et avertissement')
+    // Avec --phase, seulement les tâches de la phase
+    assert.deepEqual(JSON.parse(spawnSync('node', [LINT, d, '--json', '--phase', '2'], { cwd: racine, encoding: 'utf8' }).stdout).avertissements, [])
+    // Valeur inconnue ou en liste : erreur qui cite la tâche
+    writeFileSync(join(racine, d, 'taches', 'T09-x.md'), tache('T09', { modele: 'gpt-5', raison: 'x' }))
+    writeFileSync(join(racine, d, 'taches', 'T10-x.md'), tache('T10', { modele: '\n  - sonnet', raison: 'x' }))
+    writeFileSync(join(racine, d, 'taches', 'T11-x.md'), tache('T11', { modele: 'Sonnet', raison: null }))
+    r = lint(d, '--json')
+    assert.equal(r.code, 1); assert.equal(r.json.ok, false)
+    assert.deepEqual(r.json.erreurs.filter(e => /modèle/.test(e)), ['T09 : modèle inconnu « gpt-5 » (haiku, sonnet, opus, fable)', 'T10 : modèle illisible (un seul nom : haiku, sonnet, opus, fable)', 'T11 : modèle inconnu « Sonnet » (haiku, sonnet, opus, fable)'])
+    assert.ok(!r.json.avertissements.some(x => /^T(09|10|11) : /.test(x)), 'un modèle refusé n’est pas, en plus, un modèle sans raison')
   })
 
   console.log(`plan-lint : TOUT EST VERT (${n} cas)`)

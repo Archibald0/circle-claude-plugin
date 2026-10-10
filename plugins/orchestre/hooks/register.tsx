@@ -1,5 +1,5 @@
 // Le mod du plugin orchestre : suit un run dans la session pilote, en lecture seule.
-// Il lit plans/<nom>/suivi.json (orchestre-suivi/1), que seul scripts/suivi.mjs d'orchestre écrit, et dessine :
+// Il lit plans/<nom>/suivi.json (orchestre-suivi/2, ou /1 d'avant la 0.11.0), que seul scripts/suivi.mjs d'orchestre écrit, et dessine :
 //   - un bandeau au-dessus du prompt pendant un run (phase, avancement, en cours, à relire, durée) ;
 //   - un suffixe au spinner (tâche et étape en cours) ;
 //   - /suivi : un panneau en cartes (À toi, le run, les tâches en frise, le journal), ou le même état en texte ;
@@ -13,7 +13,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Action, Carte, Instantane, Ligne, Section } from '../types'
 import { NB_PAS, PAS_DEMO_MS, PLAN_DEMO, finDemo, instantaneDemo, pasA } from './demo.mjs'
-import { DUREE_IMPORTANTE_MS, FORMAT, IMAGE_MS, bandeau, brut, changements, court, depuis, formatDe, importante, ligneEtat, normaliser, nouvelle, panneau, runActif, runEnCours, suffixe, texteEtat } from './modele.mjs'
+import { DUREE_IMPORTANTE_MS, FORMATS, IMAGE_MS, bandeau, brut, changements, court, depuis, formatDe, importante, ligneEtat, normaliser, nouvelle, panneau, runActif, runEnCours, suffixe, texteEtat } from './modele.mjs'
 
 const PANNEAU = 'orchestre'
 // Le son joué quand quelque chose t'attend, avec /suivi son (afplay sur macOS ; rien sur un terminal Linux ou Windows)
@@ -95,11 +95,11 @@ async function rafraichir($: EngineInterface, force: boolean): Promise<void> {
   if (doc === null) return
   dernierFichier = f
   await update($, lu, () => st.mtimeMs)
-  if (formatDe(doc) !== FORMAT) {
+  if (!FORMATS.includes(formatDe(doc) ?? '')) {
     const format = formatDe(doc) ?? 'inconnu'
     if ((await read($, alerte)) !== format) {
       await update($, alerte, () => format)
-      $.ui.toast(`${plan}/suivi.json est au format ${format} ; ce mod lit ${FORMAT}. Mets à jour le plugin orchestre.`, { timeoutMs: DUREE_IMPORTANTE_MS })
+      $.ui.toast(`${plan}/suivi.json est au format ${format} ; ce mod lit ${FORMATS.join(' et ')}. Mets à jour le plugin orchestre.`, { timeoutMs: DUREE_IMPORTANTE_MS })
     }
     return
   }

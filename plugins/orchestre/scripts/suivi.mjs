@@ -1,14 +1,16 @@
 #!/usr/bin/env node
-// suivi (plugin orchestre 0.8.1) : seul écrivain de plans/<nom>/suivi.json (format orchestre-suivi/1) et de sa vue SUIVI.md.
-// Node 18 ou plus, aucune dépendance. Contrat : 0.8.0/CONTRAT.md ; schéma : SCHEMA ci-dessous, copie de suivi.v1.schema.json.
+// suivi (plugin orchestre 0.11.0) : seul écrivain de plans/<nom>/suivi.json (format orchestre-suivi/2) et de sa vue SUIVI.md.
+// Node 18 ou plus, aucune dépendance. Contrat : 0.11.0/CONTRAT.md ; schéma : SCHEMA ci-dessous, copie de suivi.v2.schema.json.
+// Un suivi.json au format orchestre-suivi/1 (0.10 et avant) est lu et migré en mémoire ; la première écriture le passe en /2.
 //
 // Usage : node <racine du plugin>/scripts/suivi.mjs <commande> [<dossier-plan>] [options]
 // Les écritures lisent un objet JSON sur l'entrée standard, ou dans l'option --json '<objet>' (une seule commande à autoriser,
 // sans heredoc ni pipe : c'est la forme que le workflow donne à ses agents). Sans dossier, le seul plan de plans/.
 //   debut-run  { phase, mode, parallelisme, corrections_max, decisions_office_max, run_id? }
 //              une fois par run, par son premier agent : relit le plan (plan-lint), passe un run resté en cours à « interrompu »
-//   etape      { tache, etape, isole?, refus? }      étape : worker, vérification, évaluation, correction, fusion, replanification, suivi
-//              worker remet à zéro les champs du run de la tâche ; correction ajoute refus { essai, par, manques }
+//   etape      { tache, etape, isole?, refus?, modele?, changement? }      étape : worker, vérification, évaluation, correction, fusion,
+//              replanification, suivi ; worker remet à zéro les champs du run de la tâche ; correction ajoute refus { essai, par, manques } ;
+//              modele : le modèle lancé (worker, correction), noté dans modele_utilise ; changement { de, vers, raison } : événement « modele »
 //   cloture    { tache, statut, essais, branche, tokens_reels?, refus?, instables?, non_verifiables?, blocage?, relectures?,
 //                decisions_office?, points?, taches_ajoutees?, amendements?, replanification? }      régénère SUIVI.md
 //   arbitrage  { tache, titre, option, taches_ajoutees?, amendements?, amendements_ecartes? }      régénère SUIVI.md
@@ -29,7 +31,9 @@ import { join, resolve, relative, dirname, basename, isAbsolute, sep } from 'nod
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-export const FORMAT = 'orchestre-suivi/1'
+export const FORMAT = 'orchestre-suivi/2'
+// Format de la 0.10 et avant : lu, puis migré (migrer)
+export const FORMAT_V1 = 'orchestre-suivi/1'
 const STATUTS = ['à-faire', 'ajoutée', 'fusionnée', 'bloquée', 'échec', 'besoin-humain', 'annulée']
 const ETAPES = ['worker', 'vérification', 'évaluation', 'correction', 'fusion', 'replanification', 'suivi']
 const FINS_DE_RUN = ['terminé', 'partiel', 'arbitrage', 'à-relancer', 'erreur']
@@ -57,7 +61,7 @@ export function maintenant(d = new Date()) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${o >= 0 ? '+' : '-'}${p(Math.floor(a / 60))}:${p(a % 60)}`
 }
 
-// ─── Schéma orchestre-suivi/1, sans les descriptions ────────────────────────────────────────────────────────────────
+// ─── Schéma orchestre-suivi/2, sans les descriptions ────────────────────────────────────────────────────────────────
 const ref = n => ({ $ref: `#/$defs/${n}` })
 const tab = items => ({ type: 'array', items })
 const objet = (required, properties, extra = {}) => ({ type: 'object', additionalProperties: false, required, properties, ...extra })
@@ -88,13 +92,14 @@ export const SCHEMA = {
     textes: tab({ type: 'string' }),
     ids: tab(ref('idTache')),
     compte: objet(['mineur', 'majeur'], { mineur: { type: 'integer', minimum: 0 }, majeur: { type: 'integer', minimum: 0 } }),
-    tache: objet(['id', 'titre', 'phase', 'lot', 'depend_de', 'modele', 'statut', 'essais', 'branche', 'estimation_tokens', 'tokens_reels', 'ajoutee_par', 'etape', 'isole', 'debut', 'fin', 'attend', 'refus', 'instables', 'non_verifiables', 'blocage'], {
+    tache: objet(['id', 'titre', 'phase', 'lot', 'depend_de', 'modele', 'modele_utilise', 'statut', 'essais', 'branche', 'estimation_tokens', 'tokens_reels', 'ajoutee_par', 'etape', 'isole', 'debut', 'fin', 'attend', 'refus', 'instables', 'non_verifiables', 'blocage'], {
       id: ref('idTache'),
       titre: { type: 'string', minLength: 1 },
       phase: ENTIER1,
       lot: { type: ['string', 'null'] },
       depend_de: ref('ids'),
-      modele: { type: 'string', minLength: 1 },
+      modele: { type: ['string', 'null'], minLength: 1 },
+      modele_utilise: { type: ['string', 'null'], minLength: 1 },
       statut: { enum: STATUTS },
       essais: { type: 'integer', minimum: 0 },
       branche: { type: ['string', 'null'] },
@@ -155,7 +160,7 @@ export const SCHEMA = {
     prerequis: objet(['id', 'type', 'statut', 'texte', 'bloque'], { id: ref('idTache'), type: { type: 'string' }, statut: { type: 'string' }, texte: { type: 'string' }, bloque: ref('ids') }),
     evenement: objet(['quand', 'genre', 'tache', 'texte'], {
       quand: ref('date'),
-      genre: { enum: ['run', 'tache', 'etape', 'refus', 'statut', 'ajout', 'amendement', 'relecture', 'decision-office', 'point', 'arbitrage', 'pilote', 'erreur'] },
+      genre: { enum: ['run', 'tache', 'etape', 'refus', 'statut', 'ajout', 'amendement', 'relecture', 'decision-office', 'point', 'arbitrage', 'pilote', 'erreur', 'modele'] },
       tache: { oneOf: [ref('idTache'), { type: 'null' }] },
       texte: { type: 'string', minLength: 1 },
     }),
@@ -326,7 +331,7 @@ function lireSuivi(texte) {
     const l = {
       id, titre: col(cells, 'titre') || id, statut, essais: Number.isInteger(essais) && essais >= 0 ? essais : 0,
       branche: vide(col(cells, 'branche')) ? null : col(cells, 'branche'), tokens_reels: vide(reels) ? null : reels,
-      phase: Number.isInteger(phase) && phase >= 1 ? phase : undefined, modele: col(cells, 'modele') || undefined,
+      phase: Number.isInteger(phase) && phase >= 1 ? phase : undefined, modele: vide(col(cells, 'modele')) ? null : col(cells, 'modele'),
       lot: vide(col(cells, 'lot')) ? null : col(cells, 'lot'), depend_de: vide(col(cells, 'depend de')) ? [] : col(cells, 'depend de').split(/\s*,\s*/).filter(Boolean),
     }
     // Une ligne sous la légende qui reprend une tâche déjà lue la remplace, à sa place : plan-lint lit aussi la dernière
@@ -345,7 +350,7 @@ function cellule(t, k) {
     case 'phase': return String(t.phase)
     case 'lot': return t.lot ?? '—'
     case 'depend de': return t.depend_de.length ? t.depend_de.join(', ') : '—'
-    case 'modele': return t.modele
+    case 'modele': return t.modele ?? '—'
     case 'statut': return t.statut
     case 'essais': return String(t.essais)
     case 'branche': return t.branche ?? '—'
@@ -385,7 +390,7 @@ export function vue(doc, texte) {
 
 // ─── Document ─────────────────────────────────────────────────────────────────────────────────────────────────────
 const nouvelleTache = x => ({
-  id: x.id, titre: x.titre || x.id, phase: x.phase, lot: x.lot ?? null, depend_de: x.depend_de ?? [], modele: x.modele,
+  id: x.id, titre: x.titre || x.id, phase: x.phase, lot: x.lot ?? null, depend_de: x.depend_de ?? [], modele: x.modele ?? null, modele_utilise: null,
   statut: x.statut ?? 'à-faire', essais: x.essais ?? 0, branche: x.branche ?? null, estimation_tokens: x.estimation_tokens ?? null,
   tokens_reels: x.tokens_reels ?? null, ajoutee_par: x.ajoutee_par ?? null, etape: null, isole: null, debut: null, fin: null,
   attend: [], refus: [], instables: [], non_verifiables: [], blocage: [],
@@ -416,7 +421,8 @@ function champsPlan(ctx, lt) {
   const fm = frontmatter(ctx, lt.fichier)
   return {
     ...(Number.isInteger(lt.phase) && lt.phase >= 1 ? { phase: lt.phase } : {}),
-    ...(lt.modele ? { modele: String(lt.modele) } : {}),
+    // Sans modèle dans le frontmatter : null (0.11.0) ; le workflow lance alors sonnet, puis l'échelle d'escalade
+    modele: typeof lt.modele === 'string' && lt.modele.trim() ? lt.modele.trim() : null,
     depend_de: (lt.depend_de || []).map(String), lot: fm.lot, estimation_tokens: fm.estimation ? lt.estimation_tokens : null,
   }
 }
@@ -432,7 +438,7 @@ function synchroniser(doc, L, ctx, J, { statuts }) {
     const plan = champsPlan(ctx, lt)
     let t = doc.taches.find(x => x.id === lt.id)
     if (!t) {
-      if (!plan.phase || !plan.modele) { J('erreur', null, `${lt.id} non ajoutée au suivi : phase ou modèle absent du frontmatter`); continue }
+      if (!plan.phase) { J('erreur', null, `${lt.id} non ajoutée au suivi : phase absente du frontmatter`); continue }
       if (!STATUTS.includes(lt.statut)) refuser(`SUIVI.md : statut inconnu « ${lt.statut} » pour ${lt.id} (${STATUTS.join(', ')})`)
       const l = ligne(lt.id)
       t = nouvelleTache({ id: lt.id, titre: lt.titre, statut: lt.statut, ...(l ? { titre: l.titre, essais: l.essais, branche: l.branche, tokens_reels: l.tokens_reels } : {}), ...plan })
@@ -477,12 +483,24 @@ function reconstruire(ctx, L, handoff, quand) {
   return doc
 }
 
+// orchestre-suivi/1 → /2 (0.11.0) : modele_utilise part de null (le modèle lancé n'était pas noté) ; modele garde sa valeur.
+// Rend true si le document était en /1. Un autre format est refusé, sans deviner.
+export function migrer(doc) {
+  if (!doc || doc.format !== FORMAT_V1) return false
+  doc.format = FORMAT
+  for (const t of Array.isArray(doc.taches) ? doc.taches : []) if (t && typeof t === 'object' && !Array.isArray(t) && t.modele_utilise === undefined) t.modele_utilise = null
+  return true
+}
+const formatLu = doc => { if (!doc || (doc.format !== FORMAT && doc.format !== FORMAT_V1)) refuser(`suivi.json est au format ${doc && doc.format}, ce lecteur lit ${FORMAT} et ${FORMAT_V1}`) }
+const MIGRE = Symbol('migré de /1')
+
 function charger(ctx) {
   const f = join(ctx.dir, 'suivi.json')
   if (!existsSync(f)) return null
   let doc
   try { doc = JSON.parse(readFileSync(f, 'utf8')) } catch (e) { refuser(`suivi.json illisible (${e.message}) : corrige-le, ou supprime-le pour qu'il soit reconstruit depuis SUIVI.md, HANDOFF.md et plan-lint`) }
-  if (!doc || doc.format !== FORMAT) refuser(`suivi.json est au format ${doc && doc.format}, ce lecteur lit ${FORMAT}`)
+  formatLu(doc)
+  if (migrer(doc)) doc[MIGRE] = true
   return doc
 }
 
@@ -532,6 +550,7 @@ function ecrire(ctx, changer, { debutRun = false } = {}) {
     if (!existant && !L.taches) refuser(`${L.erreurs[0]} : suivi.json absent, il ne se reconstruit pas sans plan-lint ; rien n'est écrit`)
     const doc = existant || reconstruire(ctx, L, handoff, quand)
     const J = noter(doc, quand)
+    if (existant && existant[MIGRE]) J('run', null, `suivi.json migré de ${FORMAT_V1} à ${FORMAT} : modèle utilisé inconnu jusqu'ici`)
     if (!L.taches) { const note = `${L.erreurs[0]} : champs de plan, statuts de git et prérequis gardés tels quels`; if (!doc.journal.slice(-20).some(e => e.texte === court(note, 300))) J('erreur', null, note) }
     if (!existant || debutRun) ignorer(ctx)
     const r = changer(doc, { L, handoff, quand, J, ctx }) || {}
@@ -563,12 +582,25 @@ function debutRun(doc, E, { L, handoff, J, quand, ctx }) {
   return { message: `run ${numero} ouvert (phase ${E.phase}, mode ${E.mode})` }
 }
 
+// Modèle lancé par le worker ou une correction (0.11.0), et le changement de modèle que le workflow a décidé
+const texteOuNull = (x, champ) => (x == null ? null : typeof x === 'string' && x.trim() ? x.trim() : refuser(`etape : « ${champ} » doit être un texte non vide`))
+function changementDe(E, modele) {
+  const c = E.changement
+  if (c == null) return null
+  if (typeof c !== 'object' || Array.isArray(c)) refuser('etape : « changement » doit être un objet { de, vers, raison }')
+  const vers = texteOuNull(c.vers, 'changement.vers') ?? modele
+  if (!vers) refuser('etape : changement sans modèle d\'arrivée (changement.vers ou modele)')
+  if (modele && vers !== modele) refuser(`etape : changement vers ${vers}, mais modele vaut ${modele}`)
+  return { de: texteOuNull(c.de, 'changement.de'), vers, raison: c.raison == null ? '' : String(c.raison).replace(/\s+/g, ' ').trim() }
+}
 function etape(doc, E, { J, quand }) {
   const t = tacheDe(doc, E.tache)
+  const modele = texteOuNull(E.modele, 'modele'), ch = changementDe(E, modele)
   if (E.isole !== undefined) t.isole = E.isole
   if (E.etape === 'worker') {
-    Object.assign(t, { etape: 'worker', debut: quand, fin: null, essais: 1, refus: [], instables: [], non_verifiables: [], blocage: [] })
+    Object.assign(t, { etape: 'worker', debut: quand, fin: null, essais: 1, refus: [], instables: [], non_verifiables: [], blocage: [], modele_utilise: ch ? ch.vers : modele })
     J('tache', t.id, `${t.id} démarre (${t.isole === true ? 'worktree' : t.isole === false ? 'checkout principal' : 'lieu non précisé'})`)
+    if (ch) J('modele', t.id, `${t.id} : ${ch.de ?? '—'} → ${ch.vers}${ch.raison ? ` (${ch.raison})` : ''}`)
   } else {
     t.etape = E.etape
     if (E.etape === 'correction' && E.refus) {
@@ -576,9 +608,11 @@ function etape(doc, E, { J, quand }) {
       if (Number.isInteger(E.refus.essai)) t.essais = Math.max(t.essais, E.refus.essai + 1)
       J('refus', t.id, `${t.id} : essai ${E.refus.essai} refusé (${E.refus.par}) : ${(E.refus.manques || []).length} manque(s)`)
     }
+    if (modele || ch) t.modele_utilise = ch ? ch.vers : modele
+    if (ch) J('modele', t.id, `${t.id} : ${ch.de ?? '—'} → ${ch.vers}${ch.raison ? ` (${ch.raison})` : ''}`)
     J('etape', t.id, `${t.id} : ${E.etape}${E.etape === 'correction' ? ` (essai ${t.essais})` : ''}`)
   }
-  return { message: `${t.id} → ${E.etape}` }
+  return { message: `${t.id} → ${E.etape}${t.modele_utilise && (modele || ch) ? ` (${t.modele_utilise})` : ''}` }
 }
 
 const optionSansActions = o => ({ id: o.id, description: o.description ?? '', ...(o.impact !== undefined ? { impact: o.impact } : {}), ...(o.recommande !== undefined ? { recommande: o.recommande } : {}) })
@@ -597,6 +631,7 @@ function ajouter(doc, items, parent, { L, J, ctx }) {
     const lt = (L.taches || []).find(t => t.id === x.id)
     // Sans fichier de tâche (le scribe l'a retiré sur un refus de plan-lint, et le signale de son côté) : sautée, notée au journal.
     // Refuser toute l'écriture ferait perdre la clôture de la tâche qui l'a proposée.
+    // Sans fichier, seule une tâche que l'appelant décrit en entier (phase et modèle) entre : ni le workflow ni le bilan ne le font
     if (!lt && !(x.phase && x.modele)) { J('erreur', x.id, `${x.id} non ajoutée au suivi : aucun fichier de tâche lu par plan-lint (ajout proposé par ${parent ?? 'le bilan du run'})`); sautees.push(x.id); continue }
     const plan = lt ? champsPlan(ctx, lt) : { phase: x.phase, modele: x.modele, depend_de: x.depend_de ?? [], lot: x.lot ?? null, estimation_tokens: x.estimation_tokens ?? null }
     let t = doc.taches.find(y => y.id === x.id)
@@ -842,10 +877,12 @@ function principal() {
     if (!existsSync(f)) refuser(`${f} : absent ; il sera reconstruit à la prochaine écriture`)
     let doc
     try { doc = JSON.parse(readFileSync(f, 'utf8')) } catch (e) { refuser(`suivi.json illisible : ${e.message}`) }
-    if (!doc || doc.format !== FORMAT) refuser(`suivi.json est au format ${doc && doc.format}, ce lecteur lit ${FORMAT}`)
+    formatLu(doc)
+    // Un fichier /1 est validé tel qu'il sera migré : le schéma /2 avec modele_utilise à null
+    const v1 = migrer(doc)
     const err = valider(doc)
     if (err.length) refuser(`suivi.json invalide :\n${err.map(e => '  - ' + e).join('\n')}`)
-    console.log(`suivi : suivi.json valide (${FORMAT}, ${pluriel(doc.taches.length, 'tâche')}, ${pluriel(doc.runs.length, 'run')})`)
+    console.log(`suivi : suivi.json valide (${v1 ? `${FORMAT_V1}, migré en ${FORMAT} à la prochaine écriture` : FORMAT}, ${pluriel(doc.taches.length, 'tâche')}, ${pluriel(doc.runs.length, 'run')})`)
     return 0
   }
   if (cmd === 'vue') {

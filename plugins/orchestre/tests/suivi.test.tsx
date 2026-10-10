@@ -155,6 +155,54 @@ test('panneau /suivi : une vue en cartes, ses touches, ses actions préparées d
   expect(w.remplis.at(-1) ?? '').toMatch(/^append:Plan demo : 2\/2 tâches fusionnées[\s\S]*- T01 : \.env\.example : ajouter MR_MAX/)
 })
 
+// 0.11.0 : un suivi.json au format /2, avec le modèle prévu et le modèle utilisé de chaque tâche
+const MODELES = doc([
+  tache('T01', 1, { etape: 'correction', isole: true, essais: 2, debut: '2026-10-08T11:31:00+02:00', modele_utilise: 'opus' }),
+  tache('T02', 1, { etape: 'worker', isole: true, debut: '2026-10-08T11:32:00+02:00', modele_utilise: 'sonnet' }),
+  tache('T03', 1, { modele: 'haiku', modele_utilise: null }),
+], {
+  format: 'orchestre-suivi/2',
+  journal: [
+    { quand: '2026-10-08T11:31:00+02:00', genre: 'tache', tache: 'T01', texte: 'T01 démarre (worktree)' },
+    { quand: '2026-10-08T11:40:00+02:00', genre: 'refus', tache: 'T01', texte: 'T01 : essai 1 refusé (évaluation) : 1 manque(s)' },
+    { quand: '2026-10-08T11:40:00+02:00', genre: 'modele', tache: 'T01', texte: "T01 : sonnet → opus (manque d'architecture)" },
+    { quand: '2026-10-08T11:40:00+02:00', genre: 'etape', tache: 'T01', texte: 'T01 : correction (essai 2)' },
+  ],
+})
+
+test('cartes des tâches : le modèle utilisé, « prévu → utilisé » quand ils diffèrent, le prévu avant le worker ; changements au journal (0.11.0)', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  const w = monde(on)
+  w.fichier.texte = MODELES
+  await $.session.start({ cwd: RACINE, surface: 'terminal', isInteractive: true })
+  const r = await $.command.run({ command: 'suivi', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } } as never)
+  expect(r.text ?? '').toMatch(/ouvert dans le panneau/)
+  expect(w.toasts.filter(t => /au format/.test(t))).toEqual([])
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'orchestre', surface, ...PANE })
+    // T01 : prévu sonnet, corrigée sur opus ; T02 : sonnet, comme prévu ; T03 : haiku prévu, pas encore lancée
+    const utilise = await ui.find({ type: 'Text', text: /^opus$/ })
+    expect([utilise?.props.color, utilise?.props.bold]).toEqual(['merged', true])
+    expect((await ui.find({ type: 'Text', text: /^sonnet → $/ }))?.props.dimColor).toBe(true)
+    expect((await ui.find({ type: 'Text', text: /^sonnet$/ }))?.props.color).toBe('subtle')
+    expect((await ui.find({ type: 'Text', text: /^haiku$/ }))?.props.dimColor).toBe(true)
+    // Le journal : le changement de modèle, avec son glyphe
+    await ui.press({ key: 'nav-journal' })
+    expect((await ui.find({ type: 'Text', text: /^⇄$/ }))?.props.color).toBe('merged')
+    expect(await ui.find({ type: 'Text', text: /T01 : sonnet → opus \(manque d'architecture\)/ })).toBeDefined()
+    await ui.press({ key: 'nav-journal' })
+    await ui.unmount()
+  }
+  const texte = await $.command.run({ command: 'suivi', args: 'texte', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as never)
+  expect(texte.text ?? '').toMatch(/T01 .*sonnet → opus/)
+  expect(texte.text ?? '').toMatch(/T03 .*haiku/)
+  // Un format que ce mod ne lit pas : dit une fois, rien d'autre
+  w.fichier.texte = MODELES.replace('"orchestre-suivi/2"', '"orchestre-suivi/3"')
+  w.fichier.mtime = 2
+  await $.command.run({ command: 'suivi', args: 'texte', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as never)
+  expect(w.toasts.filter(t => /au format/.test(t))).toEqual(['plans/demo/suivi.json est au format orchestre-suivi/3 ; ce mod lit orchestre-suivi/1 et orchestre-suivi/2. Mets à jour le plugin orchestre. (15000 ms)'])
+})
+
 test('rien à suivre : pas de bandeau, /suivi le dit ; une session hébergée attend sa surface, un -p ne lit rien', async ($, on) => {
   mock.clock(on, { now: T0 })
   const lus: string[] = []

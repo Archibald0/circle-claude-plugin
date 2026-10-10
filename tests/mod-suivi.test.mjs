@@ -42,11 +42,18 @@ try {
   const A = lire()
   const tA = Date.parse(JSON.parse(readFileSync(join(d, 'suivi.json'), 'utf8')).maj) + 90000
 
-  cas('format : orchestre-suivi/1 lu, un autre format refusé sans deviner', () => {
+  cas('format : orchestre-suivi/2 écrit par suivi.mjs, /1 d\'avant la 0.11.0 lu aussi, un autre format refusé sans deviner', () => {
     assert.ok(A); assert.equal(A.plan, 'demo'); assert.equal(A.taches.length, 4)
-    assert.equal(M.normaliser({ format: 'orchestre-suivi/2', taches: [] }), null)
-    assert.equal(M.formatDe({ format: 'orchestre-suivi/2' }), 'orchestre-suivi/2')
+    assert.equal(JSON.parse(readFileSync(join(d, 'suivi.json'), 'utf8')).format, 'orchestre-suivi/2')
+    assert.deepEqual(M.FORMATS, ['orchestre-suivi/1', 'orchestre-suivi/2'])
+    assert.equal(M.normaliser({ format: 'orchestre-suivi/3', taches: [] }), null)
+    assert.equal(M.formatDe({ format: 'orchestre-suivi/3' }), 'orchestre-suivi/3')
     assert.equal(M.normaliser({ format: 'orchestre-suivi/1' }), null, 'sans taches')
+    // Un /1 : même lecture, le modèle utilisé inconnu
+    const brut = JSON.parse(readFileSync(join(d, 'suivi.json'), 'utf8'))
+    const v1 = M.normaliser({ ...brut, format: 'orchestre-suivi/1', taches: brut.taches.map(({ modele_utilise, ...t }) => t) })
+    assert.deepEqual(v1.taches.map(t => [t.id, t.modele, t.modeleUtilise, t.etape]), A.taches.map(t => [t.id, 'sonnet', null, t.etape]))
+    assert.deepEqual({ ...v1, taches: [] }, { ...A, taches: [] }, 'le reste à l\'identique')
   })
 
   cas('pendant un run : bandeau, suffixe du spinner, tâches en cours et leur frise', () => {
@@ -308,6 +315,46 @@ try {
     assert.equal(M.normaliser(D.docDemo(3, T)).legende, null)
   })
 
+  cas('modèle dans les cartes des tâches (0.11.0) : utilisé, « prévu → utilisé » quand ils diffèrent, prévu estompé avant le worker ; journal', () => {
+    const T = Date.parse('2026-10-09T10:00:00Z'), t4 = D.instantDuPas(4, T) + 500, I = D.instantaneDemo(4, T)
+    // La ligne d'une tâche (« ··◐ T02 … »), pas celle de sa phase
+    const ligne = (X, id, w = 100, t = t4) => M.lignesTaches(X, t, w).find(l => M.brut(l).match(/^ {2}\S (\S+)/)?.[1] === id)
+    // T02 corrigée sur opus, choisi par le replanificateur ; T01 sur son modèle ; T03 pas encore lancée
+    const l2 = ligne(I, 'T02')
+    assert.deepEqual(l2.filter(m => /sonnet|opus/.test(m.t)).map(m => [m.t, m.c ?? null, !!m.b, !!m.d]), [['sonnet → ', null, false, true], ['opus', 'merged', true, false]])
+    assert.deepEqual(ligne(I, 'T01').filter(m => /sonnet/.test(m.t)).map(m => [m.t, m.c, !!m.d]), [['sonnet', 'subtle', false]])
+    const l3 = ligne(I, 'T03')
+    assert.deepEqual(l3.filter(m => /sonnet/.test(m.t)).map(m => [m.t, !!m.d]), [['sonnet', true]], 'prévu, estompé')
+    assert.equal(M.brut(l3).indexOf('sonnet'), M.brut(ligne(I, 'T01')).indexOf('sonnet'), 'même colonne qu\'une ligne détaillée')
+    assert.match(M.brut(l2), /sonnet → opus {2}correction essai 2 \(worktree\)$/)
+    // Phase 2 : la documentation sur haiku
+    const I16 = D.instantaneDemo(16, T)
+    assert.ok(ligne(I16, 'T05', 100, D.instantDuPas(16, T) + 500).some(m => m.t === 'haiku' && m.c === 'subtle'))
+    // Le plan ne prévoyait pas de modèle : « — → sonnet »
+    const sans = { ...I, taches: I.taches.map(x => (x.id === 'T01' ? { ...x, modele: null } : x)) }
+    assert.match(M.brut(ligne(sans, 'T01')), /— → sonnet/)
+    // Aucun modèle connu (suivi.json reconstruit d'un plan sans modèles) : pas de colonne, la frise garde sa largeur
+    const aucun = { ...I, taches: I.taches.map(x => ({ ...x, modele: null, modeleUtilise: null })) }
+    for (const id of ['T01', 'T02', 'T03']) assert.doesNotMatch(M.brut(ligne(aucun, id)), /sonnet|opus|→/)
+    const friseDe = l => l.filter(m => /^[━╸·]+$/.test(m.t)).reduce((n, m) => n + [...m.t].length, 0)
+    assert.equal(friseDe(ligne(aucun, 'T01')), 26); assert.equal(friseDe(ligne(I, 'T01')), 11, 'à 100 colonnes, la colonne du modèle se prend sur la frise')
+    assert.equal(friseDe(ligne(I, 'T01', 160)), 26, 'à 160 colonnes, la frise garde sa largeur')
+    // La colonne ne rallonge aucune ligne au-delà de la largeur ; en deçà de 75 colonnes (60 et sa largeur), elle disparaît
+    for (const w of [140, 120, 100, 80, 75, 74, 60, 50]) {
+      const avec = M.lignesTaches(I, t4, w), sansM = M.lignesTaches(aucun, t4, w)
+      avec.forEach((l, i) => assert.ok(M.largeur(l) <= Math.max(w, M.largeur(sansM[i])), `${w} : ${M.largeur(l)} « ${M.brut(l)} »`))
+    }
+    assert.match(M.brut(ligne(I, 'T02', 75)), /sonnet → opus/); assert.doesNotMatch(M.brut(ligne(I, 'T02', 74)), /sonnet|opus/)
+    assert.deepEqual(M.lignesTaches(I, t4, 60).map(M.brut), M.lignesTaches(aucun, t4, 60).map(M.brut), 'trop étroit : comme sans modèle')
+    assert.equal(M.brut(ligne(I, 'T02')).length - M.brut(ligne(I, 'T02')).indexOf('correction'), M.brut(ligne(aucun, 'T02')).length - M.brut(ligne(aucun, 'T02')).indexOf('correction'))
+    // Le journal : le changement de modèle, son glyphe ; /suivi texte le montre aussi
+    const j = M.carteJournal(I, t4, 100, true).lignes.find(l => /sonnet → opus/.test(M.brut(l)))
+    assert.ok(j && j.some(m => m.t === '⇄' && m.c === 'merged'), 'glyphe du journal')
+    assert.match(M.brut(j), /T02 +⇄ T02 : sonnet → opus \(l'erreur touche le formulaire et l'API\)$/)
+    assert.match(M.texteEtat(I, t4), /T02 .*sonnet → opus/)
+    assert.equal(M.nouvelle(I, t4)?.genre, 'refus', 'le refus fait la nouvelle, pas le changement de modèle noté à la même seconde')
+  })
+
   cas('mise en forme : durées, âges, barre, coupe', () => {
     assert.deepEqual([M.duree(45000), M.duree(18 * 60000), M.duree(72 * 60000), M.duree(null)], ['45 s', '18 min', '1 h 12', '—'])
     assert.deepEqual([M.chrono(42000), M.chrono(725000), M.chrono(3723000), M.chrono(null)], ['0:42', '12:05', '1:02:03', '—'])
@@ -331,6 +378,7 @@ try {
     const T = Date.parse('2026-10-09T10:00:00Z')
     for (let k = 0; k < D.NB_PAS; k++) {
       const f = join(racine, `demo-${k}.json`)
+      assert.equal(D.docDemo(k, T).format, 'orchestre-suivi/2', 'au format qu\'écrit suivi.mjs, pas un /1 qu\'il migrerait')
       writeFileSync(f, JSON.stringify(D.docDemo(k, T)))
       const v = spawnSync(process.execPath, [SUIVI, 'valider', '--fichier', f], { encoding: 'utf8' })
       assert.equal(v.status, 0, `pas ${k} : ${v.stderr}`)
