@@ -12,6 +12,11 @@ Plan validé par Fabien le 10/10 (session Chat) : Opus attribue un modèle à ch
   - sonnet par défaut pour implémenter ;
   - opus pour l'architecture, les tâches ambiguës et celles qui touchent plusieurs modules.
   Une conversion garde un modèle haiku, sonnet ou opus donné par le plan source.
+- Fable, au choix de l'utilisateur (demande de Fabien du 11/10 : fable coûte plus cher sans être plus efficace qu'opus à ce jour) :
+  - `/orchestre:preparer` demande « Utiliser fable pour ce plan ? », « Non » recommandé. Sur « Oui », il propose les tâches mises sur opus, et seules celles que l'utilisateur coche passent sur fable. La réponse va dans `orchestre.config.json` : `"fable": true` ou `false` ;
+  - plan-lint : avec `"fable": false`, une tâche restante sur fable ou une `escalade` qui le contient est une erreur, dans tout le plan. Sans le réglage (plan d'avant), c'est un avertissement. Une valeur qui n'est pas un booléen est une erreur. Son JSON rend `fable` ;
+  - `/orchestre:pret` affiche le réglage. S'il manque alors qu'une tâche est sur fable, il pose la question ; sur « Non », il propose de repasser ces tâches sur opus. `/orchestre:lancer` dit ce que veulent dire ces avertissements ;
+  - le replanificateur ne choisit jamais fable, ni pour une correction ni pour une tâche qu'il ajoute : fable ne vient que d'une tâche désignée par l'utilisateur, comme plancher. Le workflow ne change pas.
 - plan-lint :
   - un `modele` hors de haiku, sonnet, opus et fable est une erreur, tout comme un modèle illisible (une liste) ;
   - un `modele` absent (ou vide : `modele:`, `modele: ""`) ou une `raison_modele` absente ne donnent qu'un avertissement, pour les tâches restantes (avec `--phase`, celles de la phase) : « modèle manquant » n'est plus une erreur. Un modèle refusé ne reçoit pas, en plus, l'avertissement de la raison ;
@@ -34,12 +39,12 @@ Plan validé par Fabien le 10/10 (session Chat) : Opus attribue un modèle à ch
   - les changements de modèle s'affichent au journal (⇄) ;
   - dans `/suivi demo` et `tests/demo-suivi.mjs`, T05 tourne sur haiku et la correction de T02 passe de sonnet à opus.
 - Replanificateur : une section « Choix du modèle d'une correction », et une tâche qu'il ajoute porte son modèle et sa raison.
-- Dépôt jouet (`tests/depot-jouet.sh`) : T01 passe sur haiku, avec sa raison. Dans `/workflows`, on voit si son worker tourne bien sur haiku, et non sur le sonnet du frontmatter de l'agent.
+- Dépôt jouet (`tests/depot-jouet.sh`) : T01 passe sur haiku, avec sa raison, et la config dit `"fable": false`. Dans `/workflows`, on voit si son worker tourne bien sur haiku, et non sur le sonnet du frontmatter de l'agent.
 - Tests :
   - 93 scénarios du workflow (6 nouveaux, dont un avec le vrai suivi.mjs) ;
-  - 18 cas de plan-lint, 8 de `/orchestre:etat` et 22 de suivi.mjs ;
+  - 19 cas de plan-lint, 8 de `/orchestre:etat` et 22 de suivi.mjs ;
   - 20 cas du modèle du mod et 16 tests sous le moteur ;
-  - 70 mutations du nouveau code (workflow, suivi.mjs, plan-lint, mod, démo, hooks), toutes détectées.
+  - 82 mutations du nouveau code (workflow, suivi.mjs, plan-lint et son réglage fable, mod, démo, hooks), toutes détectées.
 
 ### Incompatible avec la 0.10
 
@@ -48,7 +53,7 @@ Un suivi.mjs 0.10.x ou antérieur refuse un suivi.json /2 (« suivi.json est au 
 ### Mettre à jour depuis la 0.10.1
 
 1. Entre deux runs : `/plugin marketplace update circle`, puis `/reload-plugins`. Au lancement suivant, `/orchestre:lancer` propose de remplacer les règles d'autorisation des scripts, dont le chemin contient la version.
-2. Un plan écrit avant la 0.11.0 a déjà un `modele` pour chaque tâche, puisque plan-lint l'exigeait. Ses corrections passent donc au choix du replanificateur. plan-lint avertit des `raison_modele` absentes, sans rien bloquer, et `/orchestre:pret` les liste.
+2. Un plan écrit avant la 0.11.0 a déjà un `modele` pour chaque tâche, puisque plan-lint l'exigeait. Ses corrections passent donc au choix du replanificateur. plan-lint avertit des `raison_modele` absentes, sans rien bloquer, et `/orchestre:pret` les liste. Une tâche sur fable, sans réglage `fable`, tourne encore ; `/orchestre:pret` fait trancher.
 3. Le premier run migre `suivi.json` en /2.
 
 ### Pas encore vérifié en réel

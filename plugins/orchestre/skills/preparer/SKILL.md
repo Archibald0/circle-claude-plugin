@@ -42,7 +42,7 @@ Lis le plan source en entier. Garde son découpage, son vocabulaire et ses déci
 
 - Une tâche source donne une tâche orchestre. Découpe-la seulement si elle dépasse la moitié d'un contexte ; fusionne une micro-tâche avec sa voisine. Chaque changement de découpage va dans le bilan.
 - `phase` et `depend_de` viennent de l'ordre et des liens du plan source. Ce qu'il ne dit pas, tire-le de l'exploration : `fichiers_possedes`, `ressources`, `verification` (commandes réelles, vérifiées à l'étape 1), `definition_du_fini` (critères démontrables par le diff ou par une commande), `modele` et `raison_modele` (voir plus bas), `effort` selon la difficulté.
-- Modèle : un `haiku`, `sonnet` ou `opus` donné par le plan source est gardé, avec sa raison. Sinon (absent, `fable` ou autre), choisis-le selon les critères ci-dessous et dis-le dans le bilan.
+- Modèle : un `haiku`, `sonnet` ou `opus` donné par le plan source est gardé, avec sa raison. Sinon (absent, `fable` ou autre), choisis-le selon les critères ci-dessous et dis-le dans le bilan. Une tâche que le plan source mettait sur `fable` sera proposée cochée à la question sur fable (2d).
 - Le texte de la tâche source va dans « Détail de réalisation », ses exclusions dans « Hors périmètre ».
 - Les décisions déjà prises dans le plan source deviennent des entrées `décision · majeur · …` dans HANDOFF.md, sous un titre `## plan source`.
 - Les décisions restées ouvertes dans le plan source, et tout ce qui manque (choix produit, périmètre, accès, secret) : n'invente rien, cela se règle à l'étape 3.
@@ -59,7 +59,16 @@ Chaque tâche reçoit `modele` et `raison_modele`, une ligne obligatoire qui dit
 - `sonnet` par défaut pour implémenter ;
 - `opus` pour l'architecture, les tâches ambiguës et celles qui touchent plusieurs modules.
 
-Ne choisis jamais `fable`. La revue globale finale est sur `opus`. Le workflow lance le worker sur ce modèle, tel quel ; après un essai refusé, le replanificateur choisit le modèle de la correction, jamais en dessous de celui-ci.
+Ne choisis jamais `fable` de toi-même : seulement sur les tâches que l'utilisateur désigne (2d). La revue globale finale est sur `opus`. Le workflow lance le worker sur ce modèle, tel quel ; après un essai refusé, le replanificateur choisit le modèle de la correction, jamais en dessous de celui-ci.
+
+## 2d. Fable
+
+Une fois les modèles choisis, demande avec l'outil de question : « Utiliser fable pour ce plan ? », avec deux options, dans cet ordre :
+
+- « Non (recommandé) » : fable coûte plus cher, sans gain constaté sur opus à ce jour ; les tâches les plus dures restent sur opus ;
+- « Oui, sur les tâches que je choisis ».
+
+Sur « Non » : `"fable": false` dans `orchestre.config.json`, et aucune tâche sur `fable`. Sur « Oui » : `"fable": true`, puis propose les tâches que tu as mises sur `opus` (revue globale comprise), par questions à choix multiples de 4 tâches au plus, avec le titre et la raison de chacune. Celles que l'utilisateur coche passent sur `fable`, avec la raison « fable à la demande de l'utilisateur, au lieu d'opus : <raison d'opus> ». Les autres restent sur `opus`. Ne propose jamais `fable` dans `escalade`.
 
 ## 3. Faire trancher, puis inventorier ce qui doit être prêt
 
@@ -75,7 +84,7 @@ Rien de ce qui peut se savoir avant le run ne doit se découvrir pendant.
 
 ## 4. Écrire
 
-Écris `plans/<nom>/` : les tâches dans `taches/`, chacune avec `modele` et `raison_modele`, `SUIVI.md` (toutes les tâches à « à-faire »), `HANDOFF.md`, `PREREQUIS.md` (tableau vide si le plan n'attend rien), `DISCOVERY.md` amorcé avec l'étape 1, `orchestre.config.json` avec `branche_integration: "plan/<nom>"`, la branche de base dans `branche_base`, et la préparation de l'environnement (`preparation`, `preparation_partagee`, voir le format) tirée du dépôt : des commandes simples, à faire valider par l'utilisateur. Termine le plan par une tâche de revue globale sur opus, en lecture seule.
+Écris `plans/<nom>/` : les tâches dans `taches/`, chacune avec `modele` et `raison_modele`, `fable` dans `orchestre.config.json` (2d), `SUIVI.md` (toutes les tâches à « à-faire »), `HANDOFF.md`, `PREREQUIS.md` (tableau vide si le plan n'attend rien), `DISCOVERY.md` amorcé avec l'étape 1, `orchestre.config.json` avec `branche_integration: "plan/<nom>"`, la branche de base dans `branche_base`, et la préparation de l'environnement (`preparation`, `preparation_partagee`, voir le format) tirée du dépôt : des commandes simples, à faire valider par l'utilisateur. Termine le plan par une tâche de revue globale sur opus, en lecture seule.
 
 ## 5. Valider
 
@@ -85,4 +94,4 @@ Rien de ce qui peut se savoir avant le run ne doit se découvrir pendant.
 
 ## 6. Bilan
 
-Rends le tableau de SUIVI.md, puis la raison du modèle de chaque tâche (une ligne par tâche), puis la ligne d'estimation et le bloc « Prêt à lancer » de plan-lint. Liste ensuite les prérequis ouverts, c'est-à-dire ce qu'il reste à faire avant de lancer, avec la première phase que chacun bloque. Ajoute les relectures à prévoir avant la PR. Pour une conversion, ajoute la table de correspondance (tâche ou section du plan source → tâche orchestre) et ce qui a été découpé, fusionné ou ajouté (revue globale comprise). Suite : `/orchestre:installer` si le dépôt n'est pas encore préparé, `/orchestre:pret plans/<nom>` la veille du lancement, puis, dans une session neuve, `/orchestre:lancer plans/<nom>`, avec un premier run en mode « arrêt par phase ».
+Rends le tableau de SUIVI.md, puis la raison du modèle de chaque tâche (une ligne par tâche) et le réglage `fable`, puis la ligne d'estimation et le bloc « Prêt à lancer » de plan-lint. Liste ensuite les prérequis ouverts, c'est-à-dire ce qu'il reste à faire avant de lancer, avec la première phase que chacun bloque. Ajoute les relectures à prévoir avant la PR. Pour une conversion, ajoute la table de correspondance (tâche ou section du plan source → tâche orchestre) et ce qui a été découpé, fusionné ou ajouté (revue globale comprise). Suite : `/orchestre:installer` si le dépôt n'est pas encore préparé, `/orchestre:pret plans/<nom>` la veille du lancement, puis, dans une session neuve, `/orchestre:lancer plans/<nom>`, avec un premier run en mode « arrêt par phase ».

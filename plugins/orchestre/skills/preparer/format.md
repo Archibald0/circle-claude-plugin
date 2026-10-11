@@ -12,7 +12,7 @@ plans/<nom>/
 └── orchestre.config.json
 ```
 
-plan-lint (`node <plugin>/scripts/plan-lint.mjs plans/<nom>`) lit le frontmatter des tâches et la colonne Statut de SUIVI.md ; avec `--integration`, une tâche dont le commit « tâche <id> : » est sur la branche d'intégration, et pas sur la branche de base, compte comme fusionnée. Il refuse : tâche sans `id`, `phase`, `verification` ou `definition_du_fini` ; `modele` hors de `haiku`, `sonnet`, `opus` et `fable` ; identifiant en double ; dépendance inconnue, cyclique ou vers une phase ultérieure ; deux tâches d'une même phase, sans dépendance entre elles ni ressource commune, qui possèdent les mêmes fichiers ; un prérequis inconnu, en double, de type ou de statut inconnu, ou une décision marquée « fait » qu'aucune entrée « décision » de HANDOFF.md ne cite. Il dit aussi, phase par phase, quelles tâches attendent un prérequis ouvert. Il avertit, sans rien bloquer, d'une tâche restante sans `modele` ou sans `raison_modele`, et d'une commande de vérification composée ; il ne juge jamais le choix d'un modèle.
+plan-lint (`node <plugin>/scripts/plan-lint.mjs plans/<nom>`) lit le frontmatter des tâches et la colonne Statut de SUIVI.md ; avec `--integration`, une tâche dont le commit « tâche <id> : » est sur la branche d'intégration, et pas sur la branche de base, compte comme fusionnée. Il refuse : tâche sans `id`, `phase`, `verification` ou `definition_du_fini` ; `modele` hors de `haiku`, `sonnet`, `opus` et `fable` ; identifiant en double ; dépendance inconnue, cyclique ou vers une phase ultérieure ; deux tâches d'une même phase, sans dépendance entre elles ni ressource commune, qui possèdent les mêmes fichiers ; un prérequis inconnu, en double, de type ou de statut inconnu, ou une décision marquée « fait » qu'aucune entrée « décision » de HANDOFF.md ne cite. Il dit aussi, phase par phase, quelles tâches attendent un prérequis ouvert. Il avertit, sans rien bloquer, d'une tâche restante sans `modele` ou sans `raison_modele`, et d'une commande de vérification composée ; il ne juge jamais le choix d'un modèle. Une tâche restante sur `fable`, ou une `escalade` qui le contient, est refusée si `orchestre.config.json` dit `"fable": false`, et seulement signalée si le réglage manque.
 
 ## Règles de découpage
 
@@ -36,9 +36,9 @@ Chaque tâche porte `modele` et `raison_modele`, une ligne qui dit pourquoi ce m
 - `sonnet` par défaut pour implémenter ;
 - `opus` pour l'architecture, les tâches ambiguës et celles qui touchent plusieurs modules.
 
-`fable` reste lu dans un plan existant ; `/orchestre:preparer` ne le choisit jamais.
+`fable` coûte plus cher, sans gain constaté sur opus à ce jour. `/orchestre:preparer` ne le choisit jamais de lui-même : il demande à l'utilisateur s'il veut l'utiliser pour ce plan, note la réponse dans `orchestre.config.json` (`"fable": true` ou `false`), et ne met sur `fable` que les tâches que l'utilisateur désigne. Un plan existant sur `fable`, sans ce réglage, tourne encore : plan-lint le signale, et `/orchestre:pret` fait trancher.
 
-Pendant un run, le worker tourne sur le modèle de la tâche, tel quel. Après un essai refusé, le replanificateur choisit le modèle de la correction suivante, d'après le refus, sans jamais descendre sous celui de la tâche, qui sert de plancher ; sans réponse valide de sa part, l'échelle `escalade` s'applique. Ce choix ne vaut que pour le run : le plan n'est pas modifié, et le run suivant repart du modèle du plan. Une tâche sans `modele` (plan plus ancien) tourne comme avant la 0.11.0 : worker sur sonnet, corrections selon l'échelle, sans appel au replanificateur.
+Pendant un run, le worker tourne sur le modèle de la tâche, tel quel. Après un essai refusé, le replanificateur choisit le modèle de la correction suivante, d'après le refus, parmi haiku, sonnet et opus, sans jamais descendre sous celui de la tâche, qui sert de plancher (fable, pour une tâche que l'utilisateur y a mise) ; sans réponse valide de sa part, l'échelle `escalade` s'applique. Ce choix ne vaut que pour le run : le plan n'est pas modifié, et le run suivant repart du modèle du plan. Une tâche sans `modele` (plan plus ancien) tourne comme avant la 0.11.0 : worker sur sonnet, corrections selon l'échelle, sans appel au replanificateur.
 
 ## Gabarit de tâche
 
@@ -47,7 +47,7 @@ Pendant un run, le worker tourne sur le modèle de la tâche, tel quel. Après u
 id: T01
 titre: …
 phase: 1
-modele: sonnet          # haiku | sonnet | opus (fable : plans existants seulement)
+modele: sonnet          # haiku | sonnet | opus ; fable seulement sur une tâche désignée par l'utilisateur, avec "fable": true
 raison_modele: "…"      # une ligne : pourquoi ce modèle
 effort: high            # low | medium | high | xhigh | max
 depend_de: []
@@ -148,6 +148,7 @@ Les échecs de tests déjà présents avant le plan vont dans « Commandes véri
   "evaluateur": "systematique",
   "corrections_max": 2,
   "escalade": ["sonnet", "opus"],
+  "fable": false,
   "decisions_office_max": 3,
   "plafond_session_pilote": 0.65,
   "preparation": ["<installation des dépendances depuis le lockfile>", "<génération de code>"],
@@ -158,6 +159,7 @@ Les échecs de tests déjà présents avant le plan vont dans « Commandes véri
 - `mode_par_defaut` : `auto` (autonome), `devia` (arrêt sur déviation) ou `phase` (arrêt par phase).
 - `branche_base` : branche d'où part la branche d'intégration ; `main` par défaut, à préciser si le dépôt en utilise une autre.
 - `evaluateur` est indicatif : l'évaluation est toujours systématique.
+- `fable` : `true` si l'utilisateur permet fable pour ce plan, `false` sinon ; demandé par `/orchestre:preparer` (ou `/orchestre:pret` pour un plan plus ancien). Avec `false`, plan-lint refuse une tâche restante sur `fable` et une `escalade` qui le contient.
 - `plafond_session_pilote` : part du contexte de la session pilote au-delà de laquelle `/orchestre:lancer` propose de reprendre dans une session neuve.
 - `preparation` : commandes du projet qui remettent un dossier de travail à jour, sans toucher à un service commun (dépendances, code généré). Chaque worker les lance une fois sur sa branche, l'intégrateur après chaque fusion, avant le contrôle post-fusion. Sans elles, un worktree ou une fusion peut garder des dépendances ou du code généré périmés.
 - `preparation_partagee` : pour chaque ressource déclarée par les tâches (`ressources`), les commandes qui préparent ce service commun (migration de la base de test…). Elles ne tournent que pour une tâche qui déclare la ressource, donc sous son verrou.

@@ -35,7 +35,7 @@ cat > 'plans/demo/SUIVI.md' <<'FIN_SUIVI_MD'
 Statuts : à-faire · ajoutée · fusionnée · bloquée · échec · besoin-humain · annulée
 FIN_SUIVI_MD
 cat > 'plans/demo/orchestre.config.json' <<'FIN_ORCHESTRE_CONFIG_JSON'
-{ "parallelisme_max": 1, "mode_par_defaut": "phase", "branche_integration": "plan/demo", "evaluateur": "systematique", "corrections_max": 2, "escalade": ["sonnet", "opus"], "decisions_office_max": 3, "plafond_session_pilote": 0.65 }
+{ "parallelisme_max": 1, "mode_par_defaut": "phase", "branche_integration": "plan/demo", "evaluateur": "systematique", "corrections_max": 2, "escalade": ["sonnet", "opus"], "fable": false, "decisions_office_max": 3, "plafond_session_pilote": 0.65 }
 FIN_ORCHESTRE_CONFIG_JSON
 cat > 'plans/demo/taches/T01-bonjour.md' <<'FIN_T01_BONJOUR_MD'
 ---

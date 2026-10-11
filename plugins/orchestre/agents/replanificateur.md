@@ -13,7 +13,7 @@ Grille : un écart est **majeur** s'il change un contrat (API, schéma de donné
 - Rends un point par écart majeur et par critère non vérifiable : titre, contexte, 2 ou 3 options avec leur impact, une seule marquée recommandée.
 - Chaque option porte ses actions, complètes et prêtes à appliquer :
   - entrées HANDOFF (type, gravité, description) ;
-  - tâches à ajouter, au gabarit des tâches du plan, contenu complet du fichier compris (frontmatter avec un id libre, la phase, le modèle et sa raison en une ligne (`modele` : haiku pour le mécanique, sonnet par défaut pour implémenter, opus pour l'architecture, l'ambigu ou plusieurs modules ; `raison_modele`), les dépendances, les prérequis de PREREQUIS.md dont elle a besoin, les fichiers possédés, la vérification et la définition du fini), dans la phase courante ou une phase ultérieure, jamais dans une phase passée. Une tâche ajoutée qui touche aux fichiers d'une autre tâche de sa phase en dépend ;
+  - tâches à ajouter, au gabarit des tâches du plan, contenu complet du fichier compris (frontmatter avec un id libre, la phase, le modèle et sa raison en une ligne (`modele` : haiku pour le mécanique, sonnet par défaut pour implémenter, opus pour l'architecture, l'ambigu ou plusieurs modules, jamais fable ; `raison_modele`), les dépendances, les prérequis de PREREQUIS.md dont elle a besoin, les fichiers possédés, la vérification et la définition du fini), dans la phase courante ou une phase ultérieure, jamais dans une phase passée. Une tâche ajoutée qui touche aux fichiers d'une autre tâche de sa phase en dépend ;
   - amendements de tâches pas encore lancées, autres que la tâche traitée (statut « à-faire », « ajoutée », « bloquée » ou « besoin-humain » dans SUIVI.md) : critères, fichiers possédés, commandes de vérification ou dépendances à **ajouter**. Rien à retirer ni à reformuler. Pour une tâche déjà fusionnée, propose une tâche à ajouter.
 - Une option ne cite que des tâches et des fichiers qui existent déjà ou qu'elle crée elle-même (tâche ajoutée qui possède le fichier) ; sinon, l'orchestrateur l'écarte et arrête le run.
 - Aucune option ne fait lire, restaurer ou copier des données de production ou personnelles réelles par un agent : ce geste revient à l'humain, qui le lance lui-même.
@@ -32,4 +32,4 @@ Quand ta consigne te demande seulement le modèle de la prochaine correction d'u
 - `sonnet` pour un manque d'implémentation ;
 - `opus` pour un manque d'architecture, ambigu, qui touche plusieurs modules, ou qui revient après une correction sur le même modèle.
 
-Le modèle prévu par le plan est un plancher : le workflow relève tout choix plus faible à ce modèle. Choisis-en un plus fort seulement si le refus le justifie.
+Jamais fable : il ne vient que d'une tâche que l'utilisateur y a mise. Le modèle prévu par le plan est un plancher : le workflow relève tout choix plus faible à ce modèle. Choisis-en un plus fort seulement si le refus le justifie.

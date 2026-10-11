@@ -87,7 +87,8 @@ const EVAL_S = S({ verdict: { type: 'string', enum: ['ok', 'ko'] }, manques: str
 const INTEG_S = S({ ok: bool, fusionne: bool, controle_ok: bool, conflit: bool, commit: str, detail: str, ...SUIVI_P }, ['ok', 'fusionne'])
 const SCRIBE_S = S({ ok: bool, commit: str, refuses: { type: 'array', items: S({ id: str, raison: str }, ['id', 'raison']) }, ecartes: { type: 'array', items: S({ id: str, raison: str }, ['id', 'raison']) }, ...SUIVI_P, ouverture_ok: bool }, ['ok'])
 const GREFFIER_S = S({ suivi_ok: bool, suivi_erreur: str, commit: str, detail: str, worktrees: str }, ['suivi_ok'])
-// Choix du modèle d'une correction (0.11.0) : haiku, sonnet ou opus ; fable ne vient que du plan, comme plancher
+// Choix du modèle d'une correction (0.11.0) : haiku, sonnet ou opus ; fable ne vient que d'une tâche que l'utilisateur y a mise
+// (orchestre.config.json : fable: true, vérifié par plan-lint), comme plancher
 const MODELES_CHOIX = ['haiku', 'sonnet', 'opus']
 const CHOIX_S = S({ modele: { type: 'string', enum: MODELES_CHOIX }, raison: str }, ['modele', 'raison'])
 // Avec le suivi, le résultat de la commande est requis quand il décide de la suite : ouverture (premier agent), clôture et arbitrage (scribe)

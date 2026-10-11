@@ -276,6 +276,44 @@ try {
     assert.ok(!r.json.avertissements.some(x => /^T(09|10|11) : /.test(x)), 'un modèle refusé n’est pas, en plus, un modèle sans raison')
   })
 
+  cas('fable (0.11.0) : permis par orchestre.config.json (fable: true) ; refusé par fable: false ; sans réglage, un avertissement', () => {
+    const d = plan('fable', {
+      T01: tache('T01', { modele: 'fable', raison: "à la demande de l'utilisateur" }), T02: tache('T02', { modele: 'fable', raison: 'x' }),
+      T03: tache('T03', { modele: 'opus', raison: 'architecture' }), T04: tache('T04', { phase: 2, depend_de: '[T03]', modele: 'fable', raison: 'x' }),
+    }, [['T01', 'à-faire'], ['T02', 'fusionnée'], ['T03', 'à-faire'], ['T04', 'à-faire']])
+    const config = c => (c == null ? rmSync(join(racine, d, 'orchestre.config.json'), { force: true }) : writeFileSync(join(racine, d, 'orchestre.config.json'), JSON.stringify(c)))
+    const fab = x => x.filter(e => /fable/.test(e))
+    // Sans réglage : avertissements pour les tâches restantes (T02 fusionnée n'en a pas), rien ne bloque
+    config(null)
+    let r = lint(d, '--json')
+    assert.equal(r.code, 0, r.out); assert.equal(r.json.fable, null)
+    assert.deepEqual(fab(r.json.avertissements).map(x => x.slice(0, 3)), ['T01', 'T04'])
+    assert.match(fab(r.json.avertissements)[0], /^T01 : modèle fable, sans réglage « fable » dans orchestre\.config\.json : à trancher avec l'utilisateur \(\/orchestre:pret\)$/)
+    assert.deepEqual(fab(JSON.parse(spawnSync('node', [LINT, d, '--json', '--phase', '1'], { cwd: racine, encoding: 'utf8' }).stdout).avertissements).map(x => x.slice(0, 3)), ['T01'], '--phase : la phase seulement')
+    // fable: true : rien
+    config({ fable: true, escalade: ['sonnet', 'fable'] })
+    r = lint(d, '--json')
+    assert.equal(r.code, 0); assert.equal(r.json.fable, true); assert.deepEqual([fab(r.json.erreurs), fab(r.json.avertissements)], [[], []])
+    // fable: false : erreur pour chaque tâche restante sur fable, toutes phases, et pour l'escalade
+    config({ fable: false, escalade: ['sonnet', 'fable'] })
+    r = lint(d, '--json')
+    assert.equal(r.code, 1); assert.equal(r.json.fable, false)
+    assert.deepEqual(fab(r.json.erreurs), ['T01 : modèle fable, refusé par orchestre.config.json (fable: false) : passer la tâche sur opus, ou fable: true si l\'utilisateur le veut', 'T04 : modèle fable, refusé par orchestre.config.json (fable: false) : passer la tâche sur opus, ou fable: true si l\'utilisateur le veut', 'orchestre.config.json : « escalade » contient fable, refusé par fable: false'])
+    assert.equal(fab(JSON.parse(spawnSync('node', [LINT, d, '--json', '--phase', '1'], { cwd: racine, encoding: 'utf8' }).stdout).erreurs).length, 3, 'avec --phase aussi : le réglage vaut pour tout le plan')
+    assert.ok(lint(d).out.includes('✗ T01 : modèle fable, refusé'), 'en texte')
+    // Sans tâche sur fable, fable: false ne dit rien ; une escalade sur fable sans réglage avertit
+    writeFileSync(join(racine, d, 'taches', 'T01-x.md'), tache('T01', { modele: 'opus', raison: 'x' })); writeFileSync(join(racine, d, 'taches', 'T04-x.md'), tache('T04', { phase: 2, depend_de: '[T03]', modele: 'opus', raison: 'x' }))
+    config({ fable: false })
+    r = lint(d, '--json')
+    assert.equal(r.code, 0); assert.deepEqual([fab(r.json.erreurs), fab(r.json.avertissements)], [[], []])
+    config({ escalade: ['fable'] })
+    assert.deepEqual(fab(lint(d, '--json').json.avertissements), ["orchestre.config.json : « escalade » contient fable, sans réglage « fable » : à trancher avec l'utilisateur (/orchestre:pret)"])
+    // Valeur qui n'est pas un booléen : erreur
+    config({ fable: 'non' })
+    r = lint(d, '--json')
+    assert.equal(r.code, 1); assert.deepEqual(fab(r.json.erreurs), ['orchestre.config.json : « fable » doit valoir true ou false']); assert.equal(r.json.fable, null)
+  })
+
   console.log(`plan-lint : TOUT EST VERT (${n} cas)`)
 } finally {
   rmSync(racine, { recursive: true, force: true })

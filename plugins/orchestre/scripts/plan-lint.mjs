@@ -9,6 +9,8 @@
 // Avertissements (n'empêchent rien) : commandes de vérification ou de préparation composées, qu'un agent isolé dans un worktree
 // se verrait refuser par la garde d'isolement de Claude Code ; ressource de préparation partagée qu'aucune tâche ne déclare ;
 // tâche restante sans modele ou sans raison_modele (0.11.0). Un modele hors de MODELES est une erreur ; le choix lui-même n'est jamais jugé.
+// Fable (0.11.0) : orchestre.config.json dit si l'utilisateur le permet (« fable » : true ou false, demandé par /orchestre:preparer).
+// Une tâche restante sur fable, ou une escalade qui le contient : erreur avec fable: false, avertissement sans le réglage.
 // orchestre.config.json (facultatif) : preparation, liste de commandes ; preparation_partagee, { ressource : [commandes] }.
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -45,7 +47,7 @@ function composee(c) {
 }
 const courte = c => (String(c).length > 100 ? String(c).slice(0, 99) + '…' : String(c))
 const fait = s => s === 'fusionnée' || s === 'annulée'
-// Modèles d'une tâche (0.11.0) : /orchestre:preparer choisit haiku, sonnet ou opus ; fable reste valide pour les plans existants
+// Modèles d'une tâche (0.11.0) : /orchestre:preparer choisit haiku, sonnet ou opus ; fable seulement sur les tâches que l'utilisateur désigne
 const MODELES = ['haiku', 'sonnet', 'opus', 'fable']
 // Champ texte du frontmatter : une valeur vide (« modele: ») se lit comme une liste vide, donc comme absente
 const texteFm = x => (typeof x === 'string' && x.trim() ? x.trim() : null)
@@ -249,9 +251,24 @@ if (config && config.preparation_partagee !== undefined) {
     for (const c of cs) { const r = composee(c); if (r.length) avertissements.push(`preparation_partagee (${res}) : « ${courte(c)} » (${r.join(', ')}) : ${refusable}`) }
   }
 }
+// Fable : permis seulement si l'utilisateur l'a dit (fable: true). Avec fable: false, une tâche restante sur fable ou une escalade
+// qui le contient bloque, dans tout le plan ; sans le réglage (plan d'avant), un avertissement fait trancher l'utilisateur
+const fable = config && config.fable !== undefined ? config.fable : null
+if (fable !== null && typeof fable !== 'boolean') erreurs.push('orchestre.config.json : « fable » doit valoir true ou false')
+else if (fable !== true) {
+  const surFable = [...T.values()].filter(t => !fait(st[t.id] || 'à-faire') && texteFm(t.modele) === 'fable')
+  const escFable = !!config && Array.isArray(config.escalade) && config.escalade.includes('fable')
+  if (fable === false) {
+    for (const t of surFable) erreurs.push(`${t.id} : modèle fable, refusé par orchestre.config.json (fable: false) : passer la tâche sur opus, ou fable: true si l'utilisateur le veut`)
+    if (escFable) erreurs.push('orchestre.config.json : « escalade » contient fable, refusé par fable: false')
+  } else {
+    for (const t of surFable.filter(t => phaseF == null || t.phase === phaseF)) avertissements.push(`${t.id} : modèle fable, sans réglage « fable » dans orchestre.config.json : à trancher avec l'utilisateur (/orchestre:pret)`)
+    if (escFable) avertissements.push("orchestre.config.json : « escalade » contient fable, sans réglage « fable » : à trancher avec l'utilisateur (/orchestre:pret)")
+  }
+}
 const pretVu = pret.filter(p => phaseF == null || p.phase === phaseF)
 // JSON sur une ligne : lu par des scripts et des agents, il reste ainsi sous les seuils d'affichage de l'outil Bash plus longtemps (0.8.1)
-if (asJson) console.log(JSON.stringify({ ok: erreurs.length === 0, erreurs, avertissements, taches, tous, phase_max, prerequis: prereqs, pret: pretVu }))
+if (asJson) console.log(JSON.stringify({ ok: erreurs.length === 0, erreurs, avertissements, taches, tous, phase_max, prerequis: prereqs, pret: pretVu, fable: typeof fable === 'boolean' ? fable : null }))
 else {
   if (erreurs.length) console.log(erreurs.map(e => '✗ ' + e).join('\n'))
   else {
