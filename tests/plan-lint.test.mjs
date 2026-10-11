@@ -1,5 +1,5 @@
-// Tests de plan-lint sur des plans jouets, dans un dépôt git temporaire.
-// Usage : node tests/plan-lint.test.mjs [chemin de plan-lint.mjs]
+// Tests of plan-lint on toy plans, in a temporary git repository.
+// Usage: node tests/plan-lint.test.mjs [path of plan-lint.mjs]
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -7,314 +7,347 @@ import { tmpdir } from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
 
 const LINT = resolve(process.argv[2] || 'plugins/orchestre/scripts/plan-lint.mjs')
-const racine = mkdtempSync(join(tmpdir(), 'plan-lint-'))
-const git = (...a) => execFileSync('git', a, { cwd: racine, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+const root = mkdtempSync(join(tmpdir(), 'plan-lint-'))
+const git = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 const lint = (...a) => {
-  const r = spawnSync('node', [LINT, ...a], { cwd: racine, encoding: 'utf8' })
+  const r = spawnSync('node', [LINT, ...a], { cwd: root, encoding: 'utf8' })
   return { code: r.status, out: r.stdout, err: r.stderr, json: a.includes('--json') && r.stdout ? JSON.parse(r.stdout) : null }
 }
-// modele et raison (0.11.0) : null pour omettre la ligne ; une chaîne vide écrit « modele: » sans valeur
-const tache = (id, { phase = 1, depend_de = '[]', fichiers = [`src/${id}/**`], ressources = '[]', verification = ['"npm test"'], fini = ['"le test passe"'], prerequis = null, modele = 'sonnet', raison = 'implémentation courante' } = {}) => `---
+// model and reason: null to omit the line; an empty string writes "model:" without a value
+const task = (id, { phase = 1, depends_on = '[]', files = [`src/${id}/**`], resources = '[]', verification = ['"npm test"'], done = ['"the test passes"'], prerequisites = null, model = 'sonnet', reason = 'ordinary implementation' } = {}) => `---
 id: ${id}
-titre: Tâche ${id}
+title: Task ${id}
 phase: ${phase}
-${modele != null ? `modele: ${modele}\n` : ''}${raison != null ? `raison_modele: ${raison}\n` : ''}effort: high
-depend_de: ${depend_de}
-fichiers_possedes:
-${fichiers.map(f => `  - ${f}`).join('\n')}
-ressources: ${ressources}${prerequis ? `\nprerequis: ${prerequis}` : ''}
-estimation_tokens: 1.0M
+${model != null ? `model: ${model}\n` : ''}${reason != null ? `model_reason: ${reason}\n` : ''}effort: high
+depends_on: ${depends_on}
+owned_files:
+${files.map(f => `  - ${f}`).join('\n')}
+resources: ${resources}${prerequisites ? `\nprerequisites: ${prerequisites}` : ''}
+token_estimate: 1.0M
 verification:
 ${verification.map(v => `  - ${v}`).join('\n')}
-definition_du_fini:
-${fini.map(v => `  - ${v}`).join('\n')}
+definition_of_done:
+${done.map(v => `  - ${v}`).join('\n')}
 ---
 
-## Prompt de lancement
-Tu réalises ${id}.
+## Launch prompt
+You carry out ${id}.
 `
-const SUIVI = ids => `| ID | Titre | Phase | Lot | Dépend de | Modèle | Statut | Essais | Branche | Tokens est. / réels |
-|----|-------|-------|-----|-----------|--------|--------|--------|---------|---------------------|
-${ids.map(([id, st]) => `| ${id} | Tâche ${id} | 1 | 1A | — | sonnet | ${st} | 0 | — | 1,0 M / — |`).join('\n')}
+const PROGRESS = ids => `| ID | Title | Phase | Batch | Depends on | Model | Status | Attempts | Branch | Tokens est. / actual |
+|----|-------|-------|-------|------------|-------|--------|----------|--------|----------------------|
+${ids.map(([id, st]) => `| ${id} | Task ${id} | 1 | 1A | — | sonnet | ${st} | 0 | — | 1.0M / — |`).join('\n')}
 `
-function plan(nom, taches, suivi) {
-  const d = join(racine, 'plans', nom)
-  mkdirSync(join(d, 'taches'), { recursive: true })
-  for (const [id, txt] of Object.entries(taches)) writeFileSync(join(d, 'taches', `${id}-x.md`), txt)
-  writeFileSync(join(d, 'SUIVI.md'), SUIVI(suivi || Object.keys(taches).map(id => [id, 'à-faire'])))
-  return `plans/${nom}`
+function plan(name, tasks, progress) {
+  const d = join(root, 'plans', name)
+  mkdirSync(join(d, 'tasks'), { recursive: true })
+  for (const [id, txt] of Object.entries(tasks)) writeFileSync(join(d, 'tasks', `${id}-x.md`), txt)
+  writeFileSync(join(d, 'PROGRESS.md'), PROGRESS(progress || Object.keys(tasks).map(id => [id, 'todo'])))
+  return `plans/${name}`
 }
 let n = 0
-const cas = (nom, fn) => { fn(); n++; console.log('ok ·', nom) }
+const test = (name, fn) => { fn(); n++; console.log('ok ·', name) }
 
 try {
   git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't'); git('config', 'commit.gpgsign', 'false')
-  const p = plan('ok', { T01: tache('T01'), T02: tache('T02', { depend_de: '[T01]' }), T03: tache('T03', { phase: 2, depend_de: '[T02]' }), T02B: tache('T02B', { ressources: '[base]', fichiers: ['src/b/**'] }) })
+  const p = plan('ok', { T01: task('T01'), T02: task('T02', { depends_on: '[T01]' }), T03: task('T03', { phase: 2, depends_on: '[T02]' }), T02B: task('T02B', { resources: '[db]', files: ['src/b/**'] }) })
   git('add', '.'); git('commit', '-qm', 'plan'); git('switch', '-qc', 'plan/ok')
 
-  cas('plan valide : JSON complet (taches, tous, phase_max), estimation lisible', () => {
+  test('valid plan: full JSON (tasks, all, max_phase, language), readable estimate', () => {
     const r = lint(p, '--json')
     assert.equal(r.code, 0, r.out + r.err); assert.equal(r.json.ok, true)
-    assert.equal(r.json.phase_max, 2); assert.equal(r.json.tous.length, 4); assert.equal(r.json.taches.length, 4)
-    const t02b = r.json.taches.find(t => t.id === 'T02B')
-    assert.deepEqual(t02b.ressources, ['base']); assert.equal(t02b.statut, 'à-faire'); assert.deepEqual(t02b.verification, ['npm test'])
-    const h = lint(p); assert.equal(h.code, 0); assert.match(h.out, /plan valide : 4 tâches/)
+    assert.deepEqual(Object.keys(r.json), ['ok', 'errors', 'warnings', 'tasks', 'all', 'max_phase', 'prerequisites', 'ready', 'fable', 'language'])
+    assert.equal(r.json.max_phase, 2); assert.equal(r.json.all.length, 4); assert.equal(r.json.tasks.length, 4); assert.equal(r.json.language, 'en')
+    const t02b = r.json.tasks.find(t => t.id === 'T02B')
+    assert.deepEqual(Object.keys(t02b), ['id', 'title', 'file', 'phase', 'model', 'model_reason', 'effort', 'depends_on', 'resources', 'status', 'verification', 'token_estimate', 'open_prerequisites'])
+    assert.deepEqual(t02b.resources, ['db']); assert.equal(t02b.status, 'todo'); assert.deepEqual(t02b.verification, ['npm test']); assert.equal(t02b.token_estimate, 1)
+    const h = lint(p); assert.equal(h.code, 0); assert.match(h.out, /^✓ valid plan: 4 tasks\. Remaining, in estimated tokens: phase 1 3\.0M · phase 2 1\.0M · total 4\.0M$/m)
   })
-  cas('--phase : seules les tâches de la phase, et la phase 2 refusée tant que la phase 1 n’est pas faite', () => {
-    const r = lint(p, '--json', '--phase', '1'); assert.equal(r.json.taches.length, 3); assert.equal(r.json.tous.length, 4)
+  test('--phase: only the tasks of the phase, and phase 2 refused while phase 1 is not done', () => {
+    const r = lint(p, '--json', '--phase', '1'); assert.equal(r.json.tasks.length, 3); assert.equal(r.json.all.length, 4)
     const r2 = lint(p, '--json', '--phase', '2'); assert.equal(r2.code, 1)
-    assert.ok(r2.json.erreurs.some(e => e.includes('T01 (phase 1) n\'est ni fusionnée ni annulée')))
+    assert.ok(r2.json.errors.includes('T01 (phase 1) is neither merged nor cancelled: phase 2 cannot start'), r2.json.errors.join('\n'))
   })
-  cas('--integration : le commit « tâche <id> : » sur la branche fait foi, « annulée » compte comme faite', () => {
-    git('commit', '-q', '--allow-empty', '-m', 'tâche T01 : x'); git('commit', '-q', '--allow-empty', '-m', 'tâche T02 : x')
-    writeFileSync(join(racine, p, 'SUIVI.md'), SUIVI([['T01', 'à-faire'], ['T02', 'à-faire'], ['T02B', 'annulée'], ['T03', 'à-faire']]))
+  test('--integration: the commit "task <id>: " on the branch is the source of truth, "tâche <id> : " of 0.11 too; "cancelled" counts as done', () => {
+    git('commit', '-q', '--allow-empty', '-m', 'task T01: x'); git('commit', '-q', '--allow-empty', '-m', 'tâche T02 : x')
+    writeFileSync(join(root, p, 'PROGRESS.md'), PROGRESS([['T01', 'todo'], ['T02', 'todo'], ['T02B', 'cancelled'], ['T03', 'todo']]))
     const r = lint(p, '--json', '--phase', '2', '--integration', 'plan/ok')
-    assert.equal(r.code, 0, JSON.stringify(r.json)); assert.equal(r.json.taches[0].id, 'T03')
-    assert.equal(r.json.tous.find(t => t.id === 'T01').statut, 'fusionnée'); assert.equal(r.json.tous.find(t => t.id === 'T02B').statut, 'annulée')
+    assert.equal(r.code, 0, JSON.stringify(r.json)); assert.equal(r.json.tasks[0].id, 'T03')
+    assert.deepEqual(r.json.all.map(t => [t.id, t.status]), [['T01', 'merged'], ['T02', 'merged'], ['T02B', 'cancelled'], ['T03', 'todo']])
   })
-  cas('--integration : branche inconnue signalée, branche qui ressemble à une option refusée sans rien écrire', () => {
-    const r = lint(p, '--json', '--integration', 'plan/absente'); assert.equal(r.code, 1)
-    assert.ok(r.json.erreurs.includes("branche d'intégration introuvable : plan/absente"))
-    const x = join(racine, 'ecrit.txt'), r2 = lint(p, '--integration', `--output=${x}`)
-    assert.equal(r2.code, 2); assert.ok(!existsSync(x), 'git ne doit rien écrire')
+  test('--integration: unknown branch reported, branch that looks like an option refused without writing anything', () => {
+    const r = lint(p, '--json', '--integration', 'plan/missing'); assert.equal(r.code, 1)
+    assert.ok(r.json.errors.includes('integration branch not found: plan/missing'))
+    const x = join(root, 'written.txt'), r2 = lint(p, '--integration', `--output=${x}`)
+    assert.equal(r2.code, 2); assert.ok(!existsSync(x), 'git must not write anything'); assert.match(r2.err, /^invalid integration branch: --output=/)
   })
-  cas('--integration : les fusions d’un plan précédent, déjà dans main, ne comptent pas', () => {
-    git('switch', '-q', 'main'); git('commit', '-q', '--allow-empty', '-m', 'tâche T03 : plan précédent, déjà dans main'); git('switch', '-qc', 'plan/nouveau')
-    const r = lint(p, '--json', '--integration', 'plan/nouveau')
-    assert.equal(r.code, 0, JSON.stringify(r.json)); assert.equal(r.json.tous.find(t => t.id === 'T03').statut, 'à-faire')
-    const r2 = lint(p, '--json', '--integration', 'plan/nouveau', '--base', 'main'); assert.equal(r2.json.tous.find(t => t.id === 'T03').statut, 'à-faire')
-    const r3 = lint(p, '--json', '--integration', 'plan/nouveau', '--base', 'develop'); assert.equal(r3.code, 1)
-    assert.ok(r3.json.erreurs.includes('branche de base introuvable : develop'))
+  test('--integration: merges of an earlier plan, already in main, do not count', () => {
+    git('switch', '-q', 'main'); git('commit', '-q', '--allow-empty', '-m', 'task T03: earlier plan, already in main'); git('switch', '-qc', 'plan/new')
+    const r = lint(p, '--json', '--integration', 'plan/new')
+    assert.equal(r.code, 0, JSON.stringify(r.json)); assert.equal(r.json.all.find(t => t.id === 'T03').status, 'todo')
+    const r2 = lint(p, '--json', '--integration', 'plan/new', '--base', 'main'); assert.equal(r2.json.all.find(t => t.id === 'T03').status, 'todo')
+    const r3 = lint(p, '--json', '--integration', 'plan/new', '--base', 'develop'); assert.equal(r3.code, 1)
+    assert.ok(r3.json.errors.includes('base branch not found: develop'))
     git('switch', '-q', 'plan/ok')
   })
-  cas('liste courte : une virgule entre guillemets ne coupe pas l’élément', () => {
-    const txt = tache('C01').replace('verification:\n  - "npm test"', `verification: ["pnpm test --reporter=dot,summary", 'echo ''a, b''', npm run lint]`).replace('definition_du_fini:\n  - "le test passe"', 'definition_du_fini: [un, "deux, trois"]')
-    const q = plan('court', { C01: txt })
+  test('inline list: a comma inside quotes does not split the item', () => {
+    const txt = task('C01').replace('verification:\n  - "npm test"', `verification: ["pnpm test --reporter=dot,summary", 'echo ''a, b''', npm run lint]`).replace('definition_of_done:\n  - "the test passes"', 'definition_of_done: [one, "two, three"]')
+    const q = plan('short', { C01: txt })
     const r = lint(q, '--json'); assert.equal(r.code, 0, JSON.stringify(r.json))
-    assert.deepEqual(r.json.taches[0].verification, ['pnpm test --reporter=dot,summary', "echo 'a, b'", 'npm run lint'])
-    assert.equal(lint(q).out.trim().startsWith('✓ plan valide : 1 tâche.'), true)
+    assert.deepEqual(r.json.tasks[0].verification, ['pnpm test --reporter=dot,summary', "echo 'a, b'", 'npm run lint'])
+    assert.equal(lint(q).out.trim().startsWith('✓ valid plan: 1 task.'), true)
   })
-  cas('prérequis : tâches en attente (directes et par dépendance), phase suivante en attente, JSON et sortie texte', () => {
+  test('prerequisites: waiting tasks (direct and through a dependency), next phase waiting, JSON and text output', () => {
     const q = plan('pre', {
-      P01: tache('P01', { prerequis: '[H1]' }),
-      P02: tache('P02', { prerequis: '[D5, E1]' }),
-      P03: tache('P03', { depend_de: '[P02]' }),
-      P04: tache('P04', { phase: 2, prerequis: '[H2]' }),
+      P01: task('P01', { prerequisites: '[H1]' }),
+      P02: task('P02', { prerequisites: '[D5, E1]' }),
+      P03: task('P03', { depends_on: '[P02]' }),
+      P04: task('P04', { phase: 2, prerequisites: '[H2]' }),
     })
-    writeFileSync(join(racine, q, 'PREREQUIS.md'), `# PREREQUIS — pre
+    writeFileSync(join(root, q, 'PREREQUISITES.md'), `# PREREQUISITES — pre
 
-| ID | Type | Prérequis | Statut | Preuve |
-|----|------|-----------|--------|--------|
-| D5 | décision | Choisir le fournisseur de modèles | ouvert | — |
-| H1 | geste | Clé d'API dans \`.env\` | fait | confirmé par Fabien |
-| E1 | environnement | Base de test \\| port 5433 | abandonné | plus utile |
-| H2 | Geste | Compte de service | Ouvert | — |
+| ID | Type | Prerequisite | Status | Evidence |
+|----|------|--------------|--------|----------|
+| D5 | decision | Choose the model provider | open | — |
+| H1 | manual | API key in \`.env\` | done | confirmed by Fabien |
+| E1 | environment | Test database \\| port 5433 | dropped | no longer needed |
+| H2 | Manual | Service account | Open | — |
 `)
-    const r = lint(q, '--json'); assert.equal(r.code, 0, JSON.stringify(r.json && r.json.erreurs))
-    const t = id => r.json.taches.find(x => x.id === id)
-    assert.deepEqual(t('P01').prerequis_ouverts, []); assert.deepEqual(t('P02').prerequis_ouverts, ['D5']); assert.deepEqual(t('P04').prerequis_ouverts, ['H2'])
-    const e1 = r.json.prerequis.find(x => x.id === 'E1'); assert.equal(e1.texte, 'Base de test | port 5433'); assert.equal(e1.statut, 'abandonné')
-    assert.deepEqual(r.json.prerequis.find(x => x.id === 'D5').bloque, ['P02']); assert.equal(r.json.prerequis.find(x => x.id === 'H2').type, 'geste')
-    assert.deepEqual(r.json.pret[0], { phase: 1, apres_phase: null, taches: 3, en_attente: [{ id: 'P02', attend: ['D5'] }, { id: 'P03', attend: ['P02'] }] })
-    assert.equal(r.json.pret[1].apres_phase, 1); assert.deepEqual(r.json.pret[1].en_attente, [{ id: 'P04', attend: ['H2'] }])
+    const r = lint(q, '--json'); assert.equal(r.code, 0, JSON.stringify(r.json && r.json.errors))
+    const t = id => r.json.tasks.find(x => x.id === id)
+    assert.deepEqual(t('P01').open_prerequisites, []); assert.deepEqual(t('P02').open_prerequisites, ['D5']); assert.deepEqual(t('P04').open_prerequisites, ['H2'])
+    const e1 = r.json.prerequisites.find(x => x.id === 'E1')
+    assert.deepEqual(e1, { id: 'E1', type: 'environment', text: 'Test database | port 5433', status: 'dropped', evidence: 'no longer needed', blocks: ['P02'] })
+    assert.deepEqual(r.json.prerequisites.find(x => x.id === 'D5').blocks, ['P02']); assert.equal(r.json.prerequisites.find(x => x.id === 'H2').type, 'manual')
+    assert.deepEqual(r.json.ready[0], { phase: 1, after_phase: null, tasks: 3, waiting: [{ id: 'P02', waiting_on: ['D5'] }, { id: 'P03', waiting_on: ['P02'] }] })
+    assert.equal(r.json.ready[1].after_phase, 1); assert.deepEqual(r.json.ready[1].waiting, [{ id: 'P04', waiting_on: ['H2'] }])
     const h = lint(q).out
-    assert.ok(h.includes('Prérequis ouverts : D5 (décision) → P02 · H2 (geste) → P04'), h)
-    assert.ok(h.includes('- phase 1 : P02 attend D5 ; P03 attend P02'), h)
-    assert.ok(h.includes('- phase 2 : attend la fin de la phase 1 ; aucune tâche ne peut partir ; P04 attend H2'), h)
-    const r1 = lint(q, '--json', '--phase', '1'); assert.equal(r1.json.pret.length, 1); assert.equal(r1.json.taches.length, 3)
+    assert.ok(h.includes('Open prerequisites: D5 (decision) → P02 · H2 (manual) → P04'), h)
+    assert.ok(h.includes('- phase 1: P02 waits for D5; P03 waits for P02'), h)
+    assert.ok(h.includes('- phase 2: waits for the end of phase 1; no task can start; P04 waits for H2'), h)
+    const r1 = lint(q, '--json', '--phase', '1'); assert.equal(r1.json.ready.length, 1); assert.equal(r1.json.tasks.length, 3)
   })
-  cas('prérequis : identifiant inconnu, en double ou pris par une tâche, type et statut inconnus, décision faite absente de HANDOFF', () => {
-    const q = plan('prek', { K01: tache('K01', { prerequis: '[D9, K02]' }), K02: tache('K02') })
-    writeFileSync(join(racine, q, 'PREREQUIS.md'), `| ID | Type | Prérequis | Statut | Preuve |
-|----|------|-----------|--------|--------|
-| D1 | décision | a | fait | HANDOFF |
-| D1 | décision | b | ouvert | — |
-| K02 | geste | c | ouvert | — |
-| X1 | idée | d | ouvert | — |
-| X2 | geste | e | peut-être | — |
-| D2 | décision | f | fait | HANDOFF |
-| D3 | décision | g | fait | HANDOFF |
+  test('prerequisites: unknown id, duplicate or taken by a task, unknown type and status, done decision missing from HANDOFF', () => {
+    const q = plan('prek', { K01: task('K01', { prerequisites: '[D9, K02]' }), K02: task('K02') })
+    writeFileSync(join(root, q, 'PREREQUISITES.md'), `| ID | Type | Prerequisite | Status | Evidence |
+|----|------|--------------|--------|----------|
+| D1 | decision | a | done | HANDOFF |
+| D1 | decision | b | open | — |
+| K02 | manual | c | open | — |
+| X1 | idea | d | open | — |
+| X2 | manual | e | maybe | — |
+| D2 | decision | f | done | HANDOFF |
+| D3 | decision | g | done | HANDOFF |
+| D4 | décision | h | ouvert | — |
 `)
-    writeFileSync(join(racine, q, 'HANDOFF.md'), '# HANDOFF — prek\nEntrées : `décision`…\n## plan source\ndécision · majeur · D2 : option A retenue (tranchée par Fabien)\nbesoin-humain · majeur · D3 : décision à prendre par le PO\n')
+    writeFileSync(join(root, q, 'HANDOFF.md'), '# HANDOFF — prek\nEntries: `decision`…\n## source plan\ndecision · major · D2: option A chosen (settled by Fabien)\nneeds-human · major · D3: decision for the PO\n')
     const r = lint(q, '--json'); assert.equal(r.code, 1)
-    const e = r.json.erreurs.join('\n')
-    for (const x of ['K01 : prérequis inconnu D9', 'prérequis D1 : identifiant en double', 'prérequis K02 : identifiant déjà pris par une tâche', 'prérequis X1 : type inconnu « idée »', 'prérequis X2 : statut inconnu « peut-être »', 'prérequis D1 : décision marquée « fait » sans entrée « décision » qui la cite dans HANDOFF.md', 'prérequis D3 : décision marquée « fait » sans entrée « décision » qui la cite dans HANDOFF.md'])
-      assert.ok(e.includes(x), 'attendu : ' + x + '\n' + e)
-    assert.ok(!e.includes('prérequis D2'), 'D2 est écrite dans HANDOFF.md')
+    const e = r.json.errors.join('\n')
+    for (const x of ['K01: unknown prerequisite D9', 'prerequisite D1: duplicate id', 'prerequisite K02: id already taken by a task', 'prerequisite X1: unknown type "idea"', 'prerequisite X2: unknown status "maybe"', 'prerequisite D1: decision marked "done" without a "decision" entry citing it in HANDOFF.md', 'prerequisite D3: decision marked "done" without a "decision" entry citing it in HANDOFF.md', 'prerequisite D4: unknown type "décision"', 'prerequisite D4: unknown status "ouvert"'])
+      assert.ok(e.includes(x), 'expected: ' + x + '\n' + e)
+    assert.ok(!e.includes('prerequisite D2'), 'D2 is written in HANDOFF.md')
   })
-  cas('prérequis : sans PREREQUIS.md, une tâche qui en cite un est refusée ; sinon, simple rappel', () => {
-    const q = plan('sans', { S01: tache('S01', { prerequis: '[D1]' }) })
-    const r = lint(q, '--json'); assert.equal(r.code, 1); assert.ok(r.json.erreurs.includes('S01 : prérequis inconnu D1 (pas de PREREQUIS.md)'))
-    const q2 = plan('sans2', { S02: tache('S02') })
-    const h = lint(q2); assert.equal(h.code, 0); assert.match(h.out, /pas de PREREQUIS\.md/); assert.ok(!h.out.includes('Prêt à lancer'))
+  test('prerequisites: without PREREQUISITES.md, a task that cites one is refused; otherwise, a simple reminder', () => {
+    const q = plan('without', { S01: task('S01', { prerequisites: '[D1]' }) })
+    const r = lint(q, '--json'); assert.equal(r.code, 1); assert.ok(r.json.errors.includes('S01: unknown prerequisite D1 (no PREREQUISITES.md)'))
+    const q2 = plan('without2', { S02: task('S02') })
+    const h = lint(q2); assert.equal(h.code, 0); assert.match(h.out, /no PREREQUISITES\.md/); assert.ok(!h.out.includes('Ready to run'))
   })
-  cas('prérequis : tableau non reconnu, ligne ignorée, dernière cellule sans « | », décision ouverte orpheline, geste orphelin, tâche besoin-humain', () => {
-    const q = plan('orph', { O01: tache('O01', { prerequis: '[E2]' }), O02: tache('O02') }, [['O01', 'à-faire'], ['O02', 'besoin-humain']])
-    writeFileSync(join(racine, q, 'PREREQUIS.md'), '| Identifiant | Quoi | État |\n|---|---|---|\n| D1 | décision | ouvert |\n')
+  test('prerequisites: table not recognized, row ignored, last cell without "|", orphan open decision, orphan manual, needs-human task', () => {
+    const q = plan('orph', { O01: task('O01', { prerequisites: '[E2]' }), O02: task('O02') }, [['O01', 'todo'], ['O02', 'needs-human']])
+    writeFileSync(join(root, q, 'PREREQUISITES.md'), '| Identifier | What | State |\n|---|---|---|\n| D1 | decision | open |\n')
     let r = lint(q, '--json'); assert.equal(r.code, 1)
-    assert.ok(r.json.erreurs.includes('PREREQUIS.md : aucun tableau reconnu (en-têtes ID, Type, Prérequis, Statut, Preuve)'), JSON.stringify(r.json.erreurs))
-    writeFileSync(join(racine, q, 'PREREQUIS.md'), '| ID | Type | Prérequis | Statut | Preuve |\n|:--|---|---|---|---|\n| d6 | décision | x | ouvert | — |\n| D7 | décision | y | ouvert | — |\n| H3 | geste | z | ouvert | — |\n| E2 | environnement | base de test | fait | `docker ps` sans barre finale\n')
-    r = lint(q, '--json'); const e = r.json.erreurs.join('\n')
-    assert.ok(e.includes('PREREQUIS.md : ligne ignorée, identifiant invalide « d6 »'), e)
-    assert.ok(e.includes("prérequis D7 : décision ouverte qu'aucune tâche restante ne cite"), e)
-    assert.ok(!e.includes('H3'), 'un geste orphelin est un avertissement, pas une erreur')
-    assert.equal(r.json.prerequis.find(x => x.id === 'E2').preuve, '`docker ps` sans barre finale')
-    assert.deepEqual(r.json.pret[0].en_attente, [{ id: 'O02', attend: ['besoin-humain'] }])
-    writeFileSync(join(racine, q, 'PREREQUIS.md'), '| ID | Type | Prérequis | Statut | Preuve |\n|---|---|---|---|---|\n| H3 | geste | z | ouvert | — |\n| E2 | environnement | base de test | fait | ok |\n')
+    assert.ok(r.json.errors.includes('PREREQUISITES.md: no table recognized (headers ID, Type, Prerequisite, Status, Evidence)'), JSON.stringify(r.json.errors))
+    writeFileSync(join(root, q, 'PREREQUISITES.md'), '| ID | Type | Prerequisite | Status | Evidence |\n|:--|---|---|---|---|\n| d6 | decision | x | open | — |\n| D7 | decision | y | open | — |\n| H3 | manual | z | open | — |\n| E2 | environment | test database | done | `docker ps` without a closing bar\n')
+    r = lint(q, '--json'); const e = r.json.errors.join('\n')
+    assert.ok(e.includes('PREREQUISITES.md: row ignored, invalid id "d6"'), e)
+    assert.ok(e.includes('prerequisite D7: open decision that no remaining task cites'), e)
+    assert.ok(!e.includes('H3'), 'an orphan manual prerequisite is a warning, not an error')
+    assert.equal(r.json.prerequisites.find(x => x.id === 'E2').evidence, '`docker ps` without a closing bar')
+    assert.deepEqual(r.json.ready[0].waiting, [{ id: 'O02', waiting_on: ['needs-human'] }])
+    writeFileSync(join(root, q, 'PREREQUISITES.md'), '| ID | Type | Prerequisite | Status | Evidence |\n|---|---|---|---|---|\n| H3 | manual | z | open | — |\n| E2 | environment | test database | done | ok |\n')
     const h = lint(q); assert.equal(h.code, 0, h.out)
-    assert.ok(h.out.includes('⚠ prérequis H3 (geste) ouvert, mais aucune tâche restante ne le cite'), h.out)
-    assert.ok(h.out.includes('- phase 1 : O02 attend besoin-humain'), h.out)
+    assert.ok(h.out.includes('⚠ prerequisite H3 (manual) open, but no remaining task cites it'), h.out)
+    assert.ok(h.out.includes('- phase 1: O02 waits for needs-human'), h.out)
   })
-  cas('erreurs : vérification, fini, dépendance inconnue ou ultérieure, cycle, doublon, fichiers partagés en parallèle', () => {
+  test('errors: verification, done, unknown or later dependency, cycle, duplicate, shared files in parallel', () => {
     const q = plan('ko', {
-      A01: tache('A01', { verification: [], fini: [] }).replace('verification:\n\n', 'verification: []\n').replace('definition_du_fini:\n\n', 'definition_du_fini: []\n'),
-      A02: tache('A02', { depend_de: '[A09]' }),
-      A03: tache('A03', { depend_de: '[A04]' }), A04: tache('A04', { depend_de: '[A03]', phase: 1 }),
-      A05: tache('A05', { depend_de: '[A06]' }), A06: tache('A06', { phase: 2 }),
-      A07: tache('A07', { fichiers: ['src/commun/**'] }), A08: tache('A08', { fichiers: ['src/commun/x.ts'] }),
+      A01: task('A01', { verification: [], done: [] }).replace('verification:\n\n', 'verification: []\n').replace('definition_of_done:\n\n', 'definition_of_done: []\n'),
+      A02: task('A02', { depends_on: '[A09]' }),
+      A03: task('A03', { depends_on: '[A04]' }), A04: task('A04', { depends_on: '[A03]', phase: 1 }),
+      A05: task('A05', { depends_on: '[A06]' }), A06: task('A06', { phase: 2 }),
+      A07: task('A07', { files: ['src/common/**'] }), A08: task('A08', { files: ['src/common/x.ts'] }),
     })
-    writeFileSync(join(racine, q, 'taches', 'A07-double.md'), tache('A07', { fichiers: ['src/autre/**'] }))
+    writeFileSync(join(root, q, 'tasks', 'A07-double.md'), task('A07', { files: ['src/other/**'] }))
     const r = lint(q, '--json'); assert.equal(r.code, 1)
-    const e = r.json.erreurs.join('\n')
-    for (const x of ['A01 : aucune commande de vérification', 'A01 : définition du fini absente', 'A02 : dépendance inconnue A09', 'A03 : cycle de dépendances', 'A05 : dépend de A06, d\'une phase ultérieure', 'A07 : identifiant en double', 'A07 et A08 peuvent tourner ensemble et partagent des fichiers'])
-      assert.ok(e.includes(x), 'attendu : ' + x + '\n' + e)
+    const e = r.json.errors.join('\n')
+    for (const x of ['A01: no verification command', 'A01: no definition of done', 'A02: unknown dependency A09', 'A03: dependency cycle', 'A05: depends on A06, from a later phase', 'A07: duplicate id', 'A07 and A08 can run together and share files'])
+      assert.ok(e.includes(x), 'expected: ' + x + '\n' + e)
   })
-  cas('ressource partagée : pas d’erreur de fichiers, les tâches seront sérialisées', () => {
-    const q = plan('res', { R01: tache('R01', { fichiers: ['src/c/**'], ressources: '[base]' }), R02: tache('R02', { fichiers: ['src/c/y.ts'], ressources: '[base]' }) })
+  test('shared resource: no file error, the tasks will be serialized', () => {
+    const q = plan('res', { R01: task('R01', { files: ['src/c/**'], resources: '[db]' }), R02: task('R02', { files: ['src/c/y.ts'], resources: '[db]' }) })
     assert.equal(lint(q, '--json').code, 0)
   })
-  cas('dossier sans taches/ : arrêt clair', () => {
-    mkdirSync(join(racine, 'plans', 'vide'), { recursive: true })
-    const r = lint('plans/vide'); assert.equal(r.code, 2); assert.match(r.err, /dossier de tâches introuvable/)
+  test('folder without tasks/: clear stop; plan in the French format of 0.11: stop that names migrate.mjs', () => {
+    mkdirSync(join(root, 'plans', 'empty'), { recursive: true })
+    let r = lint('plans/empty'); assert.equal(r.code, 2); assert.match(r.err, /^task folder not found: plans\/empty\/tasks/)
+    mkdirSync(join(root, 'plans', 'fr', 'taches'), { recursive: true })
+    r = lint('plans/fr', '--json'); assert.equal(r.code, 2); assert.equal(r.out, '')
+    assert.match(r.err, /^plan in the French format of orchestre 0\.11 and earlier \(taches\/\): migrate it first with node ".*\/scripts\/migrate\.mjs" plans\/fr\n$/)
   })
-  cas('avertissements : vérifications composées des tâches restantes, préparation composée ou sans ressource déclarée ; rien n’est bloqué', () => {
-    const V = ["\"cd api && pnpm test\"", "\"git diff --quiet plan/x...HEAD -- src; echo $?\"", "\"PATH=/opt/n/bin:$PATH pnpm typecheck\"", "\"pnpm exec tsx -e 'import(1)'\"", "\"grep -E 'a|b;c' src/x.ts\"", "\"pnpm test -- --reporter=dot 2>&1\"", "\"git diff --quiet plan/x...HEAD -- src\""]
-    const d = plan('av', { T01: tache('T01', { verification: V, ressources: '[base-test]' }), T02: tache('T02', { verification: ['"cd x && make"'], fichiers: ['lib/**'] }) }, [['T01', 'à-faire'], ['T02', 'annulée']])
-    writeFileSync(join(racine, d, 'orchestre.config.json'), JSON.stringify({ preparation: ['pnpm install --frozen-lockfile', 'pnpm prisma generate && pnpm build'], preparation_partagee: { 'base-test': ['pnpm db:test:prepare'], 'port-3000': ['pnpm e2e:prepare'] } }))
+  test('French keys of 0.11 in a task or in orchestre.config.json: errors that name the English key', () => {
+    const q = plan('frkeys', { F01: task('F01').replace('depends_on: []', 'depend_de: [F02]').replace('title: Task F01', 'titre: Tâche F01'), F02: task('F02') })
+    writeFileSync(join(root, q, 'orchestre.config.json'), JSON.stringify({ branche_integration: 'plan/frkeys', escalation: ['sonnet', 'opus'], preparation: ['pnpm install'] }))
+    const r = lint(q, '--json'); assert.equal(r.code, 1)
+    assert.deepEqual(r.json.errors, [
+      'F01: French key "titre" of orchestre 0.11 and earlier: rename it "title"', 'F01: French key "depend_de" of orchestre 0.11 and earlier: rename it "depends_on"',
+      'orchestre.config.json: French key "branche_integration" of orchestre 0.11 and earlier: rename it "integration_branch"', 'orchestre.config.json: French key "preparation" of orchestre 0.11 and earlier: rename it "setup"',
+    ])
+  })
+  test('warnings: compound verifications of remaining tasks, compound setup or without a declared resource; nothing is blocked', () => {
+    const V = ['"cd api && pnpm test"', '"git diff --quiet plan/x...HEAD -- src; echo $?"', '"PATH=/opt/n/bin:$PATH pnpm typecheck"', "\"pnpm exec tsx -e 'import(1)'\"", "\"grep -E 'a|b;c' src/x.ts\"", '"pnpm test -- --reporter=dot 2>&1"', '"git diff --quiet plan/x...HEAD -- src"']
+    const d = plan('warn', { T01: task('T01', { verification: V, resources: '[test-db]' }), T02: task('T02', { verification: ['"cd x && make"'], files: ['lib/**'] }) }, [['T01', 'todo'], ['T02', 'cancelled']])
+    writeFileSync(join(root, d, 'orchestre.config.json'), JSON.stringify({ setup: ['pnpm install --frozen-lockfile', 'pnpm prisma generate && pnpm build'], shared_setup: { 'test-db': ['pnpm db:test:prepare'], 'port-3000': ['pnpm e2e:prepare'] } }))
     const r = lint(d, '--json')
     assert.equal(r.code, 0, r.out); assert.equal(r.json.ok, true)
-    const a = r.json.avertissements
-    assert.deepEqual(a.filter(x => x.startsWith('T01 :')).map(x => x.match(/« (.*) » \((.*?)\) :/).slice(1)), [
-      ['cd api && pnpm test', 'enchaînement ou sous-commande, cd, export ou affectation en tête'],
-      ['git diff --quiet plan/x...HEAD -- src; echo $?', 'enchaînement ou sous-commande'],
-      ['PATH=/opt/n/bin:$PATH pnpm typecheck', 'cd, export ou affectation en tête'],
-      ["pnpm exec tsx -e 'import(1)'", 'code évalué en ligne'],
-    ], 'guillemets, redirection et commande simple ne sont pas signalés')
-    assert.ok(!a.some(x => x.startsWith('T02')), 'tâche annulée : pas d’avertissement')
-    assert.ok(a.includes('preparation : « pnpm prisma generate && pnpm build » (enchaînement ou sous-commande) : un agent isolé dans un worktree se la verra refuser (garde d\'isolement de Claude Code) : en faire une commande simple, ou un script du projet'))
-    assert.ok(a.includes('preparation_partagee : aucune tâche ne déclare la ressource « port-3000 » ; ses commandes ne seront jamais lancées'))
+    const a = r.json.warnings
+    assert.deepEqual(a.filter(x => x.startsWith('T01:')).map(x => x.match(/`(.*)` \((.*?)\):/).slice(1)), [
+      ['cd api && pnpm test', 'chaining or subcommand, cd, export or assignment first'],
+      ['git diff --quiet plan/x...HEAD -- src; echo $?', 'chaining or subcommand'],
+      ['PATH=/opt/n/bin:$PATH pnpm typecheck', 'cd, export or assignment first'],
+      ["pnpm exec tsx -e 'import(1)'", 'code evaluated inline'],
+    ], 'quotes, redirection and simple command are not reported')
+    assert.ok(!a.some(x => x.startsWith('T02')), 'cancelled task: no warning')
+    assert.ok(a.includes("setup: `pnpm prisma generate && pnpm build` (chaining or subcommand): an agent isolated in a worktree will be refused it (Claude Code's isolation guard): make it a simple command, or a project script"))
+    assert.ok(a.includes('shared_setup: no task declares the resource "port-3000"; its commands will never run'))
     assert.equal(a.length, 6)
     const t = lint(d)
-    assert.equal(t.code, 0); assert.match(t.out, /^✓ plan valide/); assert.match(t.out, /\n⚠ T01 : vérification « cd api && pnpm test »/)
-    writeFileSync(join(racine, d, 'orchestre.config.json'), JSON.stringify({ preparation: 'pnpm install', preparation_partagee: { base: 'x' } }))
+    assert.equal(t.code, 0); assert.match(t.out, /^✓ valid plan/); assert.match(t.out, /\n⚠ T01: verification `cd api && pnpm test`/)
+    writeFileSync(join(root, d, 'orchestre.config.json'), JSON.stringify({ setup: 'pnpm install', shared_setup: { db: 'x' } }))
     const e = lint(d, '--json')
     assert.equal(e.code, 1)
-    assert.deepEqual(e.json.erreurs, ['orchestre.config.json : « preparation » doit être une liste de commandes', 'orchestre.config.json : « preparation_partagee » doit associer à chaque ressource une liste de commandes'])
+    assert.deepEqual(e.json.errors, ['orchestre.config.json: "setup" must be a list of commands', 'orchestre.config.json: "shared_setup" must map each resource to a list of commands'])
   })
 
-  cas('avertissements : ni faux positifs (grep -e, sed -e, find -exec \\;, guillemets) ni faux négatifs (substitution entre guillemets, php -r, node -p, chemin absolu)', () => {
-    const non = ['grep -e "TODO" src', "sed -e 's/a/b/' x.txt", 'find src -name "*.tmp" -exec rm {} \\;', "grep -E 'a|b;c' src", 'sh scripts/verifier.sh', 'pnpm test -- --reporter=dot 2>&1', "echo 'a `b` $(c)'"]
-    const oui = [['grep "$(cat x)" src', 'enchaînement ou sous-commande'], ['echo "`date`"', 'enchaînement ou sous-commande'], ['php -r "echo 1;"', 'code évalué en ligne'], ['node -p "1+1"', 'code évalué en ligne'], ['/usr/bin/python3 -c "print(1)"', 'code évalué en ligne'], ['node --no-warnings -e "x"', 'code évalué en ligne'], ['deno eval "1"', 'code évalué en ligne'], ['node /home/u/x.mjs', 'script en chemin absolu']]
-    const d = plan('av2', { T01: tache('T01', { verification: [...non, ...oui.map(([c]) => c)].map(c => JSON.stringify(c)) }) })
-    const a = lint(d, '--json').json.avertissements
-    assert.deepEqual(a.map(x => x.match(/« (.*) » \((.*?)\) :/).slice(1)), oui)
+  test('warnings: neither false positives (grep -e, sed -e, find -exec \\;, quotes) nor false negatives (substitution inside double quotes, php -r, node -p, absolute path)', () => {
+    const no = ['grep -e "TODO" src', "sed -e 's/a/b/' x.txt", 'find src -name "*.tmp" -exec rm {} \\;', "grep -E 'a|b;c' src", 'sh scripts/check.sh', 'pnpm test -- --reporter=dot 2>&1', "echo 'a `b` $(c)'"]
+    const yes = [['grep "$(cat x)" src', 'chaining or subcommand'], ['echo "`date`"', 'chaining or subcommand'], ['php -r "echo 1;"', 'code evaluated inline'], ['node -p "1+1"', 'code evaluated inline'], ['/usr/bin/python3 -c "print(1)"', 'code evaluated inline'], ['node --no-warnings -e "x"', 'code evaluated inline'], ['deno eval "1"', 'code evaluated inline'], ['node /home/u/x.mjs', 'script by absolute path']]
+    const d = plan('warn2', { T01: task('T01', { verification: [...no, ...yes.map(([c]) => c)].map(c => JSON.stringify(c)) }) })
+    const a = lint(d, '--json').json.warnings
+    assert.deepEqual(a.map(x => x.match(/^T01: verification `(.*)` \((.*?)\):/).slice(1)), yes)
   })
 
-  cas('JSON de plus de 64 Ko lu par un tube : sortie complète, code de sortie gardé (0.8.1)', () => {
-    // process.exit() juste après console.log coupait la sortie à 65 536 octets dans un tube (MonitIA, 08/10)
+  test('JSON over 64 KB read through a pipe: full output, exit code kept (0.8.1)', () => {
+    // process.exit() right after console.log cut the output at 65,536 bytes in a pipe (MonitIA, 08/10)
     const ts = {}
-    for (let i = 1; i <= 220; i++) { const id = `T${String(i).padStart(3, '0')}`; ts[id] = tache(id, { phase: Math.ceil(i / 20), verification: [`"pnpm test -- src/${id} --reporter=verbose"`, `"sh scripts/e2e-local.sh ${id}"`] }) }
-    const d = plan('gros', ts)
-    const tube = spawnSync('sh', ['-c', `node "${LINT}" "${d}" --json | cat`], { cwd: racine, encoding: 'utf8' })
-    assert.ok(Buffer.byteLength(tube.stdout) > 65536, `sortie trop petite pour le cas : ${Buffer.byteLength(tube.stdout)} octets`)
-    assert.equal(JSON.parse(tube.stdout).taches.length, 220)
-    const direct = spawnSync('node', [LINT, d, '--json'], { cwd: racine, encoding: 'utf8' })
-    assert.equal(direct.stdout, tube.stdout); assert.equal(direct.status, 0)
-    const ko = plan('gros-ko', { ...ts, T999: tache('T999', { depend_de: '[T000]' }) })
-    const r = spawnSync('sh', ['-c', `node "${LINT}" "${ko}" --json | cat; exit 0`], { cwd: racine, encoding: 'utf8' })
+    for (let i = 1; i <= 220; i++) { const id = `T${String(i).padStart(3, '0')}`; ts[id] = task(id, { phase: Math.ceil(i / 20), verification: [`"pnpm test -- src/${id} --reporter=verbose"`, `"sh scripts/e2e-local.sh ${id}"`] }) }
+    const d = plan('big', ts)
+    const pipe = spawnSync('sh', ['-c', `node "${LINT}" "${d}" --json | cat`], { cwd: root, encoding: 'utf8' })
+    assert.ok(Buffer.byteLength(pipe.stdout) > 65536, `output too small for the case: ${Buffer.byteLength(pipe.stdout)} bytes`)
+    assert.equal(JSON.parse(pipe.stdout).tasks.length, 220)
+    const direct = spawnSync('node', [LINT, d, '--json'], { cwd: root, encoding: 'utf8' })
+    assert.equal(direct.stdout, pipe.stdout); assert.equal(direct.status, 0)
+    const ko = plan('big-ko', { ...ts, T999: task('T999', { depends_on: '[T000]' }) })
+    const r = spawnSync('sh', ['-c', `node "${LINT}" "${ko}" --json | cat; exit 0`], { cwd: root, encoding: 'utf8' })
     assert.equal(JSON.parse(r.stdout).ok, false)
-    assert.equal(spawnSync('node', [LINT, ko, '--json'], { cwd: racine, encoding: 'utf8' }).status, 1)
+    assert.equal(spawnSync('node', [LINT, ko, '--json'], { cwd: root, encoding: 'utf8' }).status, 1)
   })
 
-  cas('SUIVI.md : une ligne d\'un autre tableau sous la légende n\'est pas une tâche ; --phase ne rend que les avertissements de la phase (0.8.1)', () => {
-    const d = plan('notes', { T01: tache('T01'), T02: tache('T02', { phase: 2, verification: ['"cd web && npm test"'] }), T03: tache('T03', { phase: 1, verification: ['"cd api && npm test"'] }) }, [['T01', 'fusionnée'], ['T02', 'à-faire'], ['T03', 'à-faire']])
-    writeFileSync(join(racine, d, 'SUIVI.md'), SUIVI([['T01', 'fusionnée'], ['T02', 'à-faire'], ['T03', 'à-faire']]) + '\nStatuts : à-faire · fusionnée\n\n## Notes du pilote\n\n| ID | Note |\n|----|------|\n| T01 | relancée à la main le 07/10 |\n| D1 | tranchée : option B |\n')
+  test('PROGRESS.md: a row of another table under the legend is not a task; --phase only returns the warnings of the phase (0.8.1)', () => {
+    const d = plan('notes', { T01: task('T01'), T02: task('T02', { phase: 2, verification: ['"cd web && npm test"'] }), T03: task('T03', { phase: 1, verification: ['"cd api && npm test"'] }) }, [['T01', 'merged'], ['T02', 'todo'], ['T03', 'todo']])
+    writeFileSync(join(root, d, 'PROGRESS.md'), PROGRESS([['T01', 'merged'], ['T02', 'todo'], ['T03', 'todo']]) + '\nStatuses: todo · merged\n\n## Pilot notes\n\n| ID | Note |\n|----|------|\n| T01 | rerun by hand on 07/10 |\n| D1 | settled: option B |\n')
     const r = lint(d, '--json')
-    assert.equal(r.json.taches.find(t => t.id === 'T01').statut, 'fusionnée')
-    assert.equal(r.json.avertissements.length, 2)
-    const p2 = spawnSync('node', [LINT, d, '--json', '--phase', '2'], { cwd: racine, encoding: 'utf8' })
-    assert.deepEqual(JSON.parse(p2.stdout).avertissements.map(a => a.slice(0, 3)), ['T02'])
+    assert.equal(r.json.tasks.find(t => t.id === 'T01').status, 'merged')
+    assert.equal(r.json.warnings.length, 2)
+    const p2 = spawnSync('node', [LINT, d, '--json', '--phase', '2'], { cwd: root, encoding: 'utf8' })
+    assert.deepEqual(JSON.parse(p2.stdout).warnings.map(a => a.slice(0, 3)), ['T02'])
   })
 
-  cas('modèle (0.11.0) : valeur valide, inconnue ou illisible ; modèle ou raison absents en avertissement, jamais pour une tâche faite ; le choix n’est pas jugé', () => {
-    const d = plan('modeles', {
-      T01: tache('T01', { modele: 'haiku', raison: 'renommage mécanique' }), T02: tache('T02', { modele: 'opus', raison: 'architecture' }), T03: tache('T03', { modele: 'fable', raison: 'plan existant' }),
-      T04: tache('T04', { modele: null, raison: null }), T05: tache('T05', { modele: 'sonnet', raison: null }), T06: tache('T06', { modele: '', raison: '' }),
-      T07: tache('T07', { modele: null, raison: null }), T08: tache('T08', { modele: 'haiku', raison: 'architecture de tout le système' }), T12: tache('T12', { modele: '""', raison: null }),
-    }, [['T01', 'à-faire'], ['T02', 'à-faire'], ['T03', 'à-faire'], ['T04', 'à-faire'], ['T05', 'à-faire'], ['T06', 'à-faire'], ['T07', 'fusionnée'], ['T08', 'à-faire'], ['T12', 'à-faire']])
+  test('model: valid, unknown or unreadable value; model or reason missing as a warning, never for a done task; the choice is not judged', () => {
+    const d = plan('models', {
+      T01: task('T01', { model: 'haiku', reason: 'mechanical renaming' }), T02: task('T02', { model: 'opus', reason: 'architecture' }), T03: task('T03', { model: 'fable', reason: 'existing plan' }),
+      T04: task('T04', { model: null, reason: null }), T05: task('T05', { model: 'sonnet', reason: null }), T06: task('T06', { model: '', reason: '' }),
+      T07: task('T07', { model: null, reason: null }), T08: task('T08', { model: 'haiku', reason: 'architecture of the whole system' }), T12: task('T12', { model: '""', reason: null }),
+    }, [['T01', 'todo'], ['T02', 'todo'], ['T03', 'todo'], ['T04', 'todo'], ['T05', 'todo'], ['T06', 'todo'], ['T07', 'merged'], ['T08', 'todo'], ['T12', 'todo']])
     let r = lint(d, '--json')
-    assert.equal(r.code, 0, r.out); assert.equal(r.json.ok, true, 'absent ou sans raison : rien n’est bloqué')
-    const t = id => r.json.taches.find(x => x.id === id)
-    assert.deepEqual(['T01', 'T02', 'T03', 'T05', 'T08'].map(id => t(id).modele), ['haiku', 'opus', 'fable', 'sonnet', 'haiku'])
-    assert.ok(!('modele' in t('T04')) && !('modele' in t('T06')) && !('modele' in t('T12')), 'absent ou vide (« modele: », « modele: "" ») : pas de champ modele')
-    assert.deepEqual([t('T01').raison_modele, 'raison_modele' in t('T05')], ['renommage mécanique', false])
-    const a = r.json.avertissements.filter(x => / modele/.test(x))
-    assert.deepEqual(a.map(x => x.slice(0, 3)), ['T04', 'T05', 'T06', 'T12'], 'T07 fusionnée : pas d’avertissement ; T08 : choix jamais jugé')
-    assert.match(a[0], /^T04 : pas de modele \(haiku, sonnet, opus\) : le worker tournera sur sonnet/)
-    assert.match(a[1], /^T05 : modele sonnet sans raison_modele/)
-    const texte = lint(d)
-    assert.equal(texte.code, 0); assert.ok(texte.out.includes('✓ plan valide') && texte.out.includes('⚠ T04 : pas de modele'), 'en texte : plan valide et avertissement')
-    // Avec --phase, seulement les tâches de la phase
-    assert.deepEqual(JSON.parse(spawnSync('node', [LINT, d, '--json', '--phase', '2'], { cwd: racine, encoding: 'utf8' }).stdout).avertissements, [])
-    // Valeur inconnue ou en liste : erreur qui cite la tâche
-    writeFileSync(join(racine, d, 'taches', 'T09-x.md'), tache('T09', { modele: 'gpt-5', raison: 'x' }))
-    writeFileSync(join(racine, d, 'taches', 'T10-x.md'), tache('T10', { modele: '\n  - sonnet', raison: 'x' }))
-    writeFileSync(join(racine, d, 'taches', 'T11-x.md'), tache('T11', { modele: 'Sonnet', raison: null }))
+    assert.equal(r.code, 0, r.out); assert.equal(r.json.ok, true, 'absent or without reason: nothing is blocked')
+    const t = id => r.json.tasks.find(x => x.id === id)
+    assert.deepEqual(['T01', 'T02', 'T03', 'T05', 'T08'].map(id => t(id).model), ['haiku', 'opus', 'fable', 'sonnet', 'haiku'])
+    assert.ok(!('model' in t('T04')) && !('model' in t('T06')) && !('model' in t('T12')), 'absent or empty ("model:", "model: \\"\\""): no model field')
+    assert.deepEqual([t('T01').model_reason, 'model_reason' in t('T05')], ['mechanical renaming', false])
+    const a = r.json.warnings.filter(x => /: (no model|model \S+ without model_reason)/.test(x))
+    assert.deepEqual(a.map(x => x.slice(0, 3)), ['T04', 'T05', 'T06', 'T12'], 'T07 merged: no warning; T08: choice never judged')
+    assert.match(a[0], /^T04: no model \(haiku, sonnet, opus\): the worker will run on sonnet/)
+    assert.match(a[1], /^T05: model sonnet without model_reason/)
+    const text = lint(d)
+    assert.equal(text.code, 0); assert.ok(text.out.includes('✓ valid plan') && text.out.includes('⚠ T04: no model'), 'as text: valid plan and warning')
+    // With --phase, only the tasks of the phase
+    assert.deepEqual(JSON.parse(spawnSync('node', [LINT, d, '--json', '--phase', '2'], { cwd: root, encoding: 'utf8' }).stdout).warnings, [])
+    // Unknown value or list: error that names the task
+    writeFileSync(join(root, d, 'tasks', 'T09-x.md'), task('T09', { model: 'gpt-5', reason: 'x' }))
+    writeFileSync(join(root, d, 'tasks', 'T10-x.md'), task('T10', { model: '\n  - sonnet', reason: 'x' }))
+    writeFileSync(join(root, d, 'tasks', 'T11-x.md'), task('T11', { model: 'Sonnet', reason: null }))
     r = lint(d, '--json')
     assert.equal(r.code, 1); assert.equal(r.json.ok, false)
-    assert.deepEqual(r.json.erreurs.filter(e => /modèle/.test(e)), ['T09 : modèle inconnu « gpt-5 » (haiku, sonnet, opus, fable)', 'T10 : modèle illisible (un seul nom : haiku, sonnet, opus, fable)', 'T11 : modèle inconnu « Sonnet » (haiku, sonnet, opus, fable)'])
-    assert.ok(!r.json.avertissements.some(x => /^T(09|10|11) : /.test(x)), 'un modèle refusé n’est pas, en plus, un modèle sans raison')
+    assert.deepEqual(r.json.errors.filter(e => /model/.test(e)), ['T09: unknown model "gpt-5" (haiku, sonnet, opus, fable)', 'T10: unreadable model (a single name: haiku, sonnet, opus, fable)', 'T11: unknown model "Sonnet" (haiku, sonnet, opus, fable)'])
+    assert.ok(!r.json.warnings.some(x => /^T(09|10|11): /.test(x)), 'a rejected model is not, on top, a model without a reason')
   })
 
-  cas('fable (0.11.0) : permis par orchestre.config.json (fable: true) ; refusé par fable: false ; sans réglage, un avertissement', () => {
+  test('fable: allowed by orchestre.config.json (fable: true); refused by fable: false; without the setting, a warning', () => {
     const d = plan('fable', {
-      T01: tache('T01', { modele: 'fable', raison: "à la demande de l'utilisateur" }), T02: tache('T02', { modele: 'fable', raison: 'x' }),
-      T03: tache('T03', { modele: 'opus', raison: 'architecture' }), T04: tache('T04', { phase: 2, depend_de: '[T03]', modele: 'fable', raison: 'x' }),
-    }, [['T01', 'à-faire'], ['T02', 'fusionnée'], ['T03', 'à-faire'], ['T04', 'à-faire']])
-    const config = c => (c == null ? rmSync(join(racine, d, 'orchestre.config.json'), { force: true }) : writeFileSync(join(racine, d, 'orchestre.config.json'), JSON.stringify(c)))
+      T01: task('T01', { model: 'fable', reason: 'at the user\'s request' }), T02: task('T02', { model: 'fable', reason: 'x' }),
+      T03: task('T03', { model: 'opus', reason: 'architecture' }), T04: task('T04', { phase: 2, depends_on: '[T03]', model: 'fable', reason: 'x' }),
+    }, [['T01', 'todo'], ['T02', 'merged'], ['T03', 'todo'], ['T04', 'todo']])
+    const config = c => (c == null ? rmSync(join(root, d, 'orchestre.config.json'), { force: true }) : writeFileSync(join(root, d, 'orchestre.config.json'), JSON.stringify(c)))
     const fab = x => x.filter(e => /fable/.test(e))
-    // Sans réglage : avertissements pour les tâches restantes (T02 fusionnée n'en a pas), rien ne bloque
+    // Without the setting: warnings for the remaining tasks (T02 merged has none), nothing blocks
     config(null)
     let r = lint(d, '--json')
     assert.equal(r.code, 0, r.out); assert.equal(r.json.fable, null)
-    assert.deepEqual(fab(r.json.avertissements).map(x => x.slice(0, 3)), ['T01', 'T04'])
-    assert.match(fab(r.json.avertissements)[0], /^T01 : modèle fable, sans réglage « fable » dans orchestre\.config\.json : à trancher avec l'utilisateur \(\/orchestre:pret\)$/)
-    assert.deepEqual(fab(JSON.parse(spawnSync('node', [LINT, d, '--json', '--phase', '1'], { cwd: racine, encoding: 'utf8' }).stdout).avertissements).map(x => x.slice(0, 3)), ['T01'], '--phase : la phase seulement')
-    // fable: true : rien
-    config({ fable: true, escalade: ['sonnet', 'fable'] })
+    assert.deepEqual(fab(r.json.warnings).map(x => x.slice(0, 3)), ['T01', 'T04'])
+    assert.match(fab(r.json.warnings)[0], /^T01: model fable, without a "fable" setting in orchestre\.config\.json: to settle with the user \(\/orchestre:ready\)$/)
+    assert.deepEqual(fab(JSON.parse(spawnSync('node', [LINT, d, '--json', '--phase', '1'], { cwd: root, encoding: 'utf8' }).stdout).warnings).map(x => x.slice(0, 3)), ['T01'], '--phase: the phase only')
+    // fable: true: nothing
+    config({ fable: true, escalation: ['sonnet', 'fable'] })
     r = lint(d, '--json')
-    assert.equal(r.code, 0); assert.equal(r.json.fable, true); assert.deepEqual([fab(r.json.erreurs), fab(r.json.avertissements)], [[], []])
-    // fable: false : erreur pour chaque tâche restante sur fable, toutes phases, et pour l'escalade
-    config({ fable: false, escalade: ['sonnet', 'fable'] })
+    assert.equal(r.code, 0); assert.equal(r.json.fable, true); assert.deepEqual([fab(r.json.errors), fab(r.json.warnings)], [[], []])
+    // fable: false: error for each remaining task on fable, all phases, and for the escalation
+    config({ fable: false, escalation: ['sonnet', 'fable'] })
     r = lint(d, '--json')
     assert.equal(r.code, 1); assert.equal(r.json.fable, false)
-    assert.deepEqual(fab(r.json.erreurs), ['T01 : modèle fable, refusé par orchestre.config.json (fable: false) : passer la tâche sur opus, ou fable: true si l\'utilisateur le veut', 'T04 : modèle fable, refusé par orchestre.config.json (fable: false) : passer la tâche sur opus, ou fable: true si l\'utilisateur le veut', 'orchestre.config.json : « escalade » contient fable, refusé par fable: false'])
-    assert.equal(fab(JSON.parse(spawnSync('node', [LINT, d, '--json', '--phase', '1'], { cwd: racine, encoding: 'utf8' }).stdout).erreurs).length, 3, 'avec --phase aussi : le réglage vaut pour tout le plan')
-    assert.ok(lint(d).out.includes('✗ T01 : modèle fable, refusé'), 'en texte')
-    // Sans tâche sur fable, fable: false ne dit rien ; une escalade sur fable sans réglage avertit
-    writeFileSync(join(racine, d, 'taches', 'T01-x.md'), tache('T01', { modele: 'opus', raison: 'x' })); writeFileSync(join(racine, d, 'taches', 'T04-x.md'), tache('T04', { phase: 2, depend_de: '[T03]', modele: 'opus', raison: 'x' }))
+    assert.deepEqual(fab(r.json.errors), ['T01: model fable, refused by orchestre.config.json (fable: false): move the task to opus, or set fable: true if the user wants it', 'T04: model fable, refused by orchestre.config.json (fable: false): move the task to opus, or set fable: true if the user wants it', 'orchestre.config.json: "escalation" contains fable, refused by fable: false'])
+    assert.equal(fab(JSON.parse(spawnSync('node', [LINT, d, '--json', '--phase', '1'], { cwd: root, encoding: 'utf8' }).stdout).errors).length, 3, 'with --phase too: the setting applies to the whole plan')
+    assert.ok(lint(d).out.includes('✗ T01: model fable, refused'), 'as text')
+    // Without a task on fable, fable: false says nothing; an escalation on fable without the setting warns
+    writeFileSync(join(root, d, 'tasks', 'T01-x.md'), task('T01', { model: 'opus', reason: 'x' })); writeFileSync(join(root, d, 'tasks', 'T04-x.md'), task('T04', { phase: 2, depends_on: '[T03]', model: 'opus', reason: 'x' }))
     config({ fable: false })
     r = lint(d, '--json')
-    assert.equal(r.code, 0); assert.deepEqual([fab(r.json.erreurs), fab(r.json.avertissements)], [[], []])
-    config({ escalade: ['fable'] })
-    assert.deepEqual(fab(lint(d, '--json').json.avertissements), ["orchestre.config.json : « escalade » contient fable, sans réglage « fable » : à trancher avec l'utilisateur (/orchestre:pret)"])
-    // Valeur qui n'est pas un booléen : erreur
-    config({ fable: 'non' })
+    assert.equal(r.code, 0); assert.deepEqual([fab(r.json.errors), fab(r.json.warnings)], [[], []])
+    config({ escalation: ['fable'] })
+    assert.deepEqual(fab(lint(d, '--json').json.warnings), ['orchestre.config.json: "escalation" contains fable, without a "fable" setting: to settle with the user (/orchestre:ready)'])
+    // A value that is not a boolean: error
+    config({ fable: 'no' })
     r = lint(d, '--json')
-    assert.equal(r.code, 1); assert.deepEqual(fab(r.json.erreurs), ['orchestre.config.json : « fable » doit valoir true ou false']); assert.equal(r.json.fable, null)
+    assert.equal(r.code, 1); assert.deepEqual(fab(r.json.errors), ['orchestre.config.json: "fable" must be true or false']); assert.equal(r.json.fable, null)
   })
 
-  console.log(`plan-lint : TOUT EST VERT (${n} cas)`)
+  test('language: "en" by default, the value of orchestre.config.json otherwise; an empty or non-text value is an error', () => {
+    const d = plan('lang', { T01: task('T01') })
+    assert.equal(lint(d, '--json').json.language, 'en')
+    writeFileSync(join(root, d, 'orchestre.config.json'), JSON.stringify({ language: ' fr ' }))
+    let r = lint(d, '--json'); assert.equal(r.code, 0); assert.equal(r.json.language, 'fr')
+    for (const bad of ['', 3, null]) {
+      writeFileSync(join(root, d, 'orchestre.config.json'), JSON.stringify({ language: bad }))
+      r = lint(d, '--json'); assert.equal(r.code, 1, JSON.stringify(bad)); assert.deepEqual(r.json.errors, ['orchestre.config.json: "language" must be a non-empty text, like "en" or "fr"']); assert.equal(r.json.language, 'en')
+    }
+  })
+
+  test('token estimate: "1.0M", "0.5 M" and "1,2 M" of 0.11 read alike', () => {
+    const d = plan('tok', { T01: task('T01'), T02: task('T02').replace('token_estimate: 1.0M', 'token_estimate: 0.5 M'), T03: task('T03').replace('token_estimate: 1.0M', 'token_estimate: "1,2 M"') })
+    assert.deepEqual(lint(d, '--json').json.tasks.map(t => t.token_estimate), [1, 0.5, 1.2])
+    assert.match(lint(d).out, /phase 1 2\.7M · total 2\.7M/)
+  })
+
+  console.log(`plan-lint: ALL GREEN (${n} tests)`)
 } finally {
-  rmSync(racine, { recursive: true, force: true })
+  rmSync(root, { recursive: true, force: true })
 }

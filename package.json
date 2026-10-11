@@ -3,7 +3,10 @@
   "private": true,
   "description": "Marketplace de plugins Claude Code « circle » : tests et validation.",
   "scripts": {
-    "test": "node tests/scenarios.mjs plugins/orchestre/workflows/executer-phase.js && node tests/plan-lint.test.mjs && node tests/modele.test.mjs && node tests/etat.test.mjs && node tests/suivi.test.mjs && node tests/worktrees.test.mjs && node tests/mod-suivi.test.mjs",
+    "test": "npm run test:scripts && npm run test:workflow && npm run test:mod",
+    "test:scripts": "node tests/plan-lint.test.mjs && node tests/status.test.mjs && node tests/progress.test.mjs && node tests/worktrees.test.mjs && node tests/migrate.test.mjs",
+    "test:workflow": "node tests/scenarios.mjs plugins/orchestre/workflows/executer-phase.js && node tests/modele.test.mjs",
+    "test:mod": "node tests/mod-suivi.test.mjs",
     "validate": "claude plugin validate plugins/orchestre && claude plugin validate . && claude plugin test plugins/orchestre"
   }
 }
