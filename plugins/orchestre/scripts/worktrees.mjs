@@ -90,10 +90,10 @@ function planIds(dir) {
   return ids
 }
 
-// A run marked "in-progress" in progress.json: its agents may be working in the worktrees. A progress.json still in a
-// format of 0.11 (converted at its first write) says "en-cours".
+// A run marked "in-progress" in progress.json: its agents may be working in the worktrees. A progress file still in a
+// format of 0.11 (progress.json not yet converted, or a suivi.json left next to tasks/) says "en-cours".
 function runInProgress(dir) {
-  const doc = attempt(() => JSON.parse(readFileSync(join(dir, 'progress.json'), 'utf8')))
+  const doc = attempt(() => JSON.parse(readFileSync(join(dir, 'progress.json'), 'utf8'))) || attempt(() => JSON.parse(readFileSync(join(dir, 'suivi.json'), 'utf8')))
   const r = ((doc && Array.isArray(doc.runs) && doc.runs) || []).filter(r => r && (r.status === 'in-progress' || r.statut === 'en-cours')).pop()
   return r ? { number: r.number ?? r.numero, start: r.start ?? r.debut } : null
 }

@@ -523,6 +523,29 @@ async function main() {
     assert.ok(V.doc().log.some(e => e.text === 'T02: todo → merged (PROGRESS.md and git)'))
   })
 
+  await test('git history of 0.11 in status: a commit "tâche <id> : " is the last merge, a branch tache/<id> is in progress', () => {
+    const H = repo('history', { tasks: [{ id: 'T01' }, { id: 'T02' }], progress: PROGRESS_TEMPLATE(['T01', 'T02']) })
+    H.git('commit', '-q', '--allow-empty', '-m', 'tâche T01 : Tâche T01')
+    H.git('switch', '-qc', 'tache/T02'); writeFileSync(join(H.root, 'T02.txt'), 'T02'); H.git('add', 'T02.txt'); H.git('commit', '-qm', 'feat: T02'); H.git('switch', '-q', 'plan/history')
+    const r = H.progress('status').out
+    assert.match(r, /^## history — 1\/2 tasks · 50%\n`█{12}░{12}` phase 1 in progress · last merge T01 (just now|\d+ min ago)$/m)
+    assert.match(r, /\*\*In progress\*\*: T02 \(last commit (just now|\d+ min ago)\)$/m)
+    assert.equal(r, spawnSync(process.execPath, [STATUS_MJS, H.plan], { cwd: H.root, encoding: 'utf8' }).stdout.trim(), 'as status.mjs')
+  })
+
+  await test('PROGRESS.md missing: the first write that regenerates the view creates it, with its title, header and legend', () => {
+    const N = repo('fresh', { tasks: [{ id: 'T01', batch: '1A' }] })
+    assert.equal(N.progress('view').code, 0)
+    assert.equal(N.read('PROGRESS.md'), `# PROGRESS — fresh
+
+| ID  | Title    | Phase | Batch | Depends on | Model  | Status | Attempts | Branch | Tokens est. / actual |
+|-----|----------|-------|-------|------------|--------|--------|----------|--------|----------------------|
+| T01 | Task T01 | 1     | 1A    | —          | sonnet | todo   | 0        | —      | 1.0M / —             |
+
+Statuses: todo · added · merged · blocked · failed · needs-human · cancelled
+`)
+  })
+
   await test('plan-lint without an answer (output cut): no rebuild; existing progress.json, plan fields kept and a note in the log (0.8.1)', () => {
     const F = repo('lintko', { tasks: [{ id: 'T01' }, { id: 'T02', estimate: '2.5M' }], progress: PROGRESS_TEMPLATE(['T01', 'T02']) })
     // Copy of the script next to a plan-lint that returns a cut JSON, as in a pipe before 0.8.1
@@ -727,6 +750,22 @@ Statuses: todo · added · merged · blocked · failed · needs-human · cancell
     assert.equal(G.progress('step', { task: 'T02', step: 'evaluation' }).code, 0)
     assert.equal(G.doc().log.filter(e => /converted/.test(e.text)).length, 1, 'only once')
     assert.equal(G.progress('validate').out, 'progress: progress.json valid (orchestre-progress/3, 2 tasks, 1 run)')
+  })
+
+  await test('convertLegacy: every field and value of /2 translated, free text kept', async () => {
+    const { convertLegacy } = await import(PROGRESS_MJS)
+    const at = '2026-10-01T10:00:00+02:00', v2 = legacyV2(at)
+    v2.points[0].incoherence = 'option inconnue'
+    v2.runs[0].taches_ajoutees = [{ id: 'T01B', phase: 1, titre: 'Suite' }]
+    const doc = convertLegacy(v2)
+    assert.equal(convertLegacy({ format: 'orchestre-progress/3' }), null)
+    assert.deepEqual(doc.issues[0].inconsistency, 'option inconnue')
+    assert.deepEqual(doc.runs[0].added_tasks, [{ id: 'T01B', phase: 1, title: 'Suite' }])
+    assert.deepEqual(doc.prerequisites, [{ id: 'D5', type: 'decision', status: 'open', text: 'Choisir', blocks: ['T02'] }])
+    assert.deepEqual(doc.handoff, { 'source plan': { review: { minor: 0, major: 1 } }, T01: { deviation: { minor: 1, major: 0 } } })
+    assert.deepEqual(doc.tasks.map(t => [t.status, t.step]), [['merged', null], ['todo', 'fix']])
+    assert.deepEqual(Object.keys(doc), ['format', 'plan', 'dir', 'integration', 'base', 'updated', 'tasks', 'runs', 'issues', 'auto_decisions', 'reviews', 'prerequisites', 'handoff', 'lint', 'log', 'log_omitted'])
+    assert.deepEqual(doc.log.map(e => e.kind), ['task', 'auto-decision'])
   })
 
   await test('format orchestre-suivi/1 of 0.10: converted too, model used null, with a note', () => {

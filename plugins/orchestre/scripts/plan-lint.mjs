@@ -151,9 +151,12 @@ for (const f of readdirSync(tdir).filter(f => f.endsWith('.md')).sort()) {
   const fm = frontmatter(readFileSync(join(tdir, f), 'utf8'))
   if (!fm || !fm.id) { errors.push(`${f}: frontmatter missing or without id`); continue }
   if (T.has(fm.id)) errors.push(`${fm.id}: duplicate id`)
-  for (const k of Object.keys(fm)) if (FRENCH_TASK_KEYS[k]) errors.push(`${fm.id}: French key "${k}" of orchestre 0.11 and earlier: rename it "${FRENCH_TASK_KEYS[k]}"`)
+  for (const k of Object.keys(fm)) if (Object.hasOwn(FRENCH_TASK_KEYS, k)) errors.push(`${fm.id}: French key "${k}" of orchestre 0.11 and earlier: rename it "${FRENCH_TASK_KEYS[k]}"`)
   T.set(fm.id, { ...fm, file: join(tdir, f), phase: Number(fm.phase) })
 }
+// Files of the French format left next to tasks/: PROGRESS.md would be missing (every task read as todo), or the progress
+// file of 0.11 ignored; migrate.mjs converts what is left
+for (const f of ['SUIVI.md', 'PREREQUIS.md', 'suivi.json']) if (existsSync(join(dir, f))) errors.push(`${f}: file of the French format of orchestre 0.11 next to tasks/: run node "${MIGRATE}" ${dir}, which converts what is left`)
 const st = statuses()
 const git = args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
 const exists = b => { try { git(['rev-parse', '--verify', '--quiet', `refs/heads/${b}`]); return true } catch { return false } }
@@ -161,7 +164,8 @@ if (integ) {
   const base = baseArg || ['main', 'master'].find(exists)
   if (baseArg && !exists(baseArg)) errors.push(`base branch not found: ${baseArg}`)
   try {
-    const log = git(['log', '--format=%s', base && base !== integ ? `${base}..${integ}` : integ, '--'])
+    // First-parent only: the merge commits of the integrator, not a commit of a worker that happens to start with "task <id>: "
+    const log = git(['log', '--first-parent', '--format=%s', base && base !== integ ? `${base}..${integ}` : integ, '--'])
     for (const m of log.matchAll(/^(?:task (\S+):|tâche (\S+) :)/gm)) st[m[1] || m[2]] = 'merged'
   } catch { errors.push(`integration branch not found: ${integ}`) }
 }
@@ -252,7 +256,7 @@ let config = null
 if (existsSync(join(dir, 'orchestre.config.json'))) {
   try { config = JSON.parse(readFileSync(join(dir, 'orchestre.config.json'), 'utf8')) } catch (e) { errors.push(`orchestre.config.json unreadable: ${e.message}`) }
 }
-if (config && typeof config === 'object') for (const k of Object.keys(config)) if (FRENCH_CONFIG_KEYS[k]) errors.push(`orchestre.config.json: French key "${k}" of orchestre 0.11 and earlier: rename it "${FRENCH_CONFIG_KEYS[k]}"`)
+if (config && typeof config === 'object') for (const k of Object.keys(config)) if (Object.hasOwn(FRENCH_CONFIG_KEYS, k)) errors.push(`orchestre.config.json: French key "${k}" of orchestre 0.11 and earlier: rename it "${FRENCH_CONFIG_KEYS[k]}"`)
 const isList = x => Array.isArray(x) && x.every(c => typeof c === 'string' && c.trim())
 if (config && config.setup !== undefined) {
   if (!isList(config.setup)) errors.push('orchestre.config.json: "setup" must be a list of commands')
@@ -266,6 +270,9 @@ if (config && config.shared_setup !== undefined) {
     for (const c of cs) { const r = compound(c); if (r.length) warnings.push(`shared_setup (${res}): \`${short(c)}\` (${r.join(', ')}): ${refusable}`) }
   }
 }
+// Run mode and evaluator: English values only ("devia" and "systematique" of 0.11 are converted by migrate.mjs)
+if (config && config.default_mode !== undefined && !['auto', 'deviation', 'phase'].includes(config.default_mode)) errors.push(`orchestre.config.json: "default_mode" must be auto, deviation or phase, not ${JSON.stringify(config.default_mode)}`)
+if (config && config.evaluator !== undefined && config.evaluator !== 'always') warnings.push(`orchestre.config.json: "evaluator" is indicative and only takes "always" (the evaluation is always systematic), not ${JSON.stringify(config.evaluator)}`)
 // Fable: allowed only if the user said so (fable: true). With fable: false, a remaining task on fable or an escalation
 // that contains it blocks, across the whole plan; without the setting (older plan), a warning makes the user decide
 const fable = config && config.fable !== undefined ? config.fable : null

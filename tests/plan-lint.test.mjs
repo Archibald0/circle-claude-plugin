@@ -347,6 +347,34 @@ try {
     assert.match(lint(d).out, /phase 1 2\.7M · total 2\.7M/)
   })
 
+  test('merges read on the first parent only: a worker commit "task T03: …" inside the branch of T04 does not merge T03', () => {
+    const d = plan('firstparent', { T03: task('T03'), T04: task('T04') })
+    git('add', '.'); git('commit', '-qm', 'plan firstparent'); git('switch', '-qc', 'plan/firstparent')
+    git('switch', '-qc', 'task/T04'); git('commit', '-q', '--allow-empty', '-m', 'task T03: share a helper'); git('switch', '-q', 'plan/firstparent')
+    git('merge', '-q', '--no-ff', 'task/T04', '-m', 'task T04: Task T04')
+    const r = lint(d, '--json', '--integration', 'plan/firstparent')
+    assert.deepEqual(r.json.all.map(t => [t.id, t.status]), [['T03', 'todo'], ['T04', 'merged']])
+    git('switch', '-q', 'plan/ok')
+  })
+
+  test('files of the French format next to tasks/, and French values in orchestre.config.json: errors (default_mode) or warning (evaluator)', () => {
+    const d = plan('leftover', { T01: task('T01') })
+    for (const f of ['SUIVI.md', 'PREREQUIS.md', 'suivi.json']) writeFileSync(join(root, d, f), 'x')
+    writeFileSync(join(root, d, 'orchestre.config.json'), JSON.stringify({ default_mode: 'devia', evaluator: 'systematique' }))
+    const r = lint(d, '--json')
+    assert.equal(r.code, 1)
+    assert.deepEqual(r.json.errors.map(e => e.replace(/node ".*?"/, 'node "…"')), [
+      'SUIVI.md: file of the French format of orchestre 0.11 next to tasks/: run node "…" plans/leftover, which converts what is left',
+      'PREREQUIS.md: file of the French format of orchestre 0.11 next to tasks/: run node "…" plans/leftover, which converts what is left',
+      'suivi.json: file of the French format of orchestre 0.11 next to tasks/: run node "…" plans/leftover, which converts what is left',
+      'orchestre.config.json: "default_mode" must be auto, deviation or phase, not "devia"',
+    ])
+    assert.ok(r.json.warnings.includes('orchestre.config.json: "evaluator" is indicative and only takes "always" (the evaluation is always systematic), not "systematique"'))
+    for (const f of ['SUIVI.md', 'PREREQUIS.md', 'suivi.json']) rmSync(join(root, d, f))
+    writeFileSync(join(root, d, 'orchestre.config.json'), JSON.stringify({ default_mode: 'deviation', evaluator: 'always' }))
+    const ok = lint(d, '--json'); assert.equal(ok.code, 0); assert.deepEqual(ok.json.warnings, [])
+  })
+
   console.log(`plan-lint: ALL GREEN (${n} tests)`)
 } finally {
   rmSync(root, { recursive: true, force: true })

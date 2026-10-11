@@ -82,7 +82,7 @@ function status() {
   // Last merge on the integration branch, excluding merges of an earlier plan already in the base
   const exists = b => attempt(() => git(['rev-parse', '--verify', '--quiet', `refs/heads/${b}`], root)) != null
   const base = baseCfg || ['main', 'master'].find(exists)
-  const log = attempt(() => git(['log', '--format=%ct%x09%s', base && base !== integ ? `${base}..${integ}` : integ, '--'], root)) || ''
+  const log = attempt(() => git(['log', '--first-parent', '--format=%ct%x09%s', base && base !== integ ? `${base}..${integ}` : integ, '--'], root)) || ''
   const merge = log.split('\n').map(l => l.split('\t')).find(([, s]) => MERGE.test(s || ''))
 
   // What waits for the user

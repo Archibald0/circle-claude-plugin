@@ -2,7 +2,8 @@
 // format of 0.12, then read by the 0.12 scripts. In temporary git repositories.
 // Usage: node tests/migrate.test.mjs [path of migrate.mjs]
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, chmodSync, symlinkSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
 import { join, resolve, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -124,11 +125,12 @@ function repo() {
   writeFileSync(join(d, 'taches', 'T03-recette.md'), frTask('T03', { phase: 2, depend_de: '[T02]' }))
   for (const [f, text] of Object.entries(FR)) writeFileSync(join(d, f), text)
   git('switch', '-qc', 'plan/boutique'); git('add', '.'); git('commit', '-qm', 'plan boutique')
-  const run = (script, args, input) => { const r = spawnSync(process.execPath, [script, ...args], { cwd: root, encoding: 'utf8', input }); return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() } }
+  const run = (script, args, input, env = {}, cwd = root) => { const r = spawnSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8', input, env: { ...process.env, ...env } }); return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() } }
   return {
     root, git, d, read: f => readFileSync(join(d, f), 'utf8'),
     old: (cmd, E) => run(join(OLD, 'suivi.mjs'), [cmd, 'plans/boutique', '--json', JSON.stringify(E)]),
     migrate: (...args) => run(MIGRATE, args),
+    migrateWith: (env, cwd, ...args) => run(MIGRATE, args, undefined, env, cwd),
     script: (name, ...args) => run(join(SCRIPTS, name), args),
     clean: () => git('status', '--porcelain', '--untracked-files=all'),
     snapshot: () => JSON.stringify(readdirSync(d, { recursive: true }).sort().map(f => [f, existsSync(join(d, f)) && !f.endsWith('taches') && !f.endsWith('tasks') ? readFileSync(join(d, f), 'utf8') : null])),
@@ -153,7 +155,7 @@ try {
     assert.equal(r.code, 0, r.err)
     const l = r.out.split('\n')
     assert.equal(l[0], 'migrate plans/boutique: French format of orchestre 0.11 and earlier → 0.12 (preview, nothing written)')
-    assert.equal(l[1], '  taches/ → tasks/: 3 task files (34 frontmatter keys, 12 section titles, 3 key names in the body, 3 branch names)')
+    assert.equal(l[1], '  taches/ → tasks/: 3 task files (34 frontmatter keys, 12 section titles, 3 branch names)')
     assert.equal(l[2], '  SUIVI.md → PROGRESS.md: 8 column titles, 3 statuses, 3 token cells, legend, title')
     assert.equal(l[3], '  PREREQUIS.md → PREREQUISITES.md: 3 column titles, 3 types, 3 statuses, legend, "Checked by" line, title')
     assert.equal(l[4], '  HANDOFF.md: 4 entries, "Entries:" line, "## source plan"')
@@ -195,7 +197,7 @@ try {
     assert.deepEqual(readdirSync(R.d).sort(), ['DISCOVERY.md', 'HANDOFF.md', 'PREREQUISITES.md', 'PROGRESS.md', 'orchestre.config.json', 'progress.json', 'tasks'])
   })
 
-  test('task files: English keys and section titles, branch and key names of the prompt; values and free text kept', () => {
+  test('task files: English keys and section titles, branch names of the plan\'s tasks; values and free text kept (key names quoted in the prose too)', () => {
     const t = R.read('tasks/T02-paiement.md')
     assert.equal(t, `---
 id: T02
@@ -222,7 +224,7 @@ definition_of_done:
 ## Launch prompt
 Tu réalises T02 sur la branche task/T02. Lis d'abord DISCOVERY.md,
 puis les fichiers listés dans Contexte utile.
-Ne modifie rien hors de owned_files.
+Ne modifie rien hors de fichiers_possedes.
 
 ## Useful context
 - src/T02/index.ts : le point d'entrée.
@@ -289,6 +291,7 @@ review · major · .env.example : vérifier SESSION_SECRET avant la PR
     assert.deepEqual(doc.reviews.map(r => r.text), ['.env.example : vérifier SESSION_SECRET avant la PR', 'docs/DEPLOY.md : relire'])
     assert.ok(doc.log.some(e => e.kind === 'model' && e.text === 'T01 : sonnet → opus (test e2e)'), 'French log text kept')
     assert.equal(doc.log.at(-1).text, 'progress.json converted from orchestre-suivi/2 to orchestre-progress/3 by migrate.mjs')
+    assert.deepEqual(doc.handoff, { 'source plan': { decision: { minor: 0, major: 1 }, review: { minor: 0, major: 1 } }, T01: { deviation: { minor: 1, major: 0 }, 'blind-spot': { minor: 0, major: 1 } } }, 'HANDOFF counts of 0.11, types, severities and sections translated')
     const v = R.script('progress.mjs', 'validate', 'plans/boutique')
     assert.equal(v.code, 0, v.err); assert.equal(v.out, 'progress: progress.json valid (orchestre-progress/3, 3 tasks, 1 run)')
   })
@@ -395,6 +398,135 @@ Statuses: todo · in-progress · verification · fix · merge · merged · needs
     const L = JSON.parse(C.script('plan-lint.mjs', 'plans/boutique', '--json').out)
     const named = Object.fromEntries(L.errors.map(e => e.match(/French key "(\w+)" of orchestre 0\.11 and earlier: rename it "(\w+)"/)).filter(Boolean).map(m => [m[1], m[2]]))
     assert.deepEqual(named, { ...LEGACY.taskKeys, ...LEGACY.configKeys })
+  })
+
+
+  test('from a linked worktree: refused, nothing written (suivi.json lives in the main checkout)', () => {
+    const W = repo()
+    const wt = join(temp('migrate-wt-'), 'wt')
+    W.git('worktree', 'add', '-q', '-b', 'tache/T03', wt, 'plan/boutique')
+    const r = W.migrateWith({}, wt, 'plans/boutique', '--write')
+    assert.equal(r.code, 1); assert.match(r.err, /^migrate: run migrate from the main checkout \(.*\), where the progress file of the plan lives, not from a linked worktree$/)
+    assert.ok(existsSync(join(wt, 'plans', 'boutique', 'taches'))); assert.equal(W.git('log', '-1', '--format=%s', 'tache/T03').trim(), 'plan boutique')
+  })
+
+  test('a failure while writing restores the plan folder as it was (tracked files, new files, suivi.json); a rerun then migrates', () => {
+    const F = repo()
+    assert.equal(F.old('debut-run', { phase: 1, mode: 'phase', parallelisme: 1, corrections_max: 2, decisions_office_max: 3 }).code, 0)
+    assert.equal(F.old('fin-run', { statut: 'partiel' }).code, 0)
+    const snap = F.snapshot(), head = F.git('rev-parse', 'HEAD').trim()
+    for (const step of ['tasks/T02-paiement.md', 'PROGRESS.md', 'HANDOFF.md', 'orchestre.config.json', 'progress.json', 'remove taches', 'remove SUIVI.md']) {
+      const r = F.migrateWith({ ORCHESTRE_MIGRATE_FAIL_AFTER: step }, F.root, 'plans/boutique', '--write')
+      assert.equal(r.code, 1, step); assert.equal(r.err, `migrate: migration failed (test failure after ${step}): the plan folder is restored as it was, nothing is migrated`)
+      assert.equal(F.snapshot(), snap, step); assert.equal(F.clean(), '', step); assert.equal(F.git('rev-parse', 'HEAD').trim(), head)
+    }
+    assert.equal(F.migrate('plans/boutique', '--write').code, 0)
+    assert.ok(existsSync(join(F.d, 'progress.json')) && !existsSync(join(F.d, 'suivi.json')))
+  })
+
+  test('files of the French format left next to tasks/ (another clone pulled the migration): plan-lint errs, migrate converts them only', () => {
+    const O = repo()
+    assert.equal(O.migrate('plans/boutique', '--write').code, 0)
+    // The other clone: the migration commit pulled, its own suivi.json of 0.11 still there, and a SUIVI.md restored by hand
+    const at = '2026-10-01T10:00:00+02:00'
+    writeFileSync(join(O.d, 'suivi.json'), JSON.stringify({ format: 'orchestre-suivi/1', plan: 'boutique', dossier: 'plans/boutique', integration: 'plan/boutique', base: null, maj: at, taches: [], runs: [{ numero: 4, run_id: null, phase: 1, mode: 'auto', parallelisme: 1, corrections_max: 2, decisions_office_max: 3, statut: 'terminé', debut: at, fin: at, detail: null, arbitrages_appliques: [], amendements_ecartes: [], taches_ajoutees: [], reportees: [], non_lancees: [], en_attente: [], en_attente_prerequis: [] }], points: [], decisions_office: [], relectures: [], prerequis: [], handoff: {}, lint: { ok: true, erreurs: [] }, journal: [], journal_omis: 0 }))
+    O.git('rm', '-q', '--cached', '-r', 'plans/boutique/PROGRESS.md'); O.git('commit', '-qm', 'drop'); rmSync(join(O.d, 'PROGRESS.md'))
+    writeFileSync(join(O.d, 'SUIVI.md'), FR['SUIVI.md']); O.git('add', 'plans/boutique/SUIVI.md'); O.git('commit', '-qm', 'old view')
+    // A plan of 0.12 without "language" means English: converting leftovers does not add "fr"
+    const { language, ...cfg } = JSON.parse(O.read('orchestre.config.json')); assert.equal(language, 'fr')
+    writeFileSync(join(O.d, 'orchestre.config.json'), JSON.stringify(cfg, null, 2) + '\n'); O.git('commit', '-qam', 'english')
+    const L = JSON.parse(O.script('plan-lint.mjs', 'plans/boutique', '--json').out)
+    assert.deepEqual(L.errors.map(e => e.split(':')[0]), ['SUIVI.md', 'suivi.json'])
+    assert.match(L.errors[0], /^SUIVI\.md: file of the French format of orchestre 0\.11 next to tasks\/: run node ".*\/migrate\.mjs" plans\/boutique, which converts what is left$/)
+    assert.equal(O.script('worktrees.mjs', 'clean', 'plans/boutique').code, 0, 'a finished run of suivi.json does not block the clean')
+    let r = O.migrate('plans/boutique')
+    assert.equal(r.code, 0, r.err)
+    assert.deepEqual(r.out.split('\n').slice(0, 3), ['migrate plans/boutique: files of the French format of 0.11 left next to tasks/ → 0.12 (preview, nothing written)', '  SUIVI.md → PROGRESS.md: 8 column titles, 3 statuses, 3 token cells, legend, title', '  suivi.json → progress.json (outside git): orchestre-suivi/1 → orchestre-progress/3'])
+    assert.ok(!existsSync(join(O.d, 'progress.json')))
+    r = O.migrate('plans/boutique', '--write')
+    assert.equal(r.code, 0, r.err)
+    assert.equal(JSON.parse(O.read('progress.json')).runs[0].number, 4)
+    assert.equal(JSON.parse(O.read('orchestre.config.json')).language, undefined, 'no "language" added')
+    assert.ok(!existsSync(join(O.d, 'SUIVI.md')) && !existsSync(join(O.d, 'suivi.json')))
+    assert.equal(JSON.parse(O.script('plan-lint.mjs', 'plans/boutique', '--json').out).ok, true)
+    assert.equal(O.migrate('plans/boutique').out, 'migrate plans/boutique: already in the 0.12 format, nothing to migrate')
+  })
+
+  test('CRLF files, a decision entry without severity (accepted by 0.11), an extra column, a binary file, and a "constructor" key', () => {
+    const C = repo()
+    const crlf = t => t.replace(/\n/g, '\r\n')
+    for (const f of ['SUIVI.md', 'PREREQUIS.md', 'HANDOFF.md', 'DISCOVERY.md']) writeFileSync(join(C.d, f), crlf(FR[f]))
+    writeFileSync(join(C.d, 'SUIVI.md'), crlf(FR['SUIVI.md'].replace('| Tokens est. / réels |\n|', '| Tokens est. / réels | Note |\n|').replace('|---------------------|\n', '|---------------------|------|\n').replace('| 1,0 M / —           |\n| T02', '| 1,0 M / —           | à voir |\n| T02')))
+    writeFileSync(join(C.d, 'HANDOFF.md'), crlf(FR['HANDOFF.md'] + 'décision · D9 : sans gravité (tranchée par Fabien)\n'))
+    writeFileSync(join(C.d, 'PREREQUIS.md'), crlf(FR['PREREQUIS.md'].replace('| E1 |', '| D9 | décision | Seuil | fait | HANDOFF |\n| E1 |')))
+    writeFileSync(join(C.d, 'taches', 'T01-panier.md'), crlf(frTask('T01').replace('effort: high', 'effort: high\nconstructor: x').replace('La documentation.', 'La documentation, et la branche tache/Z99 d\'un autre plan.')))
+    const png = randomBytes(2048); writeFileSync(join(C.d, 'taches', 'schema.png'), png)
+    C.git('add', '.'); C.git('commit', '-qm', 'crlf')
+    const r = C.migrate('plans/boutique', '--write')
+    assert.equal(r.code, 0, r.err)
+    assert.ok(r.out.includes('3 task files (34 frontmatter keys, 12 section titles, 3 branch names), 1 other file moved as is'), r.out)
+    const sha = b => createHash('sha1').update(b).digest('hex')
+    assert.equal(sha(readFileSync(join(C.d, 'tasks', 'schema.png'))), sha(png), 'binary file moved untouched')
+    for (const f of ['PROGRESS.md', 'PREREQUISITES.md', 'HANDOFF.md', 'DISCOVERY.md', 'tasks/T01-panier.md']) assert.ok(!/[^\r]\n/.test(C.read(f)), `${f}: every line still ends with CRLF`)
+    const pre = C.read('PREREQUISITES.md')
+    assert.ok(pre.includes('Checked by /orchestre:ready on 10/10: phase 1 prête, phase 2 attend D5\r\n') && pre.includes('Types: decision · manual · environment. Statuses: open · done · dropped.\r\n'), pre)
+    assert.ok(C.read('PROGRESS.md').includes('| Tokens est. / actual | Note   |\r\n'), 'extra column kept')
+    assert.ok(C.read('PROGRESS.md').includes('| 1.0M / —             | à voir |\r\n'))
+    assert.ok(C.read('HANDOFF.md').includes('decision · D9 : sans gravité (tranchée par Fabien)\r\n'))
+    assert.ok(C.read('DISCOVERY.md').includes('## Existing context\r\n'))
+    const t1 = C.read('tasks/T01-panier.md')
+    assert.ok(t1.includes('constructor: x\r\n') && t1.includes('## Launch prompt\r\n') && t1.includes('title: Tâche T01\r\n'), t1)
+    assert.ok(t1.includes('sur la branche task/T01.') && t1.includes('la branche tache/Z99 d\'un autre plan.'), 'only the branches of the plan\'s tasks')
+    const L = JSON.parse(C.script('plan-lint.mjs', 'plans/boutique', '--json').out)
+    assert.equal(L.ok, true, JSON.stringify(L.errors))
+    assert.equal(L.prerequisites.find(p => p.id === 'D9').status, 'done', 'the decision without severity still counts in HANDOFF.md')
+  })
+
+  test('symbolic link or folder inside taches/: refused, nothing written', () => {
+    const Y = repo()
+    symlinkSync('../HANDOFF.md', join(Y.d, 'taches', 'T09-link.md')); Y.git('add', '.'); Y.git('commit', '-qm', 'link')
+    let r = Y.migrate('plans/boutique', '--write')
+    assert.equal(r.code, 1); assert.equal(r.err, 'migrate: taches/T09-link.md: a symbolic link, migrate does not follow it; replace it by the file, or move it by hand')
+    Y.git('rm', '-q', 'plans/boutique/taches/T09-link.md'); mkdirSync(join(Y.d, 'taches', 'images')); writeFileSync(join(Y.d, 'taches', 'images', 'a.txt'), 'a'); Y.git('add', '.'); Y.git('commit', '-qm', 'dir')
+    r = Y.migrate('plans/boutique')
+    assert.equal(r.code, 1); assert.match(r.err, /taches\/images: a folder inside taches\//)
+    assert.ok(existsSync(join(Y.d, 'taches')) && !existsSync(join(Y.d, 'tasks')))
+  })
+
+  test('commit refused by a hook: code 1, files migrated and staged; outside the integration branch: a note', () => {
+    const K = repo()
+    K.git('switch', '-q', 'main'); K.git('merge', '-q', '--ff-only', 'plan/boutique')
+    let r = K.migrate('plans/boutique')
+    assert.ok(r.out.includes('Note: the current branch is main, not the integration branch plan/boutique; the migration commit goes on main.'), r.out)
+    writeFileSync(join(K.root, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\necho "no commit today" >&2\nexit 1\n'); chmodSync(join(K.root, '.git', 'hooks', 'pre-commit'), 0o755)
+    r = K.migrate('plans/boutique', '--write')
+    assert.equal(r.code, 1)
+    assert.match(r.out, /^migrate plans\/boutique: French format of orchestre 0\.11 and earlier → 0\.12: files migrated and staged, but the commit failed \(no commit today\): commit plans\/boutique by hand$/m)
+    assert.ok(K.clean().split('\n').filter(Boolean).every(l => /^[RAMD] /.test(l)), 'everything staged')
+  })
+
+  test('suivi.json with a full log: the conversion note keeps it at 200 events', () => {
+    const J = repo()
+    assert.equal(J.old('debut-run', { phase: 1, mode: 'phase', parallelisme: 1, corrections_max: 2, decisions_office_max: 3 }).code, 0)
+    assert.equal(J.old('fin-run', { statut: 'partiel' }).code, 0)
+    const sv = JSON.parse(J.read('suivi.json'))
+    sv.journal = Array.from({ length: 200 }, (_, i) => ({ quand: sv.maj, genre: 'etape', tache: null, texte: `ancien ${i}` })); sv.journal_omis = 7
+    writeFileSync(join(J.d, 'suivi.json'), JSON.stringify(sv))
+    assert.equal(J.migrate('plans/boutique', '--write').code, 0)
+    const doc = JSON.parse(J.read('progress.json'))
+    assert.deepEqual([doc.log.length, doc.log_omitted, doc.log[0].text, doc.log[0].kind, doc.log.at(-1).kind], [200, 8, 'ancien 1', 'step', 'run'])
+  })
+
+  test('a plan at the root of the repository (plan-dir "."): migrated', () => {
+    const root = temp('migrate-root-')
+    const git = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    git('init', '-q', '-b', 'plan/root'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't'); git('config', 'commit.gpgsign', 'false')
+    mkdirSync(join(root, 'taches')); writeFileSync(join(root, 'taches', 'T01-x.md'), frTask('T01')); writeFileSync(join(root, 'SUIVI.md'), FR['SUIVI.md'])
+    git('add', '.'); git('commit', '-qm', 'plan')
+    const r = spawnSync(process.execPath, [MIGRATE, '.', '--write'], { cwd: root, encoding: 'utf8' })
+    assert.equal(r.status, 0, r.stderr)
+    assert.ok(existsSync(join(root, 'tasks', 'T01-x.md')) && existsSync(join(root, 'PROGRESS.md')))
+    assert.equal(git('status', '--porcelain'), '')
   })
 
   console.log(`migrate: ALL GREEN (${n} tests)`)

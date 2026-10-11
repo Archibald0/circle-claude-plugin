@@ -885,7 +885,7 @@ function status(arg) {
 
   const exists = b => attempt(() => git(['rev-parse', '--verify', '--quiet', `refs/heads/${b}`], root)) != null
   const base = ctx.base || ['main', 'master'].find(exists)
-  const log = attempt(() => git(['log', '--format=%ct%x09%s', base && base !== integ ? `${base}..${integ}` : integ, '--'], root)) || ''
+  const log = attempt(() => git(['log', '--first-parent', '--format=%ct%x09%s', base && base !== integ ? `${base}..${integ}` : integ, '--'], root)) || ''
   const merge = log.split('\n').map(l => l.split('\t')).find(([, s]) => MERGE.test(s || ''))
 
   const yourTurn = []
