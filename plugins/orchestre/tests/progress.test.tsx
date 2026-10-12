@@ -2,7 +2,7 @@
 // of the test under the plugin ($.fs, $.session.cwd), and a progress.json that changes between two reads.
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { banner, width, normalize } from '../hooks/view-model.mjs'
+import { banner, width, normalize, DETAILS_RESERVE, HIDE_RESERVE } from '../hooks/view-model.mjs'
 import { FRAME_COUNT, frameInstant, demoSnapshot } from '../hooks/demo.mjs'
 
 const ROOT = '/repo'
@@ -19,12 +19,13 @@ const doc = (tasks: object[], extra: object = {}) => JSON.stringify({
 
 // What the engine does under any plugin: start the session, give its folder, register a command, draw.
 // Under the banner, another mod draws too: it must stay visible.
+const registered: string[] = []
 function down(on: On, commandLine: 'ok' | 'taken' = 'ok') {
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.attach', ($, e) => ({ clientId: e.clientId }))
   on('classic.SessionStart', () => ({}))
   on('session.cwd', () => ({ value: ROOT }))
-  on('command.register', ($, e) => (commandLine === 'taken' ? { deny: `"/${e.name}" refused: another plugin registered it` } : { value: { command: e.name } }))
+  on('command.register', ($, e) => (registered.push(e.name), commandLine === 'taken' ? { deny: `"/${e.name}" refused: another plugin registered it` } : { value: { command: e.name } }))
   on('ui.render', ($, e) => { const { Box, Text } = $.ui.resolve(e); return e.component === 'AbovePrompt' ? <Text>banner of another mod</Text> : <Box /> })
   on('prompt.submit', ($, e) => ({ text: e.text }))
 }
@@ -59,6 +60,7 @@ test('banner, /progress and notifications during a run, on the terminal and the 
   const clock = mock.clock(on, { now: T0 })
   const w = world(on)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  expect(registered).toEqual(['progress'])
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'orchestre', surface, ...BAND })
     expect(await ui.find({ text: WHEEL })).toBeDefined()
@@ -81,11 +83,11 @@ test('banner, /progress and notifications during a run, on the terminal and the 
   await mounted.unmount()
   const text = await $.command.run(CMD('text'))
   expect(text.text ?? '').toMatch(/^▶ demo {2}◉○/)
-  // T01 merged, T02 needs a human: one notification at the next read, for what asks for someone
+  // T01 merged, T02 waits for a human: one notification at the next read, for what asks for someone
   w.file.text = doc([task('T01', 1, { status: 'merged', attempts: 1 }), task('T02', 1, { status: 'needs-human', blocker: ['secret'] }), task('T03', 2)])
   w.file.mtime = 2
   await clock.advance(2100)
-  expect(w.toasts).toEqual(['⚑ T02 needs a human (15000 ms)'])
+  expect(w.toasts).toEqual(['⚑ T02 waits for a human (15000 ms)'])
 })
 
 // Run 1 stopped on an issue for a human on T02, a review and an auto-decision of T01
@@ -102,7 +104,7 @@ test('/progress pane: a view in cards, its keys, its actions prepared in the pro
   w.file.text = STOPPED
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   const r = await $.command.run({ ...(CMD('') as object), presentation: { isFullscreen: true, columns: 160 } } as never)
-  expect(r.text ?? '').toBe('Progress of demo open in the pane.')
+  expect(r.text ?? '').toBe('Progress of demo opened in the pane.')
   expect(w.opened).toEqual(['orchestre (Esc closes)'])
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'orchestre', surface, ...PANE })
@@ -176,11 +178,12 @@ const MODELS = doc([
 
 test('task lines: the model used, "planned → used" when they differ, the planned one before the worker; changes in the log (0.11.0); formats not read', async ($, on) => {
   mock.clock(on, { now: T0 })
+  const memory = state(on)
   const w = world(on)
   w.file.text = MODELS
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   const r = await $.command.run({ ...(CMD('') as object), presentation: { isFullscreen: true, columns: 160 } } as never)
-  expect(r.text ?? '').toMatch(/open in the pane/)
+  expect(r.text ?? '').toMatch(/opened in the pane/)
   expect(w.toasts.filter(t => /format/.test(t))).toEqual([])
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'orchestre', surface, ...PANE })
@@ -206,12 +209,16 @@ test('task lines: the model used, "planned → used" when they differ, the plann
   w.file.mtime = 2
   await $.command.run(CMD('text'))
   await $.command.run(CMD('text'))
-  expect(w.toasts.filter(t => /format/.test(t))).toEqual(['plans/demo/progress.json is in the format orchestre-progress/4; this mod reads orchestre-progress/3. Update the orchestre plugin. (15000 ms)'])
+  expect(w.toasts.filter(t => /format/.test(t))).toEqual(['orchestre: plans/demo/progress.json is in the format orchestre-progress/4; this mod reads orchestre-progress/3. Update the orchestre plugin. (15000 ms)'])
+  // /clear resets $.state, not what was already said
+  memory.erase()
+  await $.classic.SessionStart({ source: 'clear' } as never)
+  expect(w.toasts.filter(t => /format/.test(t)).length).toBe(1)
   // A progress.json still in a format of 0.11: the next write of progress.mjs converts it
   w.file.text = MODELS.replace('"orchestre-progress/3"', '"orchestre-suivi/2"')
   w.file.mtime = 3
   await $.command.run(CMD('text'))
-  expect(w.toasts.filter(t => /format/.test(t)).at(-1)).toBe('plans/demo/progress.json is in the format orchestre-suivi/2 of orchestre 0.11; this mod reads orchestre-progress/3: the next write of progress.mjs converts it. (15000 ms)')
+  expect(w.toasts.filter(t => /format/.test(t)).at(-1)).toBe('orchestre: plans/demo/progress.json is in a format of orchestre 0.11 (orchestre-suivi/2); this mod reads orchestre-progress/3: the next write of progress.mjs converts it. (15000 ms)')
 })
 
 test('nothing to follow: no banner, /progress says it; a hosted session waits for its surface, a -p reads nothing', async ($, on) => {
@@ -233,8 +240,9 @@ test('nothing to follow: no banner, /progress says it; a hosted session waits fo
   expect(r.text ?? '').toBe('orchestre: nothing to follow in this repository: no plans/<name>/progress.json. It appears at the first run of orchestre 0.12 or later. /progress demo plays the demo.')
 })
 
-test('a plan of 0.11 (suivi.json, no progress.json): not read, the way to migrate it said once', async ($, on) => {
+test('a plan of 0.11 (suivi.json, no progress.json): not read, the way to migrate it said once, even after /clear', async ($, on) => {
   const clock = mock.clock(on, { now: T0 })
+  const memory = state(on)
   const LEGACY = `${ROOT}/plans/demo/suivi.json`
   const toasts: string[] = [], read: string[] = []
   down(on)
@@ -245,7 +253,7 @@ test('a plan of 0.11 (suivi.json, no progress.json): not read, the way to migrat
   on('ui.toast', ($, e) => { toasts.push(e.text + (e.timeoutMs ? ` (${e.timeoutMs} ms)` : '')); return { value: undefined } })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   await clock.advance(6100)
-  const NOTE = 'plans/demo is in the 0.11 format (suivi.json): /orchestre:ready plans/demo or /orchestre:run plans/demo migrates it.'
+  const NOTE = 'plans/demo is in the 0.11 format (suivi.json): /orchestre:ready plans/demo or /orchestre:run plans/demo offers to migrate it.'
   expect(toasts).toEqual([`orchestre: ${NOTE} (15000 ms)`])
   expect(read).toEqual([])
   const ui = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...BAND })
@@ -254,6 +262,50 @@ test('a plan of 0.11 (suivi.json, no progress.json): not read, the way to migrat
   const r = await $.command.run(CMD(''))
   expect(r.text ?? '').toMatch(new RegExp(`^orchestre: nothing to follow in this repository: no plans/<name>/progress\\.json\\. .*\\n${NOTE.replace(/[.()/:]/g, '\\$&')}$`))
   expect(toasts.length).toBe(1)
+  memory.erase()
+  await $.classic.SessionStart({ source: 'clear' } as never)
+  await clock.advance(4100)
+  expect(toasts.length).toBe(1)
+  // The note is about the plan given: none for a plan without suivi.json
+  expect((await $.command.run(CMD('plans/other'))).text ?? '').toMatch(/^orchestre: nothing to follow in this repository: no plans\/<name>\/progress\.json\. [^\n]*$/)
+  expect((await $.command.run(CMD('plans/demo'))).text ?? '').toMatch(new RegExp(`\\n${NOTE.replace(/[.()/:]/g, '\\$&')}$`))
+})
+
+test('/progress plans/<name> on a plan without progress.json: says which plan is shown instead, and how to migrate a plan of 0.11', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  const A = `${ROOT}/plans/a/progress.json`, B = `${ROOT}/plans/b/suivi.json`
+  const files: Record<string, string> = { [A]: doc([task('T01', 1, { step: 'worker', isolated: true })], { plan: 'a', dir: 'plans/a' }), [B]: '{}', [`${ROOT}/plans/d/progress.json`]: '{"format":"orchestre-progress/9","tasks":[]}' }
+  down(on)
+  on('fs.exists', ($, e) => ({ value: e.path === `${ROOT}/plans` || e.path in files }))
+  on('fs.list', () => ({ value: ['a', 'b', 'c', 'd'].map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })) }))
+  on('fs.stat', ($, e) => (files[e.path] ? { value: { kind: 'file' as const, size: files[e.path]!.length, mtimeMs: e.path === A ? 2 : 1, isLink: false } } : { deny: 'ENOENT' }))
+  on('fs.read', ($, e) => (files[e.path] ? { value: files[e.path] } : { deny: 'ENOENT' }))
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  const b = (await $.command.run(CMD('plans/b text'))).text ?? ''
+  expect(b.split('\n').slice(0, 3)).toEqual(['orchestre: plans/b has no progress.json; plans/a is shown instead.', 'plans/b is in the 0.11 format (suivi.json): /orchestre:ready plans/b or /orchestre:run plans/b offers to migrate it.', b.split('\n')[2]!])
+  expect(b.split('\n')[2]).toMatch(/^▶ a /)
+  expect((await $.command.run(CMD('plans/c text'))).text ?? '').toMatch(/^orchestre: plans\/c has no progress\.json; plans\/a is shown instead\.\n▶ a /)
+  expect((await $.command.run(CMD('plans/d text'))).text ?? '').toMatch(/^orchestre: plans\/d\/progress\.json cannot be read by this mod; plans\/a is shown instead\.\n▶ a /)
+  expect((await $.command.run(CMD('plans/a text'))).text ?? '').toMatch(/^▶ a /)
+})
+
+test('where the pane does not open: /progress gives the state as text, "⤢ Details" says it', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  const toasts: string[] = []
+  down(on)
+  on('fs.exists', ($, e) => ({ value: e.path === `${ROOT}/plans` || e.path === PROGRESS }))
+  on('fs.list', () => ({ value: [{ name: 'demo', kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false }] }))
+  on('fs.stat', ($, e) => (e.path === PROGRESS ? { value: { kind: 'file' as const, size: 10, mtimeMs: 1, isLink: false } } : { deny: 'ENOENT' }))
+  on('fs.read', ($, e) => (e.path === PROGRESS ? { value: STOPPED } : { deny: 'ENOENT' }))
+  on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined } })
+  on('ui.open', () => ({ value: { isPlaced: false as const } }) as never)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  expect((await $.command.run(CMD(''))).text ?? '').toMatch(/^■ demo {2}.*\n\n⚠ Your turn {3}1 to settle/)
+  const ui = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'details' })
+  await ui.unmount()
+  expect(toasts).toEqual(['The pane does not open here: /progress text gives the same state.'])
 })
 
 test('a desktop session not interactive at the start is followed', async ($, on) => {
@@ -297,12 +349,14 @@ test('end of run: "✕ Hide" can be clicked, without a key, room of the buttons 
   const w = world(on)
   w.file.text = FINISHED
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
-  // A width where the labels fit with "⤢ Details" alone (12 cells), not with "✕ Hide" too (19)
+  // A width where the labels fit with "   ⤢ Details" alone (12 cells), not with " ✕ Hide" too (7 more)
+  expect([DETAILS_RESERVE, HIDE_RESERVE]).toEqual([12, 7])
+  const both = DETAILS_RESERVE + HIDE_RESERVE
   const inst = normalize(JSON.parse(FINISHED))!
   const toReview = (columns: number, reserve: number) => banner(inst, T0, columns, reserve)!.find(m => m.k === 'review')?.t
-  let columns = width(banner(inst, T0, 1000)!) + 19
-  while (columns > 40 && !(toReview(columns, 19) === '1' && toReview(columns, 12) === '1 to review')) columns--
-  expect([toReview(columns, 19), toReview(columns, 12)]).toEqual(['1', '1 to review'])
+  let columns = width(banner(inst, T0, 1000)!) + both
+  while (columns > 40 && !(toReview(columns, both) === '1' && toReview(columns, DETAILS_RESERVE) === '1 to review')) columns--
+  expect([toReview(columns, both), toReview(columns, DETAILS_RESERVE)]).toEqual(['1', '1 to review'])
   const ui = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...BAND, props: { ...BAND.props, bodyColumns: columns } })
   expect(await ui.find({ text: /■ / })).toBeDefined()
   expect((await ui.find({ type: 'Button', key: 'goto-review' }))?.props.label).toBe('1')
@@ -353,11 +407,11 @@ test('notifications: only what asks for someone, with a sound after /progress so
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   expect((await $.command.run(CMD('sound'))).text ?? '').toBe('orchestre: sound on when something waits for you (macOS). /progress sound to turn it off.')
   expect(saved.get('sound')).toBe(true)
-  // T01 merged and a review (no notification), T02 needs a human (notification and sound)
+  // T01 merged and a review (no notification), T02 waits for a human (notification and sound)
   w.file.text = doc([task('T01', 1, { status: 'merged', attempts: 1 }), task('T02', 1, { status: 'needs-human', blocker: ['secret'] }), task('T03', 2)], { reviews: [{ task: 'T01', phase: 1, text: 'x', run: 1, at: '2026-10-08T11:59:00+02:00' }] })
   w.file.mtime = 2
   await clock.advance(2100)
-  expect(w.toasts).toEqual(['⚑ T02 needs a human (15000 ms)'])
+  expect(w.toasts).toEqual(['⚑ T02 waits for a human (15000 ms)'])
   expect(w.sounds).toEqual(['sounds/waiting.wav'])
   expect((await $.command.run(CMD('sound'))).text ?? '').toBe('orchestre: sound off. /progress sound to turn it back on.')
   expect(saved.get('sound')).toBe(false)
@@ -391,7 +445,7 @@ test('sound setting: "sound" wins over the old "son"', async ($, on) => {
   w.file.text = doc([task('T01', 1), task('T02', 1, { status: 'needs-human', blocker: ['secret'] }), task('T03', 2)])
   w.file.mtime = 2
   await clock.advance(2100)
-  expect(w.toasts).toEqual(['⚑ T02 needs a human (15000 ms)'])
+  expect(w.toasts).toEqual(['⚑ T02 waits for a human (15000 ms)'])
   expect(w.sounds).toEqual([])
 })
 
@@ -455,6 +509,8 @@ test('after /clear: the plan chosen by /progress plans/<name> comes back, and pr
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   const choice = await $.command.run(CMD('plans/other text'))
   expect(choice.text ?? '').toMatch(/^▶ other /)
+  expect((await $.command.run(CMD('auto text'))).text ?? '').toMatch(/^▶ demo /)
+  expect((await $.command.run(CMD('plans/other text'))).text ?? '').toMatch(/^▶ other /)
   // What /clear leaves: $.state at its default values, the timer still there but not passed yet
   memory.erase()
   await $.classic.SessionStart({ source: 'clear' } as never)
@@ -489,7 +545,7 @@ test('/progress demo, without a repository: a run played in memory, marked DEMO,
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   const r = await $.command.run(CMD('demo'))
   expect(r.text ?? '').toMatch(/^Demo started: the run of a made-up plan, showcase-site/)
-  expect((await $.command.run(CMD(''))).text ?? '').toBe('Progress of showcase-site open in the pane.')
+  expect((await $.command.run(CMD(''))).text ?? '').toBe('Progress of showcase-site opened in the pane.')
   expect(opened).toEqual(['Orchestre · showcase-site (demo)'])
   const ui = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...BAND })
   expect((await ui.find({ type: 'Text', text: ' DEMO ' }))?.props.backgroundColor).toBe('merged')
@@ -502,7 +558,7 @@ test('/progress demo, without a repository: a run played in memory, marked DEMO,
   expect(readBack.length).toBe(before)
   expect(await ui.find({ text: /^✓ $/ })).toBeDefined()
   // Only what asks for someone becomes a notification
-  expect(toasts).toContain('⚑ T03 needs a human (15000 ms)')
+  expect(toasts).toContain('⚑ T03 waits for a human (15000 ms)')
   expect(toasts).toContain('Run stopped: T03, Test SMTP key (15000 ms)')
   expect(toasts.some(t => t.startsWith('Phase 1 finished'))).toBe(false)
   expect(toasts.some(t => t.startsWith('Run 2 (phases 1 to 2): finished'))).toBe(false)
@@ -539,7 +595,7 @@ test('/progress demo in a followed repository: the real plan waits, /progress au
   w.file.text = doc([task('T01', 1, { status: 'merged', attempts: 1 }), task('T02', 1, { status: 'needs-human', blocker: ['secret'] }), task('T03', 2)])
   w.file.mtime = 2
   await clock.advance(2100)
-  expect(w.toasts.some(t => t.includes('T02 needs'))).toBe(false)
+  expect(w.toasts.some(t => t.includes('T02 waits'))).toBe(false)
   const ui = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...BAND })
   expect(await ui.find({ text: /^showcase-site$/ })).toBeDefined()
   await ui.unmount()

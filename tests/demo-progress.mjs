@@ -83,7 +83,7 @@ const RUN1 = [
   ['T03 starts; T02 in verification (attempt 2)', () => { worker('T03', true); progress('step', { task: 'T02', step: 'verification' }) }],
   ['T02 in merge; T03 in verification', () => { progress('step', { task: 'T02', step: 'merge' }); progress('step', { task: 'T03', step: 'verification' }) }],
   ['T02 merged at the 2nd attempt, with an auto-decision', () => { merge('T02'); progress('close', { task: 'T02', status: 'merged', attempts: 2, branch: 'task/T02', rejections: [REJECTION], auto_decisions: [{ title: 'Maximum length of the message', option: 'B', description: '2,000 characters' }] }) }],
-  ['T03 needs a human: the test SMTP key is missing', () => progress('close', { task: 'T03', status: 'needs-human', attempts: 1, branch: 'task/T03', blocker: ['test SMTP key missing'], issues: [SMTP] })],
+  ['T03 waits for a human: the test SMTP key is missing', () => progress('close', { task: 'T03', status: 'needs-human', attempts: 1, branch: 'task/T03', blocker: ['test SMTP key missing'], issues: [SMTP] })],
   ['End of run 1: awaiting a ruling on T03', () => progress('run-end', { ...EMPTY_SUMMARY, status: 'awaiting-ruling', phase: 1, mode: 'phase', stop_issue: SMTP, waiting: ['T03'] })],
 ]
 const RUN2 = [

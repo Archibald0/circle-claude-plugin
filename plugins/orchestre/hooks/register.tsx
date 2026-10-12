@@ -13,7 +13,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Action, Card, Snapshot, Line, Section } from '../types'
 import { FRAME_COUNT, DEMO_FRAME_MS, DEMO_PLAN, demoEnd, demoSnapshot, frameAt } from './demo.mjs'
-import { IMPORTANT_TOAST_MS, FORMAT, FORMATS, LEGACY_FORMATS, IMAGE_MS, banner, plainText, changes, cut, since, formatOf, isImportant, statusLine, normalize, news, pane, activeRun, runInProgress, suffix, stateText } from './view-model.mjs'
+import { IMPORTANT_TOAST_MS, DETAILS_GAP, DETAILS_LABEL, DETAILS_RESERVE, HIDE_GAP, HIDE_LABEL, HIDE_RESERVE, FORMAT, FORMATS, LEGACY_FORMATS, IMAGE_MS, banner, plainText, changes, cut, since, formatOf, isImportant, statusLine, normalize, news, pane, activeRun, runInProgress, suffix, stateText } from './view-model.mjs'
 
 const PANE_ID = 'orchestre'
 // The sound played when something waits for you, with /progress sound (afplay on macOS; nothing on a Linux or Windows terminal)
@@ -31,15 +31,15 @@ const fullLog = atom({ plugin: 'orchestre', key: 'fullLog' } as const, false)
 const hidden = atom({ plugin: 'orchestre', key: 'hidden' } as const, null)
 const alert = atom({ plugin: 'orchestre', key: 'alert' } as const, null)
 
-// Room of the buttons after the banner: "   ⤢ Details", always, and " ✕ Hide" at the end of a run. They are clicked,
-// without a key: a digit typed alone in an empty prompt would have pressed them instead of writing it.
-const DETAILS_RESERVE = 12
-const HIDE_RESERVE = 7
+// The buttons after the banner ("⤢ Details", "✕ Hide") are clicked, without a key: a digit typed alone in an empty prompt
+// would have pressed them instead of writing it. Their labels and their room are in view-model.mjs.
 
-// /clear, /resume and /branch reset $.state to its defaults without running session.start again: the person's two choices
-// are kept here too, to restore them (classic.SessionStart). A reload of the module keeps $.state.
+// /clear, /resume and /branch reset $.state to its defaults without running session.start again: the person's two choices,
+// and what was already said once, are kept here too, to restore them (classic.SessionStart). A reload of the module keeps
+// $.state.
 let chosenPlan: string | null = null
 let chosenHidden: number | null = null
+let alerted: string | null = null
 
 const parent = (p: string) => p.replace(/\/+$/, '').replace(/\/[^/]*$/, '') || '/'
 
@@ -69,11 +69,23 @@ async function findPlan($: EngineInterface, base: string, file = 'progress.json'
   return best?.plan ?? null
 }
 
-// A plan of orchestre 0.11 or earlier: a suivi.json without a progress.json. The mod does not read it: it says how to migrate it
-async function legacyNote($: EngineInterface): Promise<string | null> {
+// A plan of orchestre 0.11 or earlier: a suivi.json without a progress.json. The mod does not read it: it says how to migrate
+// it. The plan given, otherwise the suivi.json written last.
+async function legacyNote($: EngineInterface, given: string | null = null): Promise<string | null> {
   const base = await repoRoot($)
-  const plan = base ? await findPlan($, base, 'suivi.json') : null
-  return plan ? `${plan} is in the 0.11 format (suivi.json): /orchestre:ready ${plan} or /orchestre:run ${plan} migrates it.` : null
+  if (!base) return null
+  const plan = given ? ((await $.fs.exists(`${base}/${given}/suivi.json`).catch(() => false)) ? given : null) : await findPlan($, base, 'suivi.json')
+  return plan ? `${plan} is in the 0.11 format (suivi.json): /orchestre:ready ${plan} or /orchestre:run ${plan} offers to migrate it.` : null
+}
+
+// The plan chosen by /progress plans/<name>, when another one is shown: why, in a line (empty if it is the one shown)
+async function notFollowed($: EngineInterface, given: string, inst: Snapshot): Promise<string> {
+  const shown = inst.dir || `plans/${inst.plan}`
+  if (shown === given) return ''
+  const base = await repoRoot($)
+  const readable = !!base && (await $.fs.exists(`${base}/${given}/progress.json`).catch(() => false))
+  const note = readable ? null : await legacyNote($, given)
+  return `orchestre: ${readable ? `${given}/progress.json cannot be read by this mod` : `${given} has no progress.json`}; ${shown} is shown instead.${note ? `\n${note}` : ''}\n`
 }
 
 async function readJson($: EngineInterface, filePath: string): Promise<unknown> {
@@ -87,7 +99,8 @@ async function readJson($: EngineInterface, filePath: string): Promise<unknown> 
 
 // Says once something the person must act on (unknown format, plan of 0.11), keyed so as not to repeat it
 async function alertOnce($: EngineInterface, key: string, message: string): Promise<void> {
-  if ((await read($, alert)) === key) return
+  if (alerted === key || (await read($, alert)) === key) return
+  alerted = key
   await update($, alert, () => key)
   $.ui.toast(message, { timeoutMs: IMPORTANT_TOAST_MS })
 }
@@ -101,7 +114,8 @@ async function refresh($: EngineInterface, force: boolean): Promise<void> {
   if (!base) return forgetDemo($)
   const plan = await findPlan($, base)
   if (!plan) {
-    const note = await legacyNote($)
+    // Said once: no need to look for it again every 2 s
+    const note = (alerted ?? (await read($, alert)))?.startsWith('legacy:') ? null : await legacyNote($)
     if (note) await alertOnce($, `legacy:${note}`, `orchestre: ${note}`)
     return forgetDemo($)
   }
@@ -114,10 +128,10 @@ async function refresh($: EngineInterface, force: boolean): Promise<void> {
   lastFile = f
   await update($, lastRead, () => st.mtimeMs)
   if (!FORMATS.includes(formatOf(doc) ?? '')) {
-    const format = formatOf(doc) ?? 'unknown'
-    await alertOnce($, format, LEGACY_FORMATS.includes(format)
-      ? `${plan}/progress.json is in the format ${format} of orchestre 0.11; this mod reads ${FORMAT}: the next write of progress.mjs converts it.`
-      : `${plan}/progress.json is in the format ${format}; this mod reads ${FORMATS.join(' and ')}. Update the orchestre plugin.`)
+    const format = formatOf(doc)
+    await alertOnce($, `format:${format}`, format && LEGACY_FORMATS.includes(format)
+      ? `orchestre: ${plan}/progress.json is in a format of orchestre 0.11 (${format}); this mod reads ${FORMAT}: the next write of progress.mjs converts it.`
+      : `orchestre: ${plan}/progress.json ${format ? `is in the format ${format}` : 'gives no format'}; this mod reads ${FORMATS.join(' and ')}. Update the orchestre plugin.`)
     return
   }
   const after = normalize(doc)
@@ -308,12 +322,13 @@ export const register: Register = on => {
     await refresh($, true).catch(() => undefined)
     const inst = await read($, snapshot)
     if (!inst) {
-      const note = await legacyNote($)
+      const note = await legacyNote($, chosenPlan)
       return { text: `orchestre: nothing ${NOTHING_TO_FOLLOW}${note ? `\n${note}` : ''}` }
     }
+    const elsewhere = chosenPlan ? await notFollowed($, chosenPlan, inst) : ''
     const now = await $.clock.now()
-    if (words.includes('text')) return { text: stateText(inst, now) }
-    return (await openPane($, inst)) ? { text: `Progress of ${inst.plan} open in the pane.` } : { text: stateText(inst, now) }
+    if (words.includes('text')) return { text: elsewhere + stateText(inst, now) }
+    return { text: elsewhere + ((await openPane($, inst)) ? `Progress of ${inst.plan} opened in the pane.` : stateText(inst, now)) }
   })
 
   // The banner: during a run, then the end state until it is hidden or a run starts again. The band is shared: what the
@@ -333,10 +348,10 @@ export const register: Register = on => {
       <Box flexDirection="column">
         <Box key="orchestre" flexDirection="row">
           {draw($, e, line, 'banner')}
-          <Text>{'   '}</Text>
-          <Button key="details" label="⤢ Details" plain hover={{ scope: 'orchestre-details', color: 'inverseText', backgroundColor: 'claude', bold: true }} onPress={() => openFromBanner($, null)} />
-          {finished && <Text> </Text>}
-          {finished && <Button key="hide" label="✕ Hide" plain dimColor onPress={async () => { chosenHidden = number; await update($, hidden, () => number); await updateStatus($) }} />}
+          <Text>{DETAILS_GAP}</Text>
+          <Button key="details" label={DETAILS_LABEL} plain hover={{ scope: 'orchestre-details', color: 'inverseText', backgroundColor: 'claude', bold: true }} onPress={() => openFromBanner($, null)} />
+          {finished && <Text>{HIDE_GAP}</Text>}
+          {finished && <Button key="hide" label={HIDE_LABEL} plain dimColor onPress={async () => { chosenHidden = number; await update($, hidden, () => number); await updateStatus($) }} />}
         </Box>
         {others}
       </Box>

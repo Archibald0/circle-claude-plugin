@@ -64,6 +64,12 @@ try {
     const v = M.normalize({ ...raw, tasks: raw.tasks.map(({ model_used, ...t }) => t) })
     assert.deepEqual(v.tasks.map(t => [t.id, t.model, t.modelUsed, t.step]), A.tasks.map(t => [t.id, 'sonnet', null, t.step]))
     assert.deepEqual({ ...v, tasks: [] }, { ...A, tasks: [] }, 'the rest unchanged')
+    // HANDOFF counts, open prerequisites only, plan-lint errors, issues not settled yet
+    const issue = (title, status) => ({ run: 1, task: 'T02', title, context: '', human: false, role: 'open', status, chosen_option: status === 'settled' ? 'A' : null, options: [] })
+    const X = M.normalize({ ...raw, handoff: { 'Phase 1': { ticket: { minor: 1, major: 1 }, deviation: { minor: 3, major: 0 } }, 'Phase 2': { deviation: { minor: 0, major: 2 } } }, prerequisites: [{ id: 'D5', type: 'decision', status: 'open', blocks: ['T04'] }, { id: 'D6', type: 'access', status: 'done', blocks: ['T03'] }], lint: { ok: false, errors: ['a', 'b'] }, issues: [issue('Settled', 'settled'), issue('Open', 'open')] })
+    assert.deepEqual([X.tickets, X.majorCounts], [2, { ticket: 1, deviation: 2 }])
+    assert.deepEqual(X.prerequisites, [{ id: 'D5', type: 'decision', blocks: ['T04'] }])
+    assert.deepEqual([X.lint, X.issues.map(p => p.title)], [{ ok: false, errors: 2 }, ['Open']])
   })
 
   testCase('during a run: banner, suffix of the spinner, tasks in progress and their timeline', () => {
@@ -97,34 +103,39 @@ try {
 
   testCase('notifications: review, task that needs a human; nothing at the first read', () => {
     assert.deepEqual(M.changes(null, B), [])
-    assert.deepEqual(M.changes(A, B), ['⚑ T02 needs a human', '⚑ T01: to review before the PR', '⚑ T02: 2 reviews before the PR'], 'one notification per task')
+    assert.deepEqual(M.changes(A, B), ['⚑ T02 waits for a human', '⚑ T01: to review before the PR', '⚑ T02: 2 reviews before the PR'], 'one notification per task')
     assert.deepEqual(M.changes(B, B), [])
   })
 
   testCase('"Your turn" card: one line per thing, one action per type; run card, log, state as text and PR draft', () => {
     const yourTurn = M.yourTurnCard(B, tA, 100)
-    assert.equal(M.plainText(yourTurn.title), '⚠ Your turn'); assert.equal(M.plainText(yourTurn.meta), '1 to settle · 3 reviews · 1 decision')
+    assert.equal(M.plainText(yourTurn.title), '⚠ Your turn'); assert.equal(M.plainText(yourTurn.meta), '1 to settle · 3 reviews · 1 auto-decision')
     const tt = text(yourTurn.lines)
     assert.match(tt, /^⚑ T02 · Missing secret \(human\) {2}→ resume the run\n +secret missing for the tests$/m)
     assert.match(tt, /^⚑ T01 · agents\/x\/\.env\.example: add MR_MAX {2}→ review$/m)
-    assert.match(tt, /^⇒ T01 · Retry threshold: A \(cap at 30 s\) {2}→ check again$/m)
+    assert.match(tt, /^⇒ T01 · Retry threshold: A \(cap at 30 s\) {2}→ go over$/m)
     const actions = yourTurn.lines.flat().filter(m => m.x).map(m => m.x)
     assert.deepEqual(actions.map(x => x.hotkey), ['1', '2', '3', '4', '5'])
     assert.equal(actions[0].prompt, '/orchestre:run plans/demo --resume', 'an issue for a human: resume the run, which asks it')
     assert.equal(actions[1].prompt, 'Review with me, before the PR (review of T01): agents/x/.env.example: add MR_MAX')
-    assert.equal(actions[4].prompt, 'Check again with me the decision taken automatically for T01: "Retry threshold", option A (cap at 30 s).')
+    assert.equal(actions[4].prompt, 'Go over the auto-decision for T01 with me: "Retry threshold", option A (cap at 30 s).')
     // Blocked without an issue: ask the pilot; open prerequisite: /orchestre:ready
     const blocked = { ...B, issues: [], tasks: B.tasks.map(t => (t.id === 'T02' ? { ...t, status: 'blocked' } : t)), prerequisites: [{ id: 'D5', type: 'decision', blocks: ['T04'] }] }
     const ab = M.yourTurnCard(blocked, tA, 100).lines.flat().filter(m => m.x).map(m => m.x.prompt)
     assert.deepEqual(ab.slice(0, 2), ['Explain the blocker of T02 (secret missing for the tests) and propose a way forward.', '/orchestre:ready plans/demo'])
     assert.equal(M.yourTurnCard(A, tA, 100), null, 'nothing to do: no card')
+    // plan-lint in error at the last write; tickets of HANDOFF.md, to open after the PR
+    const linted = M.yourTurnCard({ ...A, lint: { ok: false, errors: 2 } }, tA, 100)
+    assert.match(text(linted.lines), /^✗ plan-lint: 2 errors at the last progress update {2}→ ask the pilot$/m)
+    assert.equal(linted.lines.flat().find(m => m.x).x.prompt, 'Show me the plan-lint errors on plans/demo and propose a fix.')
+    assert.match(M.prText({ ...B, tickets: 2 }, tA), /\n2 tickets to open after the PR \(HANDOFF\.md, "ticket" entries\)\.\n$/)
     // Beyond 9 lines, no more key: the line stays a button
     const many = { ...B, reviews: Array.from({ length: 10 }, (_, i) => ({ task: 'T01', phase: 1, text: `f${i}`, at: null })) }
     assert.deepEqual(M.yourTurnCard(many, tA, 100).lines.flat().filter(m => m.x).map(m => m.x.hotkey), ['1', '2', '3', '4', '5', '6', '7', '8', '9', null, null, null])
     const run = text(M.runCard(B, tA, 100, false).lines)
     assert.match(run, /^time {4}\S.* · 2 in parallel · 1 more attempt · 1 auto-decision$/m); assert.match(run, /^tasks .* 1\/4 /m); assert.doesNotMatch(run, /next/, 'run in progress: no next')
     const pr = M.prText(B, tA)
-    assert.match(pr, /- T01: agents\/x\/\.env\.example: add MR_MAX/); assert.match(pr, /- T01, Retry threshold: option A, cap at 30 s/); assert.match(pr, /Still waiting: T02 \(needs a human\)/)
+    assert.match(pr, /- T01: agents\/x\/\.env\.example: add MR_MAX/); assert.match(pr, /- T01, Retry threshold: option A, cap at 30 s/); assert.match(pr, /Not merged yet: T02 \(waits for a human\)/)
     const state = M.stateText(B, tA)
     assert.match(state, /^▶ demo {2}◉○/); assert.match(state, /\n⚠ Your turn {3}1 to settle/); assert.match(state, /\nlog/)
     const j = M.logCard(B, tA, 100, false)
@@ -146,6 +157,7 @@ try {
     assert.equal(M.plainText(rc.title), '■ Run 1 · phase 1 · autonomous'); assert.equal(rc.color, 'warning')
     const next = rc.lines.flat().find(m => m.x)
     assert.deepEqual([next.x.hotkey, next.x.prompt], ['c', '/orchestre:run plans/demo --resume'])
+    assert.match(text(rc.lines), /^next {4}\/orchestre:run plans\/demo --resume {2}in the prompt$/m)
     assert.deepEqual(M.pane(C, tA, 100).cards.map(c => c.id), ['yourTurn', 'run', 'tasks', 'log'])
     assert.match(M.plainText(M.pane(C, tA, 100).header[0]), /^ORCHESTRE · DEMO · RUN 1 AWAITING-RULING · {2}⚠ 1 YOUR TURN$/)
     assert.deepEqual([M.pane(C, tA, 100).borders, M.pane(C, tA, 50).borders], [true, false], 'no border below 60 columns')
@@ -190,8 +202,9 @@ try {
 
   testCase('resume after a ruling: the task no longer waits for anyone, neither once settled nor during its restart', () => {
     assert.equal(M.summarize(C, tA).attention.length, 1, 'before run 2, T02 needs a human')
+    assert.deepEqual([C.issues.length, E.issues], [1, []], 'the ruling settles the issue: no longer read')
     assert.deepEqual(M.summarize(E, tE).attention, []); assert.doesNotMatch(M.plainText(M.banner(E, tE, 140)), /your turn/)
-    assert.match(text(M.taskLines(E, tE, 100)), /⚑ T02 .*issue settled, restart to come/)
+    assert.match(text(M.taskLines(E, tE, 100)), /⚑ T02 .*issue settled, restart pending/)
     assert.deepEqual(M.summarize(F, tE).attention, []); assert.match(M.plainText(M.banner(F, tE, 140)), /◐ T02 work/)
     assert.match(text(M.taskLines(F, tE, 100)), /◐ T02 +Task T02 .*work.* \(worktree\)/)
     assert.equal(M.summarize(F, tE).phases[0].attention, 0)
@@ -222,6 +235,9 @@ try {
     // Plan finished: what comes next is the PR draft; the status line stays as long as there are reviews
     const next = M.runCard(H, tE, 100, false).lines.flat().find(m => m.x)
     assert.deepEqual([next.x.hotkey, next.x.prompt], ['p', M.prText(H, tE)])
+    assert.match(text(M.runCard(H, tE, 100, false).lines), /^next {4}PR draft in the prompt$/m)
+    // Phase 2 is the run's: its task to do says what it waits for
+    assert.match(text(M.taskLines(G2, tE, 100)), /^ {2}○ T04 .* waits for T03$/m)
     assert.equal(M.statusLine(H, tE), 'orchestre ✓ 4/4 · ⚑ 3'); assert.equal(M.statusLine({ ...H, reviews: [] }, tE), null)
   })
 
@@ -265,15 +281,15 @@ try {
   testCase('news at the end of the banner: the most important of the last write, bright 5 s, dim until 10 s', () => {
     const q = Math.max(...B.log.map(j => j.at))
     const fresh = M.news(B, q + 1000)
-    assert.equal(fresh.text, 'T02 needs a human', 'the status wins over the review and the issue noted at the same time')
-    assert.match(M.plainText(M.banner(B, q + 1000, 160)), / {3}⚑ T02 needs a human$/)
-    assert.ok(M.banner(B, q + 1000, 160).some(m => m.t === ' T02 needs a human' && m.b && m.c === 'warning'))
-    assert.ok(M.banner(B, q + 7000, 160).some(m => m.t === ' T02 needs a human' && m.d), 'dim after 5 s')
-    assert.equal(M.news(B, q + 11000), null); assert.doesNotMatch(M.plainText(M.banner(B, q + 11000, 160)), /T02 needs/)
+    assert.equal(fresh.text, 'T02 waits for a human', 'the status wins over the review and the issue noted at the same time')
+    assert.match(M.plainText(M.banner(B, q + 1000, 160)), / {3}⚑ T02 waits for a human$/)
+    assert.ok(M.banner(B, q + 1000, 160).some(m => m.t === ' T02 waits for a human' && m.b && m.c === 'warning'))
+    assert.ok(M.banner(B, q + 7000, 160).some(m => m.t === ' T02 waits for a human' && m.d), 'dim after 5 s')
+    assert.equal(M.news(B, q + 11000), null); assert.doesNotMatch(M.plainText(M.banner(B, q + 11000, 160)), /T02 waits/)
     // Fixed dates: the close of T02 and the run end at the same second, then 3 s apart
     const qC = Math.max(...C.log.map(j => j.at))
     const C1 = { ...C, log: C.log.map(j => ({ ...j, at: qC })) }
-    assert.equal(M.news(C1, qC).text, 'T02 needs a human', 'same second as the close: the status wins')
+    assert.equal(M.news(C1, qC).text, 'T02 waits for a human', 'same second as the close: the status wins')
     const C2 = { ...C, log: C.log.map((j, i) => ({ ...j, at: i === C.log.length - 1 ? qC + 3000 : qC })) }
     assert.deepEqual([M.news(C2, qC + 3000).text, M.news(C2, qC + 3000).mark.t, M.news(C2, qC + 3000).mark.c], ['run 1: awaiting-ruling', '■', 'warning'])
     const qH = Math.max(...H.log.map(j => j.at))
@@ -299,7 +315,7 @@ try {
   })
 
   testCase('notifications that ask for someone: shown longer', () => {
-    for (const m of ['⚑ T02 needs a human', '✗ T03 blocked', '✗ T03 failed', 'Run stopped: T02, Missing secret', 'Run 2 (phase 1): error']) assert.ok(M.isImportant(m), m)
+    for (const m of ['⚑ T02 waits for a human', '✗ T03 blocked', '✗ T03 failed', 'Run stopped: T02, Missing secret', 'Run 2 (phase 1): error']) assert.ok(M.isImportant(m), m)
     for (const m of ['⚑ T01: to review before the PR', 'Phase 1 finished', 'Run 1 started: phase 1, mode auto', 'Run 1 (phase 1): awaiting-ruling', 'Run 2 (phases 1 to 2): finished']) assert.ok(!M.isImportant(m), m)
     assert.ok(M.IMPORTANT_TOAST_MS > 4000)
   })
@@ -321,7 +337,7 @@ try {
     assert.equal(M.since(I20, D.frameInstant(20, T), end), null, 'nothing new since the last visit: nothing')
     // The legend of the demo, at the top of the pane
     const legend = M.pane(D.demoSnapshot(10, T), D.frameInstant(10, T), 100).header.map(M.plainText)
-    assert.ok(legend.includes('frame 11/21 · T03 needs a human'), legend.join(' | ')); assert.ok(legend.some(l => /^→ the "Your turn" card comes first/.test(l)))
+    assert.ok(legend.includes('frame 11/21 · T03 waits for a human'), legend.join(' | ')); assert.ok(legend.some(l => /^→ the "Your turn" card comes first/.test(l)))
     assert.equal(M.normalize(D.demoDoc(3, T)).legend, null)
   })
 
@@ -365,6 +381,56 @@ try {
     assert.equal(M.news(I, t4)?.kind, 'rejection', 'the rejection makes the news, not the model change noted at the same second')
   })
 
+  testCase('pane texts: state in the header, legend, counts of the tasks card; empty cards and state as text without a run', () => {
+    const header = (X, t) => M.plainText(M.pane(X, t, 100).header[0])
+    assert.equal(header(A, tA), 'ORCHESTRE · DEMO · RUN 1 IN PROGRESS · ◐ 2 IN PROGRESS')
+    assert.equal(header(H, tE), 'ORCHESTRE · DEMO · PLAN FINISHED · ⚑ 3 TO REVIEW')
+    assert.equal(M.plainText(M.pane(A, tA, 100).header[1]), '■ merged  ■ in progress  ■ waits for a human  ■ blocked  ░ to do')
+    assert.equal(M.plainText(M.pane(A, tA, 100).cards.find(c => c.id === 'tasks').title), 'tasks · 2 in progress · 4 in total')
+    assert.equal(M.plainText(M.logCard(H, tE, 100, true).meta), 'l: less')
+    const none = M.normalize({ ...rawFile(), tasks: [], runs: [], log: [], reviews: [], auto_decisions: [], issues: [] })
+    assert.equal(header(none, tE), 'ORCHESTRE · DEMO · NO RUN')
+    assert.equal(M.banner(none, tE, 100), null)
+    assert.equal(text(M.taskLines(none, tE, 100)), 'No task in progress.json.')
+    assert.equal(text(M.logCard(none, tE, 100, false).lines), 'Empty log.')
+    assert.deepEqual([M.plainText(M.runCard(none, tE, 100, false).title), text(M.runCard(none, tE, 100, false).lines)], ['No run yet', 'The first /orchestre:run plans/demo will open it.'])
+    assert.match(M.stateText(none, tE), /^demo: no run noted in progress\.json\n\nNo run yet\n/)
+  })
+
+  testCase('log glyphs and news: read from the start of what progress.mjs writes, whatever the blocker or the detail says', () => {
+    const entry = (kind, text, task = null) => ({ at: tA - 1000, kind, task, text })
+    const log = [
+      entry('status', 'T01: blocked (1 attempt) — depends on T02, not merged yet', 'T01'),
+      entry('status', 'T02: failed, closed at the run end without a scribe — crash', 'T02'),
+      entry('status', 'T03: todo → merged (PROGRESS.md and git)', 'T03'),
+      entry('status', 'T04: needs-human (2 attempts) — merged config missing', 'T04'),
+      entry('run', 'run 1: partial — T05: finished early'),
+      entry('run', 'run 2: finished'),
+      entry('run', 'run 3 interrupted: left in progress, without a run end'),
+      entry('run', 'run 4: phase 2, mode auto, 2 in parallel'),
+    ]
+    const X = { ...C, log }
+    assert.deepEqual(M.logCard(X, tA, 100, true).lines.map(l => `${l[3].t} ${l[3].c}`), ['✗ error', '✗ error', '✓ success', '⚑ warning', '■ warning', '✓ success', '■ warning', '▶ claude'])
+    const newsOf = j => M.news({ ...C, log: [j] }, tA)
+    assert.deepEqual([newsOf(log[0]).mark.t, newsOf(log[0]).text], ['✗', 'T01 blocked'])
+    assert.equal(newsOf(log[1]).text, 'T02 failed', 'a close at the run end, without a scribe')
+    assert.deepEqual([newsOf(log[5]).mark.t, newsOf(log[5]).mark.c], ['✓', 'success'])
+    assert.equal(newsOf(log[7]).text, 'run 4 started (phase 2, mode auto)')
+  })
+
+  testCase('task lines: within the width, the place then the attempt go before the step is cut', () => {
+    const T = Date.parse('2026-10-09T10:00:00Z')
+    for (let k = 0; k < D.FRAME_COUNT; k++) {
+      const I = D.demoSnapshot(k, T), t = D.frameInstant(k, T) + 500
+      for (const w of [160, 120, 100, 80, 70, 60]) for (const l of M.taskLines(I, t, w)) assert.ok(M.width(l) <= w, `frame ${k}, ${w}: ${M.width(l)} "${M.plainText(l)}"`)
+    }
+    const t7 = D.frameInstant(7, T) + 500, I7 = D.demoSnapshot(7, T)
+    const T02 = w => M.plainText(M.taskLines(I7, t7, w).find(l => M.plainText(l).match(/^ {2}\S (\S+)/)?.[1] === 'T02'))
+    assert.match(T02(160), /verification attempt 2 \(worktree\)$/)
+    assert.match(T02(100), /verification attempt 2$/)
+    assert.match(T02(80), /verification attempt 2$/); assert.match(T02(76), / verification$/)
+  })
+
   testCase('formatting: durations, ages, bar, cut', () => {
     assert.deepEqual([M.duration(45000), M.duration(18 * 60000), M.duration(72 * 60000), M.duration(null)], ['45 s', '18 min', '1 h 12', '—'])
     assert.deepEqual([M.chrono(42000), M.chrono(725000), M.chrono(3723000), M.chrono(null)], ['0:42', '12:05', '1:02:03', '—'])
@@ -375,7 +441,7 @@ try {
     const r = spawnSync(process.execPath, [resolve('tests/demo-progress.mjs'), join(repoRoot, 'demo'), '--frame', '0'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
     assert.equal(r.status, 0, r.stderr)
     assert.doesNotMatch(r.stdout, /^ 1\. .*\n +banner .*\n +notification/m, 'first progress.json: nothing to notify')
-    for (const expected of ['notification Run 2 started: phase 1, mode auto', 'notification ⚑ T03 needs a human', 'notification Run stopped: T03, Test SMTP key', 'notification Phase 1 finished', 'notification Run 2 (phases 1 to 2): finished']) assert.ok(r.stdout.includes(expected), expected)
+    for (const expected of ['notification Run 2 started: phase 1, mode auto', 'notification ⚑ T03 waits for a human', 'notification Run stopped: T03, Test SMTP key', 'notification Phase 1 finished', 'notification Run 2 (phases 1 to 2): finished']) assert.ok(r.stdout.includes(expected), expected)
     assert.match(r.stdout, /^17\. .*\n +banner +▶ demo {2}●◉ /m)
     const Z = M.normalize(JSON.parse(readFileSync(join(repoRoot, 'demo', 'plans', 'demo', 'progress.json'), 'utf8')))
     assert.deepEqual([Z.runs.length, Z.run.status, Z.tasks.filter(t => t.status === 'merged').length, Z.reviews.length, Z.decisions.length], [2, 'finished', 5, 3, 1])

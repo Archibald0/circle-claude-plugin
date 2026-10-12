@@ -17,7 +17,8 @@ export const FORMAT = 'orchestre-progress/3'
 export const FORMATS = [FORMAT]
 export const LEGACY_FORMATS = ['orchestre-suivi/2', 'orchestre-suivi/1']
 export const STATUSES = ['todo', 'added', 'merged', 'blocked', 'failed', 'needs-human', 'cancelled']
-const ATTENTION = { 'needs-human': 'needs a human', blocked: 'blocked', failed: 'failed' }
+// As /orchestre:status and progress.mjs status say them
+const ATTENTION = { 'needs-human': 'waits for a human', blocked: 'blocked', failed: 'failed' }
 // The whole log of progress.json (200 entries at most): the timeline of the run's steps needs it
 const LOG_READ = 200
 // A run marked "in-progress" without a write for 45 min is shown "no news": interrupted (Esc, session killed), it stays
@@ -25,6 +26,11 @@ const LOG_READ = 200
 export const SILENCE_MS = 45 * 60000
 // Duration of a notification that asks for someone (4 s by default for the others)
 export const IMPORTANT_TOAST_MS = 15000
+// The buttons after the banner, to click, and the room they take there: "   ⤢ Details", always, and " ✕ Hide" at the end
+// of a run (register.tsx draws them, banner() leaves them the room)
+export const DETAILS_GAP = '   ', DETAILS_LABEL = '⤢ Details', HIDE_GAP = ' ', HIDE_LABEL = '✕ Hide'
+export const DETAILS_RESERVE = [...DETAILS_GAP + DETAILS_LABEL].length
+export const HIDE_RESERVE = [...HIDE_GAP + HIDE_LABEL].length
 
 /** @param {unknown} x @returns {x is Record<string, any>} */
 const isObject = x => typeof x === 'object' && x !== null && !Array.isArray(x)
@@ -273,6 +279,9 @@ export function phaseDots(phases, current) {
   return phases.map(p => (p.total && p.done === p.total ? { t: '●', c: 'success' } : p.number === current ? { t: '◉', c: 'claude', b: true } : p.attention ? { t: '○', c: 'warning', b: true } : { t: '○', c: 'subtle' }))
 }
 
+// The status of a task closed, as progress.mjs writes it: "T01: merged (2 attempts)", "T02: failed, closed at the run end
+// without a scribe — …", "T03: todo → merged (PROGRESS.md and git)" when it follows git again
+const RE_STATUS = /^(\S+): (?:\S+ → )?(merged|needs-human|blocked|failed)\b/
 // Glyph of a log entry, by its kind (contract orchestre-progress/3)
 const KINDS = /** @type {Record<string, Piece>} */ ({
   run: { t: '▶', c: 'claude' }, task: { t: '▶', c: 'suggestion' }, step: { t: '·', d: true }, rejection: { t: '↻', c: 'merged' },
@@ -282,8 +291,12 @@ const KINDS = /** @type {Record<string, Piece>} */ ({
 })
 /** Glyph and color of a log entry, from its kind and what it says. @param {{ kind: string, text: string }} j @returns {Piece} */
 function mark(j) {
-  if (j.kind === 'status') return / merged/.test(j.text) ? { t: '✓', c: 'success' } : / needs-human/.test(j.text) ? { t: '⚑', c: 'warning' } : / (blocked|failed)/.test(j.text) ? { t: '✗', c: 'error' } : { t: '●', c: 'subtle' }
-  if (j.kind === 'run') return /: finished/.test(j.text) ? { t: '✓', c: 'success' } : /: (awaiting-ruling|partial|rerun)| interrupted/.test(j.text) ? { t: '■', c: 'warning' } : { t: '▶', c: 'claude' }
+  // Anchored on what progress.mjs writes: the blocker, after "—", may say "merged" too
+  if (j.kind === 'status') {
+    const st = j.text.match(RE_STATUS)?.[2]
+    return st === 'merged' ? { t: '✓', c: 'success' } : st === 'needs-human' ? { t: '⚑', c: 'warning' } : st ? { t: '✗', c: 'error' } : { t: '●', c: 'subtle' }
+  }
+  if (j.kind === 'run') return /^run \d+: finished\b/.test(j.text) ? { t: '✓', c: 'success' } : /^run \d+: (awaiting-ruling|partial|rerun)\b|^run \d+ interrupted\b/.test(j.text) ? { t: '■', c: 'warning' } : { t: '▶', c: 'claude' }
   return KINDS[j.kind] || { t: '·', d: true }
 }
 // What makes news at the end of the banner, from the most important to the least; not the steps nor the starts, which the
@@ -296,7 +309,7 @@ function brief(j) {
   /** @type {RegExpMatchArray | null} */
   let m
   if (j.kind === 'run' && (m = t.match(/^run (\d+): phase (\d+), mode (\S+?),/))) return `run ${m[1]} started (phase ${m[2]}, mode ${m[3]})`
-  if (j.kind === 'status' && (m = t.match(/^(\S+): (merged|needs-human|blocked|failed) \((\d+) attempt/))) {
+  if (j.kind === 'status' && (m = t.match(/^(\S+): (merged|needs-human|blocked|failed)(?: \((\d+) attempt|,)/))) {
     const [, id, st, n] = m
     return st === 'merged' ? `${id} merged${Number(n) > 1 ? ` at attempt ${n}` : ''}` : `${id} ${/** @type {Record<string, string>} */ (ATTENTION)[/** @type {string} */ (st)]}`
   }
@@ -335,7 +348,7 @@ const STEP_WIDTH = 15
 /** What a task does, in a few words. @param {TaskView} t @param {boolean} active @param {boolean} [settled] */
 export function what(t, active, settled = false) {
   if (active && t.step) return (STEPS[t.step] || t.step) + (t.attempts > 1 ? `, attempt ${t.attempts}` : '') + (t.isolated ? ' (worktree)' : '')
-  if (t.status in ATTENTION && settled) return 'issue settled, restart to come'
+  if (t.status in ATTENTION && settled) return 'issue settled, restart pending'
   if (t.status in ATTENTION) return /** @type {Record<string, string>} */ (ATTENTION)[t.status] + (t.blocker[0] ? `: ${t.blocker[0]}` : '')
   if (t.status === 'merged') return t.attempts > 1 ? `${t.attempts} attempts` : ''
   return t.waiting.length ? `waits for ${t.waiting.slice(0, 4).join(', ')}${t.waiting.length > 4 ? '…' : ''}` : ''
@@ -343,10 +356,15 @@ export function what(t, active, settled = false) {
 /** The same in colors: the step in its color, the attempt in amber, the place dim. @param {TaskView} t @param {boolean} active @param {boolean} settled @param {number} n @returns {Line} */
 function whatColored(t, active, settled, n) {
   if (active && t.step) {
+    // Within n cells: the place goes first, then the attempt, then the step is cut
+    const step = STEPS[t.step] || t.step, attempt = t.attempts > 1 ? ` attempt ${t.attempts}` : '', place = t.isolated ? ' (worktree)' : ''
+    const fits = /** @param {string} x */ x => [...x].length <= n
+    const shownPlace = fits(step + attempt + place) ? place : ''
+    const shownAttempt = fits(step + attempt + shownPlace) ? attempt : ''
     /** @type {Line} */
-    const l = [{ t: cut(STEPS[t.step] || t.step, n), c: STEP_COLOR[t.step] || 'subtle', b: true }]
-    if (t.attempts > 1) l.push({ t: ` attempt ${t.attempts}`, c: 'warning' })
-    if (t.isolated) l.push({ t: ' (worktree)', d: true })
+    const l = [{ t: cut(step, n), c: STEP_COLOR[t.step] || 'subtle', b: true }]
+    if (shownAttempt) l.push({ t: shownAttempt, c: 'warning' })
+    if (shownPlace) l.push({ t: shownPlace, d: true })
     return l
   }
   const q = cut(what(t, active, settled), n)
@@ -573,12 +591,12 @@ export function yourTurnCard(inst, now, columns) {
       ? { g: { t: '⚑', c: 'warning', b: true }, text: `${t.id} · ${p ? p.title : reason}${p?.human ? ' (human)' : ''}`, detail: t.blocker[0], prompt: resume, help: 'resume the run' }
       : { g: { t: '✗', c: 'error', b: true }, text: `${t.id} · ${reason}`, detail: t.blocker[0], prompt: `Explain the blocker of ${t.id}${t.blocker[0] ? ` (${t.blocker[0]})` : ''} and propose a way forward.`, help: 'ask the pilot' })
   }
-  for (const p of inst.issues) if (!seen.has(p)) items.push({ g: { t: '?', c: 'warning', b: true }, text: `${p.task} · ${p.title}${p.human ? ' (human)' : ''}`, prompt: resume, help: 'settle at launch' })
+  for (const p of inst.issues) if (!seen.has(p)) items.push({ g: { t: '?', c: 'warning', b: true }, text: `${p.task} · ${p.title}${p.human ? ' (human)' : ''}`, prompt: resume, help: 'settle when resuming' })
   for (const p of inst.prerequisites) items.push({ g: { t: '◇', c: 'warning', b: true }, text: `${p.id} (${p.type}) open${p.blocks.length ? `, blocks ${p.blocks.slice(0, 4).join(', ')}` : ''}`, prompt: `/orchestre:ready ${dir}`, help: 'settle the prerequisites' })
   if (!inst.lint.ok) items.push({ g: { t: '✗', c: 'error', b: true }, text: `plan-lint: ${plural(inst.lint.errors, 'error')} at the last progress update`, prompt: `Show me the plan-lint errors on ${dir} and propose a fix.`, help: 'ask the pilot' })
   const urgent = items.length
   for (const r of inst.reviews) items.push({ g: { t: '⚑', c: 'warning' }, text: `${r.task ?? 'source plan'} · ${r.text}`, prompt: `Review with me, before the PR (review of ${r.task ?? 'source plan'}): ${r.text}`, help: 'review' })
-  for (const d of inst.decisions) items.push({ g: { t: '⇒', c: 'merged' }, text: `${d.task} · ${d.title}: ${d.option}${d.description ? ` (${d.description})` : ''}`, prompt: `Check again with me the decision taken automatically for ${d.task}: "${d.title}", option ${d.option}${d.description ? ` (${d.description})` : ''}.`, help: 'check again' })
+  for (const d of inst.decisions) items.push({ g: { t: '⇒', c: 'merged' }, text: `${d.task} · ${d.title}: ${d.option}${d.description ? ` (${d.description})` : ''}`, prompt: `Go over the auto-decision for ${d.task} with me: "${d.title}", option ${d.option}${d.description ? ` (${d.description})` : ''}.`, help: 'go over' })
   if (!items.length) return null
   const inner = columns - 4
   /** @type {Line[]} */
@@ -592,7 +610,7 @@ export function yourTurnCard(inst, now, columns) {
   const count = [
     urgent ? `${urgent} to settle` : '',
     inst.reviews.length ? plural(inst.reviews.length, 'review') : '',
-    inst.decisions.length ? plural(inst.decisions.length, 'decision') : '',
+    inst.decisions.length ? plural(inst.decisions.length, 'auto-decision') : '',
   ].filter(Boolean).join(' · ')
   return {
     id: 'yourTurn', color: 'warning', urgent,
@@ -797,7 +815,7 @@ export function pane(inst, now, columns, { animated = false, fullLog = false, si
   /** @type {Line[]} */
   const header = [
     [...(inst.demo ? [{ t: ' DEMO ', c: 'inverseText', f: 'merged', b: true }, { t: ' ' }] : []), { t: 'ORCHESTRE', c: 'claude', b: true }, { t: ' · ', d: true }, { t: cut(inst.plan.toUpperCase(), 30), b: true }, { t: ' · ', d: true }, state, ...(endMark ? [{ t: ' · ', d: true }, endMark] : [])],
-    [{ t: '■', c: 'success' }, { t: ' merged  ', d: true }, { t: '■', c: 'suggestion' }, { t: ' in progress  ', d: true }, { t: '■', c: 'warning' }, { t: ' waiting  ', d: true }, { t: '■', c: 'error' }, { t: ' blocked  ', d: true }, { t: '░', c: 'subtle' }, { t: ' to do', d: true }],
+    [{ t: '■', c: 'success' }, { t: ' merged  ', d: true }, { t: '■', c: 'suggestion' }, { t: ' in progress  ', d: true }, { t: '■', c: 'warning' }, { t: ' waits for a human  ', d: true }, { t: '■', c: 'error' }, { t: ' blocked  ', d: true }, { t: '░', c: 'subtle' }, { t: ' to do', d: true }],
   ]
   // The legend of the demo: the frame, then what to try
   if (inst.legend) for (const [i, line] of inst.legend.split('\n').entries()) header.push([{ t: cut(line, Math.max(20, columns - 2)), c: 'merged', b: i === 0 }])
@@ -847,13 +865,14 @@ export function prText(inst, now) {
     for (const d of inst.decisions) l.push(`- ${d.task}, ${d.title}: option ${d.option}, ${d.description}`)
     l.push('')
   }
-  if (s.attention.length) l.push(`Still waiting: ${s.attention.map(t => `${t.id} (${ATTENTION[/** @type {keyof typeof ATTENTION} */ (t.status)]})`).join(', ')}.`, '')
+  if (s.attention.length) l.push(`Not merged yet: ${s.attention.map(t => `${t.id} (${ATTENTION[/** @type {keyof typeof ATTENTION} */ (t.status)]})`).join(', ')}.`, '')
   if (inst.tickets) l.push(`${plural(inst.tickets, 'ticket')} to open after the PR (HANDOFF.md, "ticket" entries).`)
-  return l.join('\n').replace(/\n+$/, '\n')
+  // One end of line at the end, whatever the last part
+  return l.join('\n').replace(/\n*$/, '\n')
 }
 
 /** A notification that asks for someone: task that needs a human, blocked or failed, run stopped or in error. @param {string} m */
-export const isImportant = m => / needs a human$|^✗ |^Run stopped|\): error/.test(m)
+export const isImportant = m => / waits for a human$|^✗ |^Run stopped|\): error/.test(m)
 
 /**
  * What deserves a notification between two reads: run started or finished, phase finished, task that needs a human,

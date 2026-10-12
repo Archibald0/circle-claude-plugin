@@ -118,7 +118,7 @@ export const SCENARIO = [
   ['T03 starts; T02 in verification', 1, together(worker('T03', true), step('T02', 'verification'))],
   ['T02 in merge; T03 in verification', 1, together(step('T02', 'merge'), step('T03', 'verification'))],
   ['T02 merged at the 2nd attempt, an auto-decision', 1, close('T02', { status: 'merged', attempts: 2, rejections: [REJECTION], decisions: [{ title: 'Maximum length of the message', option: 'B', description: '2,000 characters' }] })],
-  ['T03 needs a human', 1, close('T03', { status: 'needs-human', attempts: 1, blocker: ['test SMTP key missing'], issues: [SMTP] })],
+  ['T03 waits for a human', 1, close('T03', { status: 'needs-human', attempts: 1, blocker: ['test SMTP key missing'], issues: [SMTP] })],
   // A pause when run 1 stops: the time to open /progress
   ['End of run 1: awaiting a ruling on T03', 4, runEnd('awaiting-ruling', { stop: 'T03', waiting: ['T03'] })],
   ['Run 2 started, ruling on T03 applied', 1, together(runStart(1, 'auto'), ruling('T03', SMTP.title, 'A'))],
@@ -183,7 +183,7 @@ const TO_TRY = /** @type {Record<number, string>} */ ({
   12: 'the issue is settled: T03 no longer waits for anyone',
   20: 'key p: the PR draft in the prompt',
 })
-/** The legend of frame k: "frame 11/21 · T03 needs a human", then, on the next line, what to try. @param {number} k */
+/** The legend of frame k: "frame 11/21 · T03 waits for a human", then, on the next line, what to try. @param {number} k */
 export function legend(k) {
   const i = Math.min(Math.max(0, k), FRAME_COUNT - 1), toTry = TO_TRY[i]
   return `frame ${i + 1}/${FRAME_COUNT} · ${/** @type {[string, number, Frame]} */ (SCENARIO[i])[0]}${toTry ? `\n→ ${toTry}` : ''}`
