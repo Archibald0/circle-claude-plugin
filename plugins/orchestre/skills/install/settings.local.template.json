@@ -13,6 +13,7 @@
       "Bash(git branch *)",
       "Bash(git diff *)",
       "Bash(git log *)",
+      "Bash(git for-each-ref *)",
       "Bash(git status *)",
       "Bash(git rev-parse *)",
       "Bash(git checkout HEAD -- *)",

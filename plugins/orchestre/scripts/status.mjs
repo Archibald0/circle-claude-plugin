@@ -13,7 +13,6 @@ import { fileURLToPath } from 'node:url'
 const ENV = { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
 const HERE = dirname(fileURLToPath(import.meta.url))
 const LINT = join(HERE, 'plan-lint.mjs')
-const MIGRATE = join(HERE, 'migrate.mjs')
 const attempt = f => { try { return f() } catch { return null } }
 const git = (args, cwd) => execFileSync('git', args, { cwd, env: ENV, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
 const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`
@@ -27,7 +26,8 @@ const shorten = (xs, max) => (xs.length > max ? [...xs.slice(0, max - 1), `+${xs
 // Merge commit and task branch, in English (0.12) or in French (0.11 and earlier)
 const MERGE = /^(?:task (\S+):|tâche (\S+) :)/
 const isPlan = d => existsSync(join(d, 'tasks')) || existsSync(join(d, 'taches'))
-const french = d => `plan in the French format of orchestre 0.11 and earlier (taches/): migrate it with node "${MIGRATE}" ${d}`
+// /orchestre:ready and /orchestre:run offer the migration with the user's agreement, on the integration branch (migrate.mjs)
+const french = d => `plan in the French format of orchestre 0.11 and earlier (taches/): /orchestre:ready ${d} or /orchestre:run ${d} offers to migrate it`
 
 function status() {
   const root = attempt(() => git(['rev-parse', '--show-toplevel'], process.cwd()).trim())

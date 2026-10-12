@@ -18,7 +18,7 @@ A plan written by orchestre 0.11 or earlier (French format: `taches/`, `SUIVI.md
 
 ## Language
 
-`language` in `orchestre.config.json` (`"en"` when absent) is the language of the plan's free text: task titles, the launch prompt and the body sections, the criteria of `definition_of_done`, `model_reason`, HANDOFF descriptions, the Prerequisite and Evidence cells of PREREQUISITES.md, the content of DISCOVERY.md, and, during a run, the reports of the agents and the summaries and questions of `/orchestre:run`. Everything else stays in English, whatever the language: keys, values (statuses, types, severities, models, modes), section titles, table headers and legends, branch names, commit messages and commands. `/orchestre:prepare` asks for it for each plan. A plan migrated from orchestre 0.11 gets `"language": "fr"`: its free text stays in French.
+`language` in `orchestre.config.json` (`"en"` when absent) is the language of the plan's free text: task titles, the launch prompt and the body sections, the criteria of `definition_of_done`, `model_reason`, HANDOFF descriptions, the Prerequisite and Evidence cells of PREREQUISITES.md, the content of DISCOVERY.md, and the reports of the agents during a run, as well as the summaries and questions of `/orchestre:run` and `/orchestre:ready`. Everything else stays in English, whatever the language: keys, values (statuses, types, severities, models, modes), section titles, table headers and legends, branch names, commit messages and commands. `/orchestre:prepare` asks for it for each plan. A plan migrated from orchestre 0.11 gets `"language": "fr"`: its free text stays in French.
 
 ## Splitting rules
 

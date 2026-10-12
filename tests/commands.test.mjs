@@ -52,6 +52,13 @@ function point(t, n, start) {
 }
 // Lines allowed to name what orchestre 0.11 and earlier called otherwise: detection, migration, manual install of v0.5
 const legacyLine = l => /0\.11|manual install|v0\.5|migrate/i.test(l)
+// Names of orchestre 0.11 and earlier (glossary 0.12.0)
+const OLD = [/executer-phase/, /\bsuivi\.mjs\b/, /\betat\.mjs\b/, /\bSUIVI\.md\b/, /\bPREREQUIS\.md\b/, /\bsuivi\.json\b/, /\btaches\//, /\btache\//, /tâche/, /à-faire/, /fusionnée/, /besoin-humain/, /annulée/, /bloquée/, /échec/, /\barbitrages?\b/, /points_a_trancher/, /decisions_office/, /branche_(?:integration|base)/, /mode_par_defaut/, /parallelisme/, /corrections_max/, /\bescalade\b/, /\bpreparation(?:_partagee)?\b/, /\brelancer\b/, /prefixe_agents/, /\bdevia\b/, /systematique/, /\bhumain\b/, /\bmodele\b/, /raison_modele/, /depend_de/, /fichiers_possedes/, /definition_du_fini/, /\/orchestre:(?:installer|preparer|pret|lancer|etat)\b/, /\bgreffier\b/, /lecteur-plan/, /verificateur/, /evaluateur/, /integrateur/, /replanificateur/, /worker-isole/, /--equipe/, /--reprendre/, /--sans-repetition/, /\bdécision\b/, /\bgeste\b/, /\benvironnement\b/, /\bmajeur\b/, /\bmineur\b/, /Prompt de lancement/, /Hors périmètre/, /\bStatuts\b/, /Entrées/, /\bplan source\b/]
+// What such a line may cite on purpose: files, branches, commits, keys and rules of 0.11 that the detection and the migration
+// name. On such a line, these names, in a code span or between double quotes, are blanked before the checks; the rest of the
+// line, other names of 0.11 included (a command, a status), is checked like any other
+const CITABLE = [/executer-phase/, /\bsuivi\.mjs\b/, /\bsuivi\.json\b/, /\bSUIVI\.md\b/, /\bPREREQUIS\.md\b/, /\btaches\//, /\btache\//, /tâche <id> : /, /branche_(?:integration|base)/, /\.claude\/skills\/lancer/]
+const scrub = l => (legacyLine(l) ? l.replace(/`[^`\n]*`|"[^"\n]*"/g, x => (CITABLE.some(re => re.test(x)) ? '``' : x)) : l)
 const codeSpans = t => [...t.matchAll(/`([^`\n]+)`/g)].map(m => m[1])
 // Options a script knows: the quoted '--x' of its source
 const optionsOf = src => new Set([...src.matchAll(/'(--[a-z-]+)'/g)].map(m => m[1]))
@@ -107,8 +114,7 @@ try {
     const listed = [...point(text.run, 2, 'Plugin:').matchAll(/`orchestre:([a-z-]+)`/g)].map(m => m[1])
     assert.deepEqual(sorted(listed), AGENTS)
     const known = new Set([...AGENTS, 'run-phase', ...SKILLS])
-    for (const s of SKILLS) for (const l of text[s].split('\n')) {
-      if (legacyLine(l)) continue
+    for (const s of SKILLS) for (const l of text[s].split('\n').map(scrub)) {
       for (const m of l.matchAll(/orchestre:([a-z][a-z-]*)/g)) assert.ok(known.has(m[1]), `${s}: unknown orchestre:${m[1]}`)
     }
     assert.match(WF, /export const meta = \{\s*name: 'run-phase'/)
@@ -142,8 +148,7 @@ try {
       assert.match(WF, new RegExp(`\\b${f}\\b`), `field ${f} not in the workflow`)
     }
     // Any snake_case name the skill cites: an arg, a config key, a field above, or a name of the workflow or of plan-lint
-    for (const l of text.run.split('\n')) {
-      if (legacyLine(l)) continue
+    for (const l of text.run.split('\n').map(scrub)) {
       for (const m of l.matchAll(/`([a-z]+(?:_[a-z]+)+)`/g)) assert.ok(new RegExp(`\\b${m[1]}\\b`).test(WF) || SRC['plan-lint'].includes(m[1]) || FORMAT.includes(`"${m[1]}"`), `unknown name ${m[1]} in /orchestre:run`)
     }
     // progress_failures[] { task, step, error }
@@ -160,7 +165,7 @@ try {
     // Rulings, and the free answer
     assert.ok(text.run.includes('`rulings`: the options the user chose since the last report, `[{ task, title, option }]`'))
     for (const k of ['a.task', 'a.title', 'a.option.id']) assert.ok(WF.includes(k), `rulings: ${k} not read by the workflow`)
-    assert.ok(text.run.includes('`{ id: "human", description: <answer> }`'))
+    assert.ok(text.run.includes('A free answer, "Other" included, is passed as the option `{ id: "human", description: <answer> }`'))
   })
 
   test('script commands of the skills: subcommands and options known to each script', () => {
@@ -195,14 +200,13 @@ try {
   })
 
   test('no name of orchestre 0.11 outside the lines about detection, migration or the manual install', () => {
-    const OLD = [/executer-phase/, /\bsuivi\.mjs\b/, /\betat\.mjs\b/, /\bSUIVI\.md\b/, /\bPREREQUIS\.md\b/, /\bsuivi\.json\b/, /\btaches\//, /\btache\//, /tâche/, /à-faire/, /fusionnée/, /besoin-humain/, /annulée/, /bloquée/, /échec/, /\barbitrages?\b/, /points_a_trancher/, /decisions_office/, /branche_(?:integration|base)/, /mode_par_defaut/, /parallelisme/, /corrections_max/, /\bescalade\b/, /\bpreparation(?:_partagee)?\b/, /\brelancer\b/, /prefixe_agents/, /\bdevia\b/, /systematique/, /\bhumain\b/, /\bmodele\b/, /raison_modele/, /depend_de/, /fichiers_possedes/, /definition_du_fini/, /\/orchestre:(?:installer|preparer|pret|lancer|etat)\b/, /\bgreffier\b/, /lecteur-plan/, /verificateur/, /evaluateur/, /integrateur/, /replanificateur/, /worker-isole/, /--equipe/, /--reprendre/, /--sans-repetition/, /\bdécision\b/, /\bgeste\b/, /\benvironnement\b/, /\bmajeur\b/, /\bmineur\b/, /Prompt de lancement/, /Hors périmètre/, /\bStatuts\b/, /Entrées/, /\bplan source\b/]
     const files = { ...Object.fromEntries(SKILLS.map(s => [`${s}/SKILL.md`, text[s]])), 'prepare/format.md': FORMAT, 'install/settings.local.template.json': read(join(PLUGIN, 'skills', 'install', 'settings.local.template.json')), 'tests/toy-repo.sh': read(join(ROOT, 'tests', 'toy-repo.sh')) }
     for (const [f, t] of Object.entries(files)) {
       let manualInstall = false
       for (const [i, l] of t.split('\n').entries()) {
         if (/^## /.test(l)) manualInstall = f === 'install/SKILL.md' && /^## 5\. Old manual install/.test(l)
-        if (manualInstall || legacyLine(l)) continue
-        for (const re of OLD) assert.ok(!re.test(l), `${f}:${i + 1}: name of 0.11 ${re}: ${l.trim().slice(0, 120)}`)
+        if (manualInstall) continue
+        for (const re of OLD) assert.ok(!re.test(scrub(l)), `${f}:${i + 1}: name of 0.11 ${re}: ${l.trim().slice(0, 120)}`)
       }
     }
   })
@@ -267,6 +271,9 @@ try {
     const view = node([join(SCRIPTS, 'progress.mjs'), 'view', 'plans/demo', '--stdout'], d)
     assert.equal(view.code, 0, view.out)
     assert.ok(view.out.includes('| T01 | Example task |') && view.out.includes(LEGEND))
+    // The row of format.md is the one progress.mjs writes from the task of format.md, cell by cell
+    const row = t => t.split('\n').find(l => l.startsWith('| T01 ')).split('|').slice(1, -1).map(c => c.trim())
+    assert.deepEqual(row(read(join(d, 'plans', 'demo', 'PROGRESS.md'))), row(view.out))
     const mig = node([join(SCRIPTS, 'migrate.mjs'), 'plans/demo'], d)
     assert.equal(mig.code, 0, mig.out); assert.match(mig.out, /nothing to migrate/)
   })
@@ -297,13 +304,19 @@ try {
     const p = node([join(SCRIPTS, 'progress.mjs'), 'pilot', 'plans/demo', '--json', json], d)
     assert.equal(p.code, 0, p.out)
     assert.match(read(join(d, 'plans', 'demo', 'PROGRESS.md')), /\| T01 \| Hello script \|.*\| merged \|/)
+    // An apostrophe in the reason, written \u0027 as the skill says, through the shell's single quotes
+    assert.ok(text.run.includes('No apostrophe in the reason, or written `\\u0027`.'))
+    const quoted = pilot[1].replace('<id>', 'T01').replace('"merged"', '"cancelled"').replace('<reason>', 'the user\\u0027s choice')
+    const sh = spawnSync('sh', ['-c', `node "${join(SCRIPTS, 'progress.mjs')}" pilot plans/demo --json '${quoted}'`], { cwd: d, encoding: 'utf8' })
+    assert.equal(sh.status, 0, sh.stderr)
+    assert.ok(JSON.parse(read(join(d, 'plans', 'demo', 'progress.json'))).log.some(e => e.kind === 'pilot' && e.text.includes("the user's choice")))
   })
 
   test('a plan of 0.11: the skills detect what plan-lint refuses; migrate.mjs, as they run it, converts it and keeps tache/*', () => {
     // Detection: the files plan-lint refuses next to tasks/, and taches/
     const nextTo = SRC['plan-lint'].match(/for \(const f of \[([^\]]+)\]\) if \(existsSync\(join\(dir, f\)\)\)/)[1].split(/,\s*/).map(x => x.replace(/'/g, ''))
     for (const s of ['run', 'ready']) {
-      const sentence = text[s].split('\n').find(l => l.includes('The plan is in the French format of orchestre 0.11'))
+      const sentence = text[s].split('\n').find(l => l.includes('is still in the French format of orchestre 0.11 or earlier'))
       assert.ok(sentence, `${s}: detection sentence`)
       for (const f of ['`<plan>/taches/`', ...nextTo.map(f => `\`${f}\``), '`<plan>/tasks/`']) assert.ok(sentence.includes(f), `${s}: ${f} not detected`)
     }
@@ -348,15 +361,39 @@ try {
     assert.equal(git('branch', '--list', 'tache/*', '--no-merged', 'plan/demo').trim(), '')
     git('switch', '-qc', 'tache/T02'); writeFileSync(join(d, 'x.txt'), 'x'); git('add', '.'); git('commit', '-qm', 'feat: x'); git('switch', '-q', 'plan/demo')
     assert.equal(git('branch', '--list', 'tache/*', '--no-merged', 'plan/demo').trim(), 'tache/T02')
-    assert.ok(text.run.includes('look for `tache/<id>`, then `tache/<id>-r<n>` (`git branch --list "tache/<id>*"`)'))
+    // Fix here on its branch: this run's task/<id>*, then, for a plan migrated from 0.11, tache/<id>*, the most recent
+    assert.ok(text.run.includes('If `branch` is null or missing from git, take the most recent of `git branch --list "task/<id>*" --sort=-committerdate`; if there is none, for a plan migrated from orchestre 0.11, the most recent of `git branch --list "tache/<id>*" --sort=-committerdate`'))
+    assert.ok(text.run.includes('first brought up to date with the integration branch (`git merge <integration branch>`, never a rebase)'))
+  })
+
+  test('pre-flight: the migration comes before every script that refuses a plan of 0.11; one confirmation of a stopped run', () => {
+    const nothing = SRC.migrate.match(/already in the 0\.12 format, nothing to migrate/)
+    assert.ok(nothing)
+    for (const s of ['run', 'ready']) {
+      const t = text[s]
+      const at = x => { const i = t.indexOf(x); assert.ok(i >= 0, `${s}: ${x} not found`); return i }
+      const migration = at('scripts/migrate.mjs <plan>`, from the main checkout, on the integration branch.')
+      for (const x of ['worktrees.mjs clean <plan>', 'plan-lint.mjs <plan> --', ...(s === 'run' ? ['progress.mjs view <plan>'] : [])]) assert.ok(migration < at(x), `${s}: ${x} comes before the migration`)
+      assert.ok(t.includes(`if it answers "${nothing[0]}", go on`), `${s}: answer of the preview`)
+      assert.ok(t.includes('If the user declines'), `${s}: refusal of the migration`)
+    }
+    // /run: the stopped run confirmed at the migration also holds for worktrees.mjs; /ready: the confirmation at the start holds
+    assert.ok(text.run.includes('run it again with `--write --run-stopped`, and that answer also holds for `worktrees.mjs clean` at point 6'))
+    assert.ok(text.run.includes('If the user said at the migration (point 4) that the run is stopped, run it with `--run-stopped` straight away.'))
+    assert.ok(text.ready.includes('the user confirmed at the start that no run is active, so run it again with `--write --run-stopped`'))
+    assert.ok(text.ready.includes('Never during a run of the orchestrator: first have the user confirm that no run is active'))
+    // /ready migrates on the integration branch only
+    assert.ok(text.ready.includes('If the integration branch does not exist yet, do not migrate'))
+    // Language before the plan's is known
+    for (const s of ['run', 'ready']) assert.ok(text[s].includes('and for a plan of orchestre 0.11 not migrated yet, talk to the user in the language of the conversation'), `${s}: language before the migration`)
   })
 
   test('commit messages and fixed lines: the names validated for 0.12, consistent with the scripts and the workflow', () => {
     const NAMES = {
       install: ['`chore: exclude plans/ and .claude/ from the formatter and linter`', '`chore: remove the manual install of the orchestrator (replaced by the orchestre plugin)`'],
       prepare: ['`plan(<name>): initial plan`', '`decision · major · <ID>: … (settled by the user)`', '"Language of the plan?"', '"Use fable for this plan?"'],
-      ready: ['`ready(<name>): <short verdict>`', '"Checked by /orchestre:ready on <date>: <one-line verdict>" (`date +%F`', '"confirmed by the user on <date>" (`date +%F`)', '`decision · major · <ID>: … (settled by the user)`'],
-      run: ['`progress: PROGRESS.md regenerated by progress.mjs`', '`progress(<id>): <status> by hand`', 'the message "task <id>: <title>"', '`decision · major · <ID>: … (settled by the user)`', 'line "Checked by /orchestre:ready"'],
+      ready: ['`ready(<name>): <short verdict>`, the short verdict in English', '"Checked by /orchestre:ready on <date>: <one-line verdict>" (`date +%F`', '"confirmed by the user on <date>" (`date +%F`)', '`decision · major · <ID>: … (settled by the user)`'],
+      run: ['`progress: PROGRESS.md regenerated by progress.mjs`', '`chore: exclude plans/ and .claude/ from the formatter and linter`', '`progress(<id>): <status> by hand`', 'the message "task <id>: <title>"', '`decision · major · <ID>: … (settled by the user)`', 'line "Checked by /orchestre:ready"'],
     }
     for (const [s, names] of Object.entries(NAMES)) for (const x of names) assert.ok(text[s].includes(x), `${s}: ${x}`)
     assert.ok(SRC.migrate.includes('Checked by /orchestre:ready on ${v[1]}: ${v[2]}'))
@@ -366,7 +403,8 @@ try {
   })
 
   test('language: asked by /prepare for each plan, shown by /ready, passed by /run; /install leaves it alone', () => {
-    assert.match(text.prepare, /^- Language of the plan's free text \(`language`[^\n]*"Language of the plan\?", with the language of the conversation first, recommended, then English[^\n]*short code \(`fr`, `en`, `es`…\)/m)
+    // Two options always (the question tool needs 2 to 4), "Other" added by the tool
+    assert.match(text.prepare, /^- Language of the plan's free text \(`language`[^\n]*"Language of the plan\?", with two options: the language of the conversation first, recommended, then English; when the conversation is in English, the second option is the language of the source plan for a conversion, French otherwise\.[^\n]*short code \(`fr`, `en`, `es`…\)/m)
     assert.ok(text.prepare.includes('`language` (step 0)'), '/prepare writes language in the config')
     assert.ok(text.ready.includes('`language`. Say the plan\'s `language` in one line'))
     assert.match(SRC['plan-lint'], /language: typeof language === 'string'/)

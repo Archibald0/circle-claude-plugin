@@ -23,4 +23,13 @@ assert.ok(workflow, 'name of the workflow not found in run-phase.js')
 assert.ok(allow.includes(`Workflow(orchestre:${workflow[1]})`), `missing permission: Workflow(orchestre:${workflow[1]})`)
 const rules = JSON.stringify(template)
 for (const old of ['executer-phase', 'suivi.mjs', 'etat.mjs']) assert.ok(!rules.includes(old), `rule of orchestre 0.11 left in the template: ${old}`)
+// Every git command the workflow has its agents run is allowed: in manual permission mode, a missing rule suspends the run
+const workflowSource = read('../plugins/orchestre/workflows/run-phase.js')
+const gitCommands = [...workflowSource.matchAll(/`git (-C "[^"]*" )?([a-z-]+)/g)]
+assert.ok(gitCommands.length > 10, 'git commands of the workflow not found')
+for (const [, inFolder, sub] of gitCommands) {
+  const allowed = inFolder ? allow.some(r => r.startsWith(`Bash(git -C * ${sub} `)) : allow.some(r => r.startsWith(`Bash(git ${sub} `) || r === `Bash(git ${sub})`)
+  assert.ok(allowed, `git ${inFolder ? '-C <folder> ' : ''}${sub}, run by the agents of the workflow: no rule in the template`)
+}
+for (const [cmd, rule] of [['`test -e ', 'Bash(test -e *)']]) if (workflowSource.includes(cmd)) assert.ok(allow.includes(rule), `missing permission: ${rule}`)
 console.log('settings template: ALL GREEN')

@@ -26,7 +26,7 @@ A folder `plans/<name>/` already written for orchestre is not a plan to convert:
 
 - A git repository on its base branch (`main`, unless the user names another), up to date, without uncommitted changes: otherwise, stop and say so.
 - Name of the plan: short, in kebab-case, to have confirmed. If `plans/<name>/` already exists, stop and ask.
-- Language of the plan's free text (`language`, see "Language" in `format.md`), with the question tool: "Language of the plan?", with the language of the conversation first, recommended, then English if the conversation is in another language. The tool adds "Other" on its own. Note it as a short code (`fr`, `en`, `es`…). From here on, you write the free text of the plan in that language: task titles, launch prompts and body sections, criteria of `definition_of_done`, `model_reason`, HANDOFF descriptions, Prerequisite and Evidence cells, DISCOVERY content. Keys, values, section titles, table headers and legends, commands and commit messages stay in English.
+- Language of the plan's free text (`language`, see "Language" in `format.md`), with the question tool: "Language of the plan?", with two options: the language of the conversation first, recommended, then English; when the conversation is in English, the second option is the language of the source plan for a conversion, French otherwise. The tool adds "Other" on its own. Note it as a short code (`fr`, `en`, `es`…). From here on, you write the free text of the plan in that language: task titles, launch prompts and body sections, criteria of `definition_of_done`, `model_reason`, HANDOFF descriptions, Prerequisite and Evidence cells, DISCOVERY content. Keys, values, section titles, table headers and legends, commands and commit messages stay in English.
 
 ## 1. Explore, without changing the repository
 
@@ -43,7 +43,7 @@ Sum up in one page at most: that summary seeds DISCOVERY.md.
 
 ## 2a. Conversion of an existing plan
 
-Read the source plan in full. Keep its splitting, its vocabulary and its decisions: you translate it, you do not rewrite it.
+Read the source plan in full. Keep its splitting, its vocabulary and its decisions: you convert it into this format, you do not rewrite it. If the plan's `language` differs from the source plan's, translate its free text and keep its terms.
 
 - A source task gives one orchestre task. Split it only if it exceeds half a context; merge a micro-task with its neighbor. Each change of splitting goes into the summary.
 - `phase` and `depends_on` come from the order and the links of the source plan. What it does not say, take from the exploration: `owned_files`, `resources`, `verification` (real commands, checked at step 1), `definition_of_done` (criteria demonstrable by the diff or by a command), `model` and `model_reason` (see below), `effort` according to the difficulty.

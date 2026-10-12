@@ -76,7 +76,7 @@ try {
     r = status([]); assert.equal(r.code, 0); assert.match(r.out, /^orchestre:status: several plans \(plans\/demo, plans\/other\); say which/)
     rmSync(join(root, 'plans', 'other'), { recursive: true })
     mkdirSync(join(root, 'plans', 'fr', 'taches'), { recursive: true })
-    r = status(['plans/fr']); assert.equal(r.code, 0); assert.match(r.out, /^orchestre:status: plan in the French format of orchestre 0\.11 and earlier \(taches\/\): migrate it with node ".*\/migrate\.mjs" plans\/fr$/)
+    r = status(['plans/fr']); assert.equal(r.code, 0); assert.equal(r.out, 'orchestre:status: plan in the French format of orchestre 0.11 and earlier (taches/): /orchestre:ready plans/fr or /orchestre:run plans/fr offers to migrate it')
     rmSync(join(root, 'plans', 'fr'), { recursive: true })
     r = status([], elsewhere); assert.equal(r.code, 0); assert.equal(r.out, 'orchestre:status: not in a git repository')
   })
