@@ -90,20 +90,18 @@ The state of the plan and of its runs is kept in `plans/<name>/progress.json` (o
 At any time, including in the pilot session during a run: the command only reads, without switch, write or git lock. Without an argument, it takes the only plan in `plans/`. A script computes the table from plan-lint and git, and Claude copies it as is. Here, the plan of `tests/demo-progress.mjs` after its first run, with a review and a ticket added to HANDOFF.md:
 
 ```text
-## demo — 3/5 tasks · 60%
-`██████████████░░░░░░░░░░` phase 2 in progress · last merge T03 just now
+## demo — 2/5 tasks · 40%
+`█████████░░░░░░░░░░░░░░░` phase 1 in progress · last merge T02 just now
 
 | Phase | Progress | Tasks |
 | :-- | :-- | :-- |
-| ✓ 1 | `██████████` 100% | 3/3 |
-| ● 2 | `░░░░░░░░░░` 0% | 0/2 |
+| ⚠ 1 | `██████░░░░` 66% | 2/3 |
+| ○ 2 | `░░░░░░░░░░` 0% | 0/2 |
 
-**In progress**: T04 (last commit just now)
-
-**Your turn**: 1 review before the PR · 1 ticket after the PR
+**Your turn**: T03 waits for a human · 1 review before the PR · 1 ticket after the PR
 ```
 
-✓ phase finished, ● started, ⚠ a task there waits for a human, is blocked or failed, ○ not started. A task is "in progress" when its branch `task/<id>` exists; the exact step of each agent can be read in `/workflows`. The reviews counted are all the `review` entries of HANDOFF.md.
+✓ phase finished, ● started, ⚠ a task there waits for a human, is blocked or failed, ○ not started. While tasks are started, a line **In progress** lists them, for example "T04 (worktree, last commit 3 min ago)": a task is in progress when its branch `task/<id>` (or `tache/<id>` of 0.11) exists; the exact step of each agent can be read in `/workflows`. The reviews counted are all the `review` entries of HANDOFF.md.
 
 ### Follow a run: `/progress`
 
@@ -178,10 +176,10 @@ Or from a terminal: `claude plugin update orchestre@circle`, then a new session.
    | `/suivi` (`texte`, `son`, `demo`, `auto`) | `/progress` (`text`, `sound`, `demo`, `auto`) |
 
 3. Plans: the scripts of 0.12 refuse a plan in the French format of 0.11 (`taches/`, `SUIVI.md`, `PREREQUIS.md`, `suivi.json`). `/orchestre:ready` or `/orchestre:run` detect it at their pre-flight, show a preview of the migration (`scripts/migrate.mjs`), then, after your agreement, migrate it and commit the plan folder alone on the integration branch (`orchestre: migrate plan <name> to the 0.12 format`). Keys, values, file names and section titles move to English (`tasks/`, `PROGRESS.md`, `PREREQUISITES.md`, `progress.json`); the free text stays as written, and the plan gets `"language": "fr"`. The migration refuses a plan folder with uncommitted changes, and a run still marked in progress unless you confirm it is stopped.
-4. Git history is not rewritten: the branches `tache/<id>` and the commits "tâche <id> : " stay, and the scripts still read them. A task started in 0.11 and not merged is not taken back: it starts again from the integration branch on `task/<id>`, and the old branch stays in git, for reference.
-5. The mod: `/suivi` becomes `/progress`, with keys y, r, t, l, 1 to 9, c and p. It only reads `progress.json`; for a plan of 0.11 not migrated yet, a notification says how to migrate it. The sound setting is kept.
+4. Git history is not rewritten: the branches `tache/<id>` and the commits "tâche <id> : " stay, and the scripts still read them. A task started in 0.11 and not merged is not taken back: it starts again from the integration branch on `task/<id>`, and the old branch stays in git, for reference; `/orchestre:status` keeps showing that task in progress as long as the old branch exists.
+5. The mod: `/suivi` becomes `/progress`. In the pane, y goes to "Your turn", r to the run (it went to "À toi"), t to the tasks, l to the log (it resumed the run), c resumes a stopped run, 1 to 9 and p are unchanged. It only reads `progress.json`; for a plan of 0.11 not migrated yet, a notification says how to migrate it. The sound setting is kept.
 
-orchestre 0.11 does not read a migrated plan: once a plan is migrated, it runs with 0.12.
+orchestre 0.11 does not read a migrated plan: once a plan is migrated, it runs with 0.12. For a plan shared with others, update every clone to 0.12 before migrating it; in a clone that pulls the migrated plan, run `/orchestre:ready plans/<name>` once: it converts the `suivi.json` that clone keeps outside git, which plan-lint refuses next to `tasks/`.
 
 ## Share with the team of a repository
 
@@ -198,13 +196,13 @@ A run equals a phase. For each ready task (dependencies merged, prerequisites do
 | Verification | `verifier` | sonnet | replays the verification commands: exit code and excerpt of each |
 | Evaluation | `evaluator` | opus | judges each criterion of done on evidence (diff, results of the verifier) |
 | Model choice | `replanner` | opus | after a rejected attempt, chooses the model of the fix from the rejection; the task's model is the floor; without a valid answer, the `escalation` ladder |
-| Fixes | `worker` | model chosen; without a model in the plan: sonnet then opus (`escalation`) | 2 attempts at most on the gaps found |
+| Fixes | `worker` | model chosen; without a model in the plan: sonnet then opus (`escalation`) | 2 fixes at most (`max_fixes`), on the gaps found |
 | Merge | `integrator` | sonnet | `--no-ff` into `plan/<name>`, then the post-merge check |
 | Replanning | `replanner` | opus | rates the deviations, prepares the issues to settle with their options |
 | Progress | `scribe` | sonnet | the only one to write HANDOFF, DISCOVERY and the tasks created or amended; closes the task through `progress.mjs`, which regenerates PROGRESS.md |
 | End of run | `clerk` | haiku | closes the run with `progress.mjs run-end`, commits PROGRESS.md if it changed, removes the clean worktrees of the tasks (`worktrees.mjs`) |
 
-Progress: `plans/<name>/progress.json`, outside git, holds the state of the plan and of its runs (contract `orchestre-progress/3`); only `scripts/progress.mjs` writes it, together with the PROGRESS.md view. The workflow launches nothing itself: each agent first runs the step command its instructions carry, model launched included for the worker and the fixes; the first agent of the run opens it, the scribe closes the task, the clerk closes the run.
+Progress: `plans/<name>/progress.json`, outside git, holds the state of the plan and of its runs (contract `orchestre-progress/3`); only `scripts/progress.mjs` writes it, together with the PROGRESS.md view. The workflow launches nothing itself: each agent first runs the step command its instructions carry (for the worker and each fix, it also records the model launched); the first agent of the run opens it, the scribe closes the task, the clerk closes the run.
 
 Safeguards: no agent pushes, merges into `main` or deploys; no agent opens, restores or copies real production or personal data (these actions are the human's); a deviation that touches data, a database, production or a secret is always major; no agent gets around a read or write ban, and the file concerned goes to human review before the PR; no agent rewrites history (rebase, reset): a branch taken back receives the integration branch by a merge; a worktree that holds uncommitted work is never removed; an interrupted run is not resumed, a new one is launched, and the tasks already merged are skipped.
 
