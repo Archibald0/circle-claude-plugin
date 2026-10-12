@@ -1,24 +1,24 @@
-# Circle — plugins Claude Code
+# Circle — Claude Code plugins
 
-Marketplace privée de plugins [Claude Code](https://code.claude.com/docs/en/plugins). Elle contient un plugin :
+Private marketplace of [Claude Code](https://code.claude.com/docs/en/plugins) plugins. It holds one plugin:
 
-| Plugin | Version | Rôle |
+| Plugin | Version | Role |
 | :- | :- | :- |
-| `orchestre` | 0.11.0 | Exécute un plan de dev découpé en tâches (`plans/<nom>/`, un fichier par tâche) depuis une session Claude Code pilote. Chaque phase du plan est un run du workflow `orchestre:executer-phase` : réalisation par des subagents, vérification, évaluation, corrections, fusion dans une branche d'intégration, suivi. Depuis la 0.11.0, chaque tâche porte son modèle et sa raison, choisis par Opus à la préparation ; après un essai refusé, le replanificateur choisit le modèle de la correction, jamais en dessous de celui de la tâche. Depuis la 0.9.0, il inclut le mod de suivi (auparavant le plugin `orchestre-suivi`), en lecture seule sur `plans/<nom>/suivi.json` : bandeau en couleurs et animé au-dessus du prompt pendant un run (une case par tâche colorée par statut, phases en points, « à relire » et « à toi » cliquables, étape en cours, dernière nouvelle, bouton « ⤢ Détail » à cliquer), suffixe du spinner, `/suivi` (un panneau en cartes : ce qui t'attend avec une action par ligne, le run, les tâches en frise par étape, le journal ; ou `/suivi texte`), `/suivi demo` commentée, notifications pour ce qui demande quelqu'un (`/suivi son` pour un son), ce qui a changé pendant ton absence, ligne d'état quand le bandeau est masqué. |
+| `orchestre` | 0.12.0 | Runs a dev plan split into tasks (`plans/<name>/`, one file per task) from a pilot Claude Code session. Each phase of the plan is a run of the workflow `orchestre:run-phase`: work by subagents, verification, evaluation, fixes, merge into an integration branch, progress. Each task carries its model and the reason for it, chosen by Opus when the plan is prepared; after a rejected attempt, the replanner chooses the model of the fix, never below the task's. The plugin includes a progress mod, read-only on `plans/<name>/progress.json`: an animated banner above the prompt during a run, a suffix to the spinner, `/progress` (a pane in cards: what waits for you, with one action per line, the run, the tasks as timelines, the log; or `/progress text`), a commented `/progress demo`, notifications for what asks for someone, what changed while you were away. |
 
-La logique d'orchestration a été mise au point sur un pilote de 15 tâches en 4 phases (SPACE-Platform, plan `acces-par-metier`). Historique des versions : [CHANGELOG.md](CHANGELOG.md).
+The orchestration was worked out on a pilot of 15 tasks in 4 phases (SPACE-Platform, plan `acces-par-metier`). Version history: [CHANGELOG.md](CHANGELOG.md). Coming from orchestre 0.11: see [Upgrading from 0.11](#upgrading-from-011).
 
-## Prérequis
+## Requirements
 
-- Claude Code 2.1.271 ou plus, avec les workflows dynamiques : plans payants ; sur Pro, ligne *Dynamic workflows* de `/config`.
-- `git` et Node.js 18 ou plus sur la machine : le contrôle des plans (`plan-lint`) est un script Node sans dépendance.
-- Un accès en lecture à ce dépôt GitHub privé, utilisable sans invite, car Claude Code clone avec le `git` de la machine :
-  - soit une clé SSH GitHub chargée dans `ssh-agent` ;
-  - soit `gh auth login` puis `gh auth setup-git`, et `export CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` pour cloner en HTTPS.
+- Claude Code 2.1.271 or later, with dynamic workflows: paid plans; on Pro, the *Dynamic workflows* line of `/config`.
+- `git` and Node.js 18 or later on the machine: the plan check (`plan-lint`) and the progress are Node scripts without dependencies.
+- Read access to this private GitHub repository, usable without a prompt, since Claude Code clones with the machine's `git`:
+  - either a GitHub SSH key loaded in `ssh-agent`;
+  - or `gh auth login` then `gh auth setup-git`, and `export CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` to clone over HTTPS.
 
-## Installer (une fois par machine)
+## Install (once per machine)
 
-Dans une session Claude Code :
+In a Claude Code session:
 
 ```
 /plugin marketplace add FabienDayuse/circle-claude-plugin
@@ -26,233 +26,252 @@ Dans une session Claude Code :
 /reload-plugins
 ```
 
-Le suivi (bandeau, `/suivi`) est un mod, des hooks de fonctions : il faut Claude Code 2.1.287 ou plus (`claude --version`), version à partir de laquelle les mods sont actifs par défaut ([doc des mods](https://code.claude.com/docs/en/plugins/mods/overview)). Il dessine dans le terminal et dans l'onglet Code de l'app de bureau ; dans le panneau de l'extension VS Code, sous `claude -p` et dans une session cloud, rien ne se dessine. `/plugin` dit s'il est chargé : la ligne sous les onglets nomme les mods actifs, dont `orchestre`. Le comportement d'une version plus ancienne face au module de hooks n'a pas été essayé : si `/plugin` y signale une erreur sur `hooks/hooks.json`, mettre Claude Code à jour.
-
-Si `orchestre-suivi` est installé (0.2.0 et avant), le désinstaller : `/plugin uninstall orchestre-suivi@circle`. Sinon les deux mods réclament `/suivi` et le second venu ne l'a pas.
-
-Ou depuis un terminal :
+Or from a terminal:
 
 ```sh
 claude plugin marketplace add FabienDayuse/circle-claude-plugin
 claude plugin install orchestre@circle
 ```
 
-Vérifier : `claude plugin list` affiche `orchestre@circle` activé, et `/orchestre:` propose `installer`, `preparer`, `pret` et `lancer`.
+Check: `claude plugin list` shows `orchestre@circle` enabled, and `/orchestre:` offers `install`, `prepare`, `ready`, `run` and `status`.
 
-## Utiliser
+The progress (banner, `/progress`) is a mod, made of function hooks: it needs Claude Code 2.1.287 or later (`claude --version`), the version from which mods are on by default ([mods documentation](https://code.claude.com/docs/en/plugins/mods/overview)). It draws in the terminal and in the Code tab of the desktop app; in the VS Code extension panel, under `claude -p` and in a cloud session, nothing is drawn. `/plugin` says whether it is loaded: the line under the tabs names the active mods, `orchestre` among them.
 
-Quatre commandes, dans l'ordre, et une cinquième pour suivre l'avancement :
+## Use
 
-### 1. `/orchestre:installer` : préparer le dépôt
+Four commands, in order, and a fifth one to see where a plan stands:
 
-Une fois par dépôt, à sa racine. Un plugin ne peut pas fixer les réglages dont l'orchestrateur a besoin : la commande les écrit dans le projet, en montrant chaque changement avant de le faire.
+### 1. `/orchestre:install`: prepare the repository
 
-- `.claude/settings.local.json` (personnel, non versionné) : `worktree.baseRef: "head"` (les worktrees partent de la branche d'intégration), `autoContinueAtUsageLimit` (un run en pause sur limite d'usage repart seul), autorisations du workflow, des scripts du plugin (plan-lint, suivi, nettoyage des worktrees), des commandes git des agents et, sur proposition, des commandes de test et de build du projet ; refus de `git push`, de l'outil de déploiement du projet et de la lecture des `.env` et `.env.*`, à toutes les profondeurs, sauf les modèles versionnés (`.env.example`, `.env.sample`, `.env.template`, `.env.dist`), que les agents lisent et modifient. Sur un projet installé avant la 0.6.2, la commande propose d'ajouter ces exceptions.
-- `.worktreeinclude` : les fichiers non versionnés (`.env`…) à copier dans les worktrees des tâches parallèles.
-- Exclusion de `plans/` et `.claude/` par le formateur et le linter du projet.
-- Si les outils du projet (node, pnpm, php…) sont introuvables dans le shell des agents, une clé `env` (PATH) dans `.claude/settings.local.json` : sans elle, les agents préfixeraient leurs commandes par `export PATH=…`, ce que la garde d'isolement des worktrees refuse.
-- Retrait d'une ancienne installation manuelle de l'orchestrateur (voir [Migrer](#migrer-depuis-linstallation-manuelle-v05-et-avant)).
+Once per repository, at its root. A plugin cannot set the settings the orchestrator needs: the command writes them into the project, showing each change before making it.
 
-Le pilote a tourné en mode de permission auto. En mode manuel, toute commande non autorisée suspend le run jusqu'à la réponse.
+- `.claude/settings.local.json` (personal, not versioned): `worktree.baseRef: "head"` (the worktrees start from the integration branch), `autoContinueAtUsageLimit` (a run paused on a usage limit starts again on its own), permissions for the workflow `orchestre:run-phase`, the plugin's scripts (plan-lint, progress, worktree cleanup), the agents' git commands and, if you accept them, the project's test and build commands; `git push`, the project's deployment tool and reading `.env` and `.env.*` are denied, at every depth, except the versioned templates (`.env.example`, `.env.sample`, `.env.template`, `.env.dist`), which the agents read and change.
+- `.worktreeinclude`: the unversioned files (`.env`…) to copy into the worktrees of parallel tasks.
+- Exclusion of `plans/` and `.claude/` from the project's formatter and linter.
+- If the project's tools (node, pnpm, php…) cannot be found in the agents' shell, an `env` key (PATH) in `.claude/settings.local.json`: without it, the agents would prefix their commands with `export PATH=…`, which the isolation guard of the worktrees refuses.
+- Removal of an old manual install of the orchestrator (v0.5 and earlier), and of the settings rules of an older version of the plugin.
 
-### 2. `/orchestre:preparer` : écrire ou convertir un plan
+The pilot ran in auto permission mode. In manual mode, any command that is not allowed suspends the run until you answer.
 
-- `/orchestre:preparer docs/mon-plan.md` : convertit un plan déjà écrit (fichier ou dossier). Découpage, vocabulaire et décisions du plan source sont conservés ; ce qui manque (fichiers possédés, commandes de vérification, définition du fini) vient d'une exploration du dépôt. Le bilan donne une table de correspondance plan source → tâches.
-- `/orchestre:preparer ajouter l'export CSV des réservations` : explore le dépôt, découpe et écrit un nouveau plan.
+### 2. `/orchestre:prepare`: write or convert a plan
 
-Dans les deux cas, toutes les décisions ouvertes te sont posées, par lots de 4, sans plafond ; seules celles que tu choisis de reporter restent ouvertes. Ce qu'un agent ne fera jamais (accès, secret, compte payant, données réelles) et l'environnement dont les vérifications ont besoin vont dans `PREREQUIS.md`, et chaque tâche cite ce qu'elle attend. Chaque tâche reçoit un modèle et une ligne qui le justifie (`modele`, `raison_modele`) : haiku pour le mécanique (renommage, documentation, configuration), sonnet par défaut pour implémenter, opus pour l'architecture, les tâches ambiguës ou celles qui touchent plusieurs modules. Le skill tourne lui-même sur opus (champ `model`), le temps du tour. Il te demande si tu veux utiliser fable pour ce plan (« Non » recommandé : plus coûteux, sans gain constaté sur opus à ce jour) ; sur « Oui », seules les tâches que tu coches passent sur fable. La réponse va dans `orchestre.config.json` (`fable`), que plan-lint fait respecter. Le plan est validé par plan-lint, relu par un subagent sceptique, puis commité sur la branche `plan/<nom>` après accord. Le format est décrit dans [`plugins/orchestre/skills/preparer/format.md`](plugins/orchestre/skills/preparer/format.md).
+- `/orchestre:prepare docs/my-plan.md`: converts a plan already written (file or folder). The splitting, the vocabulary and the decisions of the source plan are kept; what is missing (owned files, verification commands, definition of done) comes from an exploration of the repository. The summary gives a correspondence table, source plan → tasks.
+- `/orchestre:prepare add the CSV export of the bookings`: explores the repository, splits and writes a new plan.
 
-### 3. `/orchestre:pret plans/<nom>` : vérifier que tout est prêt
+It first asks the language of the plan's free text (`language`: task titles, criteria, HANDOFF descriptions…); keys, statuses, section titles and commit messages stay in English. Then every open decision is asked, in batches of 4, without a cap; only those you choose to defer stay open. What an agent will never do (access, secret, paid account, real data) and the environment the verifications need go into `PREREQUISITES.md`, and each task cites what it waits for. Each task gets a model and a line that justifies it (`model`, `model_reason`): haiku for mechanical work (renaming, documentation, configuration), sonnet by default to implement, opus for architecture, ambiguous tasks and those that touch several modules. The skill itself runs on opus (field `model`), for the turn. It asks whether to use fable for this plan ("No" recommended: it costs more, with no gain observed over opus so far); on "Yes", only the tasks you check move to fable. The answer goes into `orchestre.config.json` (`fable`), which plan-lint enforces. The plan is validated by plan-lint, reviewed by a skeptical subagent, then committed on the branch `plan/<name>` after agreement. The format is described in [`plugins/orchestre/skills/prepare/format.md`](plugins/orchestre/skills/prepare/format.md).
 
-La veille du lancement, sans exécuter aucune tâche :
+### 3. `/orchestre:ready plans/<name>`: check that everything is ready
 
-- l'environnement : réglages, outils, git, formateur, dossiers non suivis, autorisations des commandes de vérification ;
-- les prérequis : les décisions encore ouvertes, à trancher sur-le-champ, et les gestes qui te reviennent, avec la marche à suivre. Pour un plan écrit avant la 0.6.1, la commande construit d'abord `PREREQUIS.md` ;
-- une répétition à blanc des commandes de vérification sûres (sans base partagée, données réelles, appel payant ni déploiement), qui révèle les outils ou autorisations manquants et les échecs déjà présents ;
-- la préparation de l'environnement, dans `orchestre.config.json` : `preparation` (dépendances, code généré : lancée par chaque worker sur sa branche et par l'intégrateur après chaque fusion, avant le contrôle) et `preparation_partagee` (service commun comme une base de test, par ressource déclarée). La commande la propose d'après le dépôt si elle manque ;
-- les commandes de vérification composées, que plan-lint signale : un agent isolé dans un worktree se les verrait refuser.
+The day before the launch, without executing any task:
 
-Elle rend un verdict par phase, par exemple « phases 1 à 3 prêtes ; phase 4 : T12 attend D5 ». Pendant le run, une tâche dont un prérequis reste ouvert ne part pas, et le reste de la phase tourne. `--sans-repetition` saute la répétition.
+- the environment: settings, tools, git, formatter, untracked folders, permissions of the verification commands;
+- the plan format: a plan of orchestre 0.11 is migrated here, after agreement (see [Upgrading from 0.11](#upgrading-from-011));
+- the prerequisites: the decisions still open, to settle on the spot, and the actions that are yours, with how to do them;
+- a dry run of the safe verification commands (no shared database, real data, paid call or deployment), which reveals the missing tools or permissions and the failures already present;
+- the environment setup, in `orchestre.config.json`: `setup` (dependencies, generated code: run by each worker on its branch and by the integrator after each merge, before the check) and `shared_setup` (a common service such as a test database, per declared resource). The command proposes one from the repository if it is missing;
+- the compound verification commands, which plan-lint reports: an agent isolated in a worktree would see them refused.
 
-### 4. `/orchestre:lancer plans/<nom>` : exécuter
+It gives a verdict phase by phase, for example "phases 1 to 3 ready; phase 4: T12 waits for D5". During the run, a task whose prerequisite is still open does not start, and the rest of the phase runs. `--no-dry-run` skips the dry run.
 
-Dans une session neuve. Pré-vol (version, réglages, git, nettoyage des worktrees laissés par les essais précédents, plan-lint et prérequis de la phase, formateur, suivi), choix du mode et du nombre de tâches simultanées, puis un run du workflow par phase :
+### 4. `/orchestre:run plans/<name>`: execute
 
-- **arrêt par phase** : points à trancher, puis résumé de la phase dans la question « on continue ? » (conseillé pour un premier plan) ;
-- **arrêt sur déviation** : le run s'arrête sur tout écart majeur pour un arbitrage ;
-- **autonome** : l'option la plus prudente de chaque point majeur est prise d'office ; tout point humain arrête le run, et le run s'arrête aussi au-delà de 3 décisions d'office.
+In a new session. Pre-flight (version, settings, git, migration of a plan of 0.11, cleanup of the worktrees left by earlier attempts, plan-lint and prerequisites of the phase, formatter, progress), choice of the mode and of the number of simultaneous tasks, then one run of the workflow per phase:
 
-Pendant un run, la session pilote ne touche pas au checkout principal, où travaillent les agents : une demande sur le dépôt attend la fin du run. Un fichier que les agents n'ont pas le droit de lire ou d'écrire (réglages du projet ou de l'organisation), ou une commande qu'ils n'ont pas le droit de lancer, n'arrête pas le run : il devient une relecture, à faire toi-même avant la PR, avec la commande donnée à la fin.
+- **stop at each phase**: issues to settle, then a summary of the phase in the question "go on?" (advised for a first plan);
+- **stop on deviation**: the run stops on any major deviation, for a ruling;
+- **autonomous**: the safest option of each major issue is taken automatically; any issue for a human stops the run, and the run also stops beyond 3 auto-decisions.
 
-Suivre un run : `/suivi` (bandeau, panneau, notifications, sans tour de Claude), ou `/orchestre:etat`, ci-dessous, pour le plan ; `/workflows` pour l'étape de chaque agent.
+During a run, the pilot session does not touch the main checkout, where the agents work: a request about the repository waits for the end of the run. A file the agents may not read or write (project or organization settings), or a command they may not run, does not stop the run: it becomes a review, to do yourself before the PR, with the command given at the end.
 
-- Le bandeau, au-dessus du prompt : avancement, puis ce qui t'attend (« ⚑ à relire », « ⚠ à toi », qui se cliquent), puis la tâche en cours ; « ⤢ Détail », au bout, ouvre le panneau. À la fin d'un run, « ✕ Masquer » cache le bandeau ; la ligne d'état garde alors « orchestre ✓ 5/5 · ⚑ 3 » tant qu'il reste quelque chose à faire. Ces boutons se cliquent ; ils n'ont pas de touche.
-- Le panneau, en cartes : « À toi » d'abord, quand quelque chose t'attend, puis le run, les tâches et le journal. r, b, t et j font défiler jusqu'à une carte (j montre aussi tout le journal). Les touches 1 à 9 préparent dans le prompt l'action d'une ligne de « À toi » (reprendre le run, relire un fichier, revoir une décision d'office…), l celle de la suite d'un run fini, p le brouillon de PR : rien n'est envoyé sans toi. ← et → restent à Claude Code.
-- Notifications : seulement pour une tâche qui attend un humain, bloquée ou en échec, un run arrêté ou en erreur ; `/suivi son` y ajoute un son (macOS). Au premier prompt après 15 min sans prompt, une notification dit ce qui a changé.
+The state of the plan and of its runs is kept in `plans/<name>/progress.json` (outside git), which only `scripts/progress.mjs` writes, together with the PROGRESS.md view. To resume in a new session: `/orchestre:run plans/<name> --resume` (the state is in the plan and in git). At the end, the integration branch is ready for a PR: merging into `main` and deploying stay human actions.
 
-Depuis la 0.8.0, l'état du plan et des runs est aussi tenu dans `plans/<nom>/suivi.json` (hors git), que seul `scripts/suivi.mjs` écrit. Reprendre dans une session neuve : `/orchestre:lancer plans/<nom> --reprendre` (l'état est dans le plan et dans git). À la fin, la branche d'intégration est prête pour une PR : la fusion dans `main` et le déploiement restent des gestes humains.
+### 5. `/orchestre:status [plans/<name>]`: see where the plan stands
 
-### 5. `/orchestre:etat [plans/<nom>]` : voir où en est le plan
-
-À tout moment, y compris dans la session pilote pendant un run : la commande ne fait que lire, sans switch, sans écriture ni verrou git. Sans argument, elle prend le seul plan de `plans/`. Un script calcule le tableau à partir de plan-lint et de git, et Claude le recopie tel quel :
+At any time, including in the pilot session during a run: the command only reads, without switch, write or git lock. Without an argument, it takes the only plan in `plans/`. A script computes the table from plan-lint and git, and Claude copies it as is. Here, the plan of `tests/demo-progress.mjs` after its first run, with a review and a ticket added to HANDOFF.md:
 
 ```text
-## mr-review-recall — 12/37 tâches · 32 %
-`███████░░░░░░░░░░░░░░░░░` phase 3 en cours · dernière fusion T09 il y a 12 min
+## demo — 3/5 tasks · 60%
+`██████████████░░░░░░░░░░` phase 2 in progress · last merge T03 just now
 
-| Phase | Avancement | Tâches |
+| Phase | Progress | Tasks |
 | :-- | :-- | :-- |
-| ✓ 1 | `██████████` 100 % | 1/1 |
-| ✓ 2 | `██████████` 100 % | 7/7 |
-| ● 3 | `████░░░░░░` 40 % | 4/10 |
-| ○ 4 | `░░░░░░░░░░` 0 % | 0/19 |
+| ✓ 1 | `██████████` 100% | 3/3 |
+| ● 2 | `░░░░░░░░░░` 0% | 0/2 |
 
-**En cours** : T12 (checkout, dernier commit il y a 3 min) · T13 (worktree, démarrée)
+**In progress**: T04 (last commit just now)
 
-**À toi** : D5 (décision) bloque T15 · 2 relectures avant la PR · 1 ticket après la PR
+**Your turn**: 1 review before the PR · 1 ticket after the PR
 ```
 
-✓ phase finie, ● commencée, ⚠ une tâche y attend un humain, est bloquée ou en échec, ○ pas commencée. Une tâche est « en cours » quand sa branche `tache/<id>` existe ; l'étape exacte de chaque agent se lit dans `/workflows`. Les relectures comptées sont toutes les entrées `relecture` de HANDOFF.md. L'exemple ci-dessus est illustratif.
+✓ phase finished, ● started, ⚠ a task there waits for a human, is blocked or failed, ○ not started. A task is "in progress" when its branch `task/<id>` exists; the exact step of each agent can be read in `/workflows`. The reviews counted are all the `review` entries of HANDOFF.md.
 
-### Premier essai conseillé
+### Follow a run: `/progress`
 
-Un dépôt jouet d'une tâche, pour vérifier l'installation de bout en bout en quelques minutes :
+The mod follows the run without a turn of Claude; `/orchestre:status` gives the plan, `/workflows` the step of each agent.
+
+- The banner, above the prompt: progress, then what waits for you ("⚑ to review", "⚠ your turn", which can be clicked), then the task in progress; "⤢ Details", at the end, opens the pane. At the end of a run, "✕ Hide" hides the banner; the status line then keeps "orchestre ✓ 5/5 · ⚑ 3" as long as something is left to do. These buttons are clicked; they have no key.
+- The pane, in cards: "Your turn" first, when something waits for you, then the run, the tasks and the log. y, r, t and l scroll to a card (l also shows the whole log). The keys 1 to 9 prepare in the prompt the action of a line of "Your turn" (resume the run, review a file, go over an auto-decision…), c the resume of a stopped run, p the PR draft: nothing is sent without you. ← and → stay with Claude Code. `/progress text` gives the same state as text.
+- Notifications: only for a task that waits for a human, is blocked or failed, and for a run stopped or in error; `/progress sound` adds a sound (macOS). At the first prompt after 15 min without a prompt, a notification says what changed.
+- The mod follows the `progress.json` written last; `/progress plans/<name>` picks a plan, `/progress auto` goes back to the last one written.
+
+### First try
+
+A toy repository with one task, to check the install end to end in a few minutes:
 
 ```sh
 git clone git@github.com:FabienDayuse/circle-claude-plugin.git && cd circle-claude-plugin
-sh tests/depot-jouet.sh ~/tmp/orchestre-jouet
-cd ~/tmp/orchestre-jouet && claude
+sh tests/toy-repo.sh ~/tmp/orchestre-toy
+cd ~/tmp/orchestre-toy && claude
 ```
 
-Puis `/orchestre:installer`, une session neuve, `/orchestre:pret plans/demo` et `/orchestre:lancer plans/demo`.
+Then `/orchestre:install`, a new session, `/orchestre:ready plans/demo` and `/orchestre:run plans/demo`.
 
-### Voir le mod sans lancer de run
+### See the mod without a run
 
-Dans n'importe quelle session où le mod est chargé, avec ou sans plan :
+In any session where the mod is loaded, with or without a plan:
 
 ```
-/suivi demo
+/progress demo
 ```
 
-Le mod joue en mémoire deux runs d'un plan fictif de 5 tâches, `site-vitrine`, en un peu plus d'une minute : bandeau en couleurs et animé, marqué DÉMO, notifications, arrêt sur un arbitrage (une pause de 12 s pour ouvrir `/suivi`), reprise, fin. L'en-tête du panneau donne le pas et, à certains pas, le geste à essayer ; une touche d'action y dit ce qu'elle ferait, sans rien mettre dans le prompt. Rien n'est écrit ni lu dans le dépôt pendant ce temps. Une minute après le dernier pas, le vrai suivi reprend ; `/suivi auto` y revient tout de suite. Le scénario est celui de `tests/demo-suivi.mjs`, qui le joue avec le vrai `suivi.mjs` : les tests vérifient que les deux donnent les mêmes notifications et le même journal.
+The mod plays in memory two runs of a made-up plan of 5 tasks, `showcase-site`, in a little over a minute: animated banner in colors, marked DEMO, notifications, a stop awaiting a ruling (a 12 s pause to open `/progress`), the resume, the end. The header of the pane gives the frame and, at some frames, what to try; an action key says what it would do, without putting anything in the prompt. Nothing is read or written in the repository meanwhile. A minute after the last frame, the real progress comes back; `/progress auto` goes back to it right away. The scenario is that of `tests/demo-progress.mjs`, which plays it with the real `progress.mjs`: the tests check that both give the same notifications and the same log.
 
-Si le mod ne montre rien ([dépannage des mods](https://code.claude.com/docs/en/plugins/mods/troubleshoot)) :
+If the mod shows nothing ([mods troubleshooting](https://code.claude.com/docs/en/plugins/mods/troubleshoot)):
 
-- `claude --version` : 2.1.287 ou plus ;
-- `claude plugin test`, lancé dans un dossier sans mod, doit dire « no hooks module to load » ; sinon un réglage (`disableAllHooks`) ou une politique de l'organisation bloque les mods ;
-- l'invite de confiance du dossier doit avoir été acceptée ;
-- `/plugin` doit nommer `orchestre` sur la ligne des mods actifs ;
-- « Unknown command: /suivi » : le mod n'est pas chargé, voir les points ci-dessus ; `claude plugin list` doit montrer `orchestre@circle` en 0.9.0 ou plus ;
-- avec `--plugin-dir`, une ligne de la transcription dit pourquoi un dessin est refusé (`refused:`) ou un hook sauté (`hook skipped:`) ; pour un mod installé, ces lignes ne vont qu'au journal : `claude --debug-file mod.log`, puis chercher `orchestre` dans `mod.log`.
+- `claude --version`: 2.1.287 or later;
+- `claude plugin test`, run in a folder without a mod, must say "no hooks module to load"; otherwise a setting (`disableAllHooks`) or a policy of the organization blocks mods;
+- the trust prompt of the folder must have been accepted;
+- `/plugin` must name `orchestre` on the line of the active mods;
+- "Unknown command: /progress": the mod is not loaded, see the points above; `claude plugin list` must show `orchestre@circle` in 0.12.0 or later (`/progress` was `/suivi` before);
+- with `--plugin-dir`, a line of the transcript says why a drawing is refused (`refused:`) or a hook skipped (`hook skipped:`); for an installed mod, these lines only go to the log: `claude --debug-file mod.log`, then look for `orchestre` in `mod.log`.
 
-## Mettre à jour
+## Update
 
-Entre deux runs, jamais pendant :
+Between two runs, never during one:
 
 ```
 /plugin marketplace update circle
 /reload-plugins
 ```
 
-Ou depuis un terminal : `claude plugin update orchestre@circle`, puis une session neuve.
+Or from a terminal: `claude plugin update orchestre@circle`, then a new session.
 
-- Une mise à jour n'arrive que si la version de `plugins/orchestre/.claude-plugin/plugin.json` a changé : sinon, la commande répond que le plugin est déjà à jour.
-- Mise à jour automatique : `/plugin` → *Marketplaces* → `circle` → *Enable auto-update*. Pour un dépôt privé, elle a besoin d'un identifiant git déjà enregistré (clé SSH dans `ssh-agent`, ou `gh auth setup-git`) ; sinon elle échoue sans bruit et garde la version en place.
-- Le chemin des scripts du plugin contient le numéro de version : après une mise à jour, `/orchestre:lancer` propose de remplacer les règles d'autorisation correspondantes.
-- Depuis la 0.6.3 vers la 0.8.0 : relancer `/orchestre:installer` dans chaque dépôt (règles des scripts `suivi.mjs` et `worktrees.mjs`, `git merge-base`, clé `env` si besoin), puis `/orchestre:pret plans/<nom>` pour la préparation de l'environnement. Les plans en cours reprennent tels quels ; au premier lancement, `/orchestre:lancer` régénère le tableau de SUIVI.md et propose de le commiter.
-- Version installée : `claude plugin list`.
+- An update only arrives if the version in `plugins/orchestre/.claude-plugin/plugin.json` changed: otherwise, the command answers that the plugin is already up to date.
+- Automatic update: `/plugin` → *Marketplaces* → `circle` → *Enable auto-update*. For a private repository, it needs a git credential already saved (SSH key in `ssh-agent`, or `gh auth setup-git`); otherwise it fails silently and keeps the version in place.
+- The path of the plugin's scripts contains the version number: after an update, `/orchestre:run` offers to replace the corresponding permission rules.
+- Installed version: `claude plugin list`.
 
-## Partager avec l'équipe d'un dépôt
+## Upgrading from 0.11
 
-`/orchestre:installer --equipe` déclare la marketplace et le plugin dans `.claude/settings.json` (versionné). Les personnes qui ouvrent le dépôt se voient proposer le plugin après avoir accepté la confiance du dossier. Chacune doit avoir accès en lecture à ce dépôt GitHub, puis lancer `/orchestre:installer` pour ses propres réglages.
+0.12.0 moves the whole plugin to English, plan and progress formats included. Between two runs:
 
-## Migrer depuis l'installation manuelle (v0.5 et avant)
+1. Update the plugin (above), then run `/orchestre:install` again in each repository: it replaces the rules of 0.11 (`Workflow(orchestre:executer-phase)`, the `suivi.mjs` rule) with those of 0.12 (`Workflow(orchestre:run-phase)`, the `progress.mjs` rule) and adds the rules of the template that are missing. `/orchestre:run` also offers the replacement at its pre-flight.
+2. The commands change names:
 
-Jusqu'à la v0.5, l'orchestrateur se copiait dans le `.claude/` du projet (`agents/`, `skills/lancer/`, `workflows/executer-phase.js`, `orchestre/plan-lint.mjs`).
+   | 0.11 | 0.12 |
+   | :- | :- |
+   | `/orchestre:installer [--equipe]` | `/orchestre:install [--team]` |
+   | `/orchestre:preparer` | `/orchestre:prepare` |
+   | `/orchestre:pret [--sans-repetition]` | `/orchestre:ready [--no-dry-run]` |
+   | `/orchestre:lancer [--reprendre]` | `/orchestre:run [--resume]` |
+   | `/orchestre:etat` | `/orchestre:status` |
+   | `/suivi` (`texte`, `son`, `demo`, `auto`) | `/progress` (`text`, `sound`, `demo`, `auto`) |
 
-1. Installer le plugin (ci-dessus).
-2. Dans le dépôt : `/orchestre:installer`. La commande repère les anciennes copies et propose de les retirer, sinon `/lancer` lancerait l'ancienne version. Elle remplace aussi leurs règles d'autorisation : `Workflow(executer-phase)` par `Workflow(orchestre:executer-phase)`, et celle de plan-lint par le chemin du plugin.
-3. Lancer avec `/orchestre:lancer`.
+3. Plans: the scripts of 0.12 refuse a plan in the French format of 0.11 (`taches/`, `SUIVI.md`, `PREREQUIS.md`, `suivi.json`). `/orchestre:ready` or `/orchestre:run` detect it at their pre-flight, show a preview of the migration (`scripts/migrate.mjs`), then, after your agreement, migrate it and commit the plan folder alone on the integration branch (`orchestre: migrate plan <name> to the 0.12 format`). Keys, values, file names and section titles move to English (`tasks/`, `PROGRESS.md`, `PREREQUISITES.md`, `progress.json`); the free text stays as written, and the plan gets `"language": "fr"`. The migration refuses a plan folder with uncommitted changes, and a run still marked in progress unless you confirm it is stopped.
+4. Git history is not rewritten: the branches `tache/<id>` and the commits "tâche <id> : " stay, and the scripts still read them. A task started in 0.11 and not merged is not taken back: it starts again from the integration branch on `task/<id>`, and the old branch stays in git, for reference.
+5. The mod: `/suivi` becomes `/progress`, with keys y, r, t, l, 1 to 9, c and p. It only reads `progress.json`; for a plan of 0.11 not migrated yet, a notification says how to migrate it. The sound setting is kept.
 
-Les plans en cours (`plans/<nom>/`, SUIVI, HANDOFF, branche d'intégration) ne changent pas de format : ils reprennent avec `/orchestre:lancer plans/<nom> --reprendre`.
+orchestre 0.11 does not read a migrated plan: once a plan is migrated, it runs with 0.12.
 
-## Ce que fait un run
+## Share with the team of a repository
 
-Un run égale une phase. Pour chaque tâche prête (dépendances fusionnées, prérequis faits, ressources libres) :
+`/orchestre:install --team` declares the marketplace and the plugin in `.claude/settings.json` (versioned). The people who open the repository are offered the plugin after accepting the trust of the folder. Each of them needs read access to this GitHub repository, then runs `/orchestre:install` for their own settings.
 
-| Étape | Agent | Modèle | Rôle |
+## What a run does
+
+A run equals a phase. For each ready task (dependencies merged, prerequisites done, resources free):
+
+| Step | Agent | Model | Role |
 | :- | :- | :- | :- |
-| Lecture | `lecteur-plan` | haiku | plan-lint en JSON : tâches de la phase, statuts, dépendances |
-| Réalisation | `worker`, ou `worker-isole` en worktree si des tâches tournent en parallèle | modèle de la tâche, tel quel (sonnet s'il n'en a pas) | réalise la tâche sur `tache/<id>`, lance ses vérifications, rend un rapport |
-| Vérification | `verificateur` | sonnet | rejoue les commandes de vérification : code de sortie et extrait de chacune |
-| Évaluation | `evaluateur` | opus | juge chaque critère du fini sur preuves (diff, résultats du vérificateur) |
-| Choix du modèle | `replanificateur` | opus | après un essai refusé, choisit le modèle de la correction d'après le refus (0.11.0) ; le modèle de la tâche sert de plancher ; sans réponse valide, l'échelle `escalade` |
-| Corrections | `worker` | modèle choisi ; sans modèle dans le plan : sonnet puis opus (`escalade`) | 2 essais au plus sur les manques relevés |
-| Fusion | `integrateur` | sonnet | `--no-ff` dans `plan/<nom>`, puis contrôle post-fusion |
-| Replanification | `replanificateur` | opus | classe les écarts, prépare les points à trancher avec leurs options |
-| Suivi | `scribe` | sonnet | seul à écrire HANDOFF, DISCOVERY et les tâches créées ou amendées ; clôt la tâche par `suivi.mjs`, qui régénère SUIVI.md |
-| Fin de run | `greffier` | haiku | clôt le run par `suivi.mjs fin-run`, commite SUIVI.md s'il a changé, retire les worktrees propres des tâches (`worktrees.mjs`) |
+| Reading | `plan-reader` | haiku | plan-lint as JSON: tasks of the phase, statuses, dependencies |
+| Work | `worker`, or `isolated-worker` in a worktree if tasks run in parallel | the task's model, as is (sonnet if it has none) | carries out the task on `task/<id>`, runs its verifications, returns a report |
+| Verification | `verifier` | sonnet | replays the verification commands: exit code and excerpt of each |
+| Evaluation | `evaluator` | opus | judges each criterion of done on evidence (diff, results of the verifier) |
+| Model choice | `replanner` | opus | after a rejected attempt, chooses the model of the fix from the rejection; the task's model is the floor; without a valid answer, the `escalation` ladder |
+| Fixes | `worker` | model chosen; without a model in the plan: sonnet then opus (`escalation`) | 2 attempts at most on the gaps found |
+| Merge | `integrator` | sonnet | `--no-ff` into `plan/<name>`, then the post-merge check |
+| Replanning | `replanner` | opus | rates the deviations, prepares the issues to settle with their options |
+| Progress | `scribe` | sonnet | the only one to write HANDOFF, DISCOVERY and the tasks created or amended; closes the task through `progress.mjs`, which regenerates PROGRESS.md |
+| End of run | `clerk` | haiku | closes the run with `progress.mjs run-end`, commits PROGRESS.md if it changed, removes the clean worktrees of the tasks (`worktrees.mjs`) |
 
-Suivi (0.8.0) : `plans/<nom>/suivi.json`, hors git, tient l'état du plan et de ses runs ; seul `scripts/suivi.mjs` l'écrit, avec la vue SUIVI.md (contrat `orchestre-suivi/2` depuis la 0.11.0, qui migre un fichier `/1`). Le workflow ne lance rien : chaque agent lance d'abord la commande d'étape que porte sa consigne, modèle lancé compris pour le worker et les corrections, le premier agent du run l'ouvre, le scribe clôt la tâche, le greffier clôt le run. Sans `args.suivi`, le workflow garde le suivi de la 0.6.3.
+Progress: `plans/<name>/progress.json`, outside git, holds the state of the plan and of its runs (contract `orchestre-progress/3`); only `scripts/progress.mjs` writes it, together with the PROGRESS.md view. The workflow launches nothing itself: each agent first runs the step command its instructions carry, model launched included for the worker and the fixes; the first agent of the run opens it, the scribe closes the task, the clerk closes the run.
 
-Garde-fous : aucun agent ne pousse, ne fusionne dans `main` ni ne déploie ; aucun agent n'ouvre, ne restaure ni ne copie de données de production ou personnelles réelles (ces gestes reviennent à l'humain) ; un écart qui touche des données, une base, la prod ou un secret est toujours majeur ; aucun agent ne contourne une interdiction de lecture ou d'écriture, et le fichier concerné va en relecture humaine avant la PR ; aucun agent ne réécrit l'historique (rebase, reset) : une branche reprise reçoit la branche d'intégration par une fusion ; un worktree qui contient du travail non commité n'est jamais retiré ; un run interrompu ne se reprend pas, on en relance un nouveau, et les tâches déjà fusionnées sont sautées.
+Safeguards: no agent pushes, merges into `main` or deploys; no agent opens, restores or copies real production or personal data (these actions are the human's); a deviation that touches data, a database, production or a secret is always major; no agent gets around a read or write ban, and the file concerned goes to human review before the PR; no agent rewrites history (rebase, reset): a branch taken back receives the integration branch by a merge; a worktree that holds uncommitted work is never removed; an interrupted run is not resumed, a new one is launched, and the tasks already merged are skipped.
 
-## Contenu du dépôt
+## Repository content
 
 ```
-.claude-plugin/marketplace.json      catalogue de la marketplace « circle »
+.claude-plugin/marketplace.json      catalog of the "circle" marketplace
 plugins/orchestre/
-├── .claude-plugin/plugin.json       manifeste (nom, version, contrat des types)
-├── skills/installer/                /orchestre:installer, modèle de réglages
-├── skills/preparer/                 /orchestre:preparer, format d'un plan
-├── skills/pret/                     /orchestre:pret
-├── skills/lancer/                   /orchestre:lancer
-├── skills/etat/                     /orchestre:etat
-├── agents/                          les 9 agents du workflow
-├── workflows/executer-phase.js      le workflow, un run par phase
-├── scripts/                         plan-lint.mjs (validation et compilation d'un plan), etat.mjs (/orchestre:etat), suivi.mjs (suivi.json et SUIVI.md), worktrees.mjs (nettoyage des worktrees)
-├── hooks/hooks.json                 déclare le module du mod
-├── hooks/register.tsx               le mod : fichiers, minuteur, dessin, /suivi
-├── hooks/modele.mjs                 lecture de suivi.json et mise en forme, sans moteur
-├── hooks/demo.mjs                   /suivi demo : le run joué en mémoire, pas à pas, et sa légende
-├── sons/attend.wav                  le son de /suivi son
-├── types/index.d.ts                 contrat de l'état du mod ($.state)
-└── tests/suivi.test.tsx             tests sous le moteur (claude plugin test)
+├── .claude-plugin/plugin.json       manifest (name, version, contract of the types)
+├── skills/install/                  /orchestre:install, settings template
+├── skills/prepare/                  /orchestre:prepare, format of a plan (format.md)
+├── skills/ready/                    /orchestre:ready
+├── skills/run/                      /orchestre:run
+├── skills/status/                   /orchestre:status
+├── agents/                          the 9 agents of the workflow
+├── workflows/run-phase.js           the workflow, one run per phase
+├── scripts/                         plan-lint.mjs (validates and compiles a plan), status.mjs (/orchestre:status),
+│                                    progress.mjs (progress.json and PROGRESS.md), worktrees.mjs (cleanup of the
+│                                    worktrees), migrate.mjs (plans of 0.11 to the 0.12 format)
+├── hooks/hooks.json                 declares the module of the mod
+├── hooks/register.tsx               the mod: files, timer, drawing, /progress
+├── hooks/view-model.mjs             reading of progress.json and layout, without the engine
+├── hooks/demo.mjs                   /progress demo: the run played in memory, frame by frame, and its legend
+├── sounds/waiting.wav               the sound of /progress sound
+├── types/index.d.ts                 contract of the mod's state ($.state)
+└── tests/progress.test.tsx          tests under the engine (claude plugin test)
 tests/
-├── mod-suivi.test.mjs               modèle du mod sur des suivi.json écrits par suivi.mjs
-├── scenarios.mjs                    scénarios simulés du workflow
-├── plan-lint.test.mjs               plan-lint sur des plans jouets
-├── etat.test.mjs                    /orchestre:etat sur un dépôt jouet
-├── suivi.test.mjs                   suivi.mjs dans des dépôts temporaires
-├── worktrees.test.mjs               worktrees.mjs dans des dépôts temporaires
-├── modele.test.mjs                  modèle de réglages de l'installer
-├── depot-jouet.sh                   dépôt jouet pour un essai réel
-└── demo-suivi.mjs                   le scénario de /suivi demo joué par le vrai suivi.mjs (tests)
+├── scenarios.mjs                    simulated scenarios of the workflow
+├── plan-lint.test.mjs               plan-lint on toy plans
+├── status.test.mjs                  /orchestre:status on a toy repository
+├── progress.test.mjs                progress.mjs in temporary repositories
+├── worktrees.test.mjs               worktrees.mjs in temporary repositories
+├── migrate.test.mjs                 migrate.mjs on plans written by the real scripts of 0.11
+├── settings-template.test.mjs       settings template of /orchestre:install
+├── commands.test.mjs                contract between the skills and the workflow, scripts, agents and plan format
+├── mod-progress.test.mjs            view model of the mod on progress.json files written by progress.mjs
+├── toy-repo.sh                      toy repository for a real try
+└── demo-progress.mjs                the scenario of /progress demo played by the real progress.mjs (tests)
 ```
 
-## Développer
+## Develop
 
-- Essayer une modification sans l'installer : `claude --plugin-dir plugins/orchestre`, puis `/reload-plugins` après chaque changement.
-- Tests : `npm test` : 93 scénarios du workflow, avec des agents simulés, dont 6 qui lancent les vrais `suivi.mjs` et `worktrees.mjs` dans un dépôt temporaire ; 19 cas de plan-lint, 8 de `/orchestre:etat`, 22 de `suivi.mjs` et 4 de `worktrees.mjs` dans des dépôts git temporaires ; le modèle de réglages de l'installer ; 20 cas du modèle du mod sur des `suivi.json` écrits par `suivi.mjs`, dont `/suivi demo` comparée au vrai `suivi.mjs`. Les 16 tests du mod sous le moteur passent par `npm run validate`.
-- Validation : `npm run validate` (`claude plugin validate` sur le plugin et sur la marketplace, puis `claude plugin test` du plugin, qui lance les tests du mod).
-- Essayer le mod sans l'installer : `claude --plugin-dir plugins/orchestre`, puis `/suivi demo` ; ou, sur un vrai `suivi.json`, `node tests/demo-suivi.mjs <dossier>` dans un autre terminal.
-- Le script du workflow n'a pas accès aux fichiers et ne peut rien importer ; `Date.now()`, `Math.random()` et `new Date()` y sont interdits. Avant de le modifier, charger la référence `/workflow-authoring`.
-- Publier une version :
-  1. monter `version` dans `plugins/orchestre/.claude-plugin/plugin.json` : sans cela, personne ne reçoit la mise à jour ;
-  2. ajouter l'entrée dans `CHANGELOG.md` et mettre à jour la version dans le tableau en tête de ce README ;
-  3. `npm test && npm run validate` ;
-  4. commiter et pousser sur `main` ;
-  5. sur chaque machine : `/plugin marketplace update circle`.
+- Try a change without installing it: `claude --plugin-dir plugins/orchestre`, then `/reload-plugins` after each change.
+- Tests: `npm test` runs four groups, which can also be run alone:
+  - `npm run test:scripts`: 24 cases of plan-lint, 9 of `/orchestre:status`, 27 of `progress.mjs`, 4 of `worktrees.mjs` and 21 of `migrate.mjs`, in temporary git repositories;
+  - `npm run test:workflow`: 103 scenarios of the workflow, with simulated agents, 6 of which run the real `progress.mjs` and `worktrees.mjs` in a temporary repository;
+  - `npm run test:commands`: the settings template, and 15 tests of the contract between the skills and the rest of the plugin;
+  - `npm run test:mod`: 23 cases of the mod's view model on `progress.json` files written by `progress.mjs`, `/progress demo` compared with the real `progress.mjs` included.
+- Validation: `npm run validate` (`claude plugin validate` on the plugin and on the marketplace, then `claude plugin test` of the plugin, which runs the 21 tests of the mod under the engine).
+- Try the mod without installing it: `claude --plugin-dir plugins/orchestre`, then `/progress demo`; or, on a real `progress.json`, `node tests/demo-progress.mjs <folder>` in another terminal.
+- The workflow script has no access to files and cannot import anything; `Date.now()`, `Math.random()` and `new Date()` are forbidden there. Before changing it, load the reference `/workflow-authoring`.
+- Publish a version:
+  1. raise `version` in `plugins/orchestre/.claude-plugin/plugin.json`: without that, nobody gets the update;
+  2. add the entry to `CHANGELOG.md` and update the version in the table at the top of this README;
+  3. `npm test && npm run validate`;
+  4. commit and push to `main`;
+  5. on each machine: `/plugin marketplace update circle`.
 
-## Limites connues
+## Known limits
 
-- Le plugin a tourné en réel pour la première fois le 29/09, sur un plan de 37 tâches : les phases 1 et 2 ont tourné en 0.6.0. Les prérequis et `/orchestre:pret` (0.6.1), les relectures (0.6.2) n'ont pas encore tourné en réel.
-- Les relectures ne sont relues par aucun agent : sans toi avant la PR, un fichier interdit aux agents part sans relecture.
-- Une interdiction que le worker remonte comme un écart ordinaire n'est reclassée en relecture que si sa description ne cite ni base, ni prod, ni secret (`DATABASE_URL`, `JWT_SECRET`…) : sinon le run s'arrête pour un humain.
-- `/orchestre:pret` repère les commandes « sûres » sur la foi de la configuration et de DISCOVERY.md : dans le doute, il demande de les lancer soi-même avec `!`.
-- Les réglages (worktree, reprise sur limite d'usage, permissions) ne peuvent pas venir d'un plugin : `/orchestre:installer` les écrit dans chaque projet.
-- Les tokens réels ne sont pas relevés automatiquement : lecture dans `/workflows`, tâche par tâche. Sur le pilote, le réel a été de 3 à 8 fois l'estimation.
-- En mode autonome, les décisions d'office ne sont relues qu'à la PR ; le coupe-circuit borne leur nombre, pas leur qualité.
-- Les écarts sensibles sont repérés par mots-clés (données, base, prod, secret…) : le filtre attrape large, mais ne voit pas un risque formulé autrement.
-- Deux tâches qui partagent une base ou un port tournent l'une après l'autre.
-- Claude Code peut signaler au démarrage les règles d'autorisation `Bash(git -C * diff *)` et `Bash(git -C * log *)` (joker avant la sous-commande) : elles servent à l'évaluateur, qui lit le diff d'un worktree.
+- The plugin first ran for real on 2026-09-29, on a plan of 37 tasks: phases 1 and 2 ran in 0.6.0. The prerequisites and `/orchestre:ready` (0.6.1) and the reviews (0.6.2) have not run for real yet. Nor has 0.12.0: the commands in English, the migration of a real plan of 0.11 and the mod in English were only checked by the tests.
+- The reviews are read by no agent: without you before the PR, a file forbidden to the agents goes out without a review.
+- A ban that the worker reports as an ordinary deviation is only reclassified as a review if its description cites neither a database, nor production, nor a secret (`DATABASE_URL`, `JWT_SECRET`…): otherwise the run stops for a human.
+- `/orchestre:ready` spots the "safe" commands on the strength of the configuration and of DISCOVERY.md: when in doubt, it asks you to run them yourself with `!`.
+- The settings (worktree, resume on usage limit, permissions) cannot come from a plugin: `/orchestre:install` writes them into each project.
+- The actual tokens are not collected automatically: read them in `/workflows`, task by task. On the pilot, the actual figure was 3 to 8 times the estimate.
+- In autonomous mode, the auto-decisions are only reviewed at the PR; the circuit breaker caps their number, not their quality.
+- Sensitive deviations are spotted by keywords (data, database, production, secret…, in English and in French): the filter catches wide, but does not see a risk worded otherwise.
+- Two tasks that share a database or a port run one after the other.
+- Claude Code may report at startup the permission rules `Bash(git -C * diff *)` and `Bash(git -C * log *)` (wildcard before the subcommand): the evaluator uses them to read the diff of a worktree.

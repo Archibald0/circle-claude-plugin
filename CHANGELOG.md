@@ -2,6 +2,81 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.12.0 — 2026-10-12: everything in English
+
+The whole plugin moves to English, apart from its name, orchestre: commands, workflow, agents, plan and progress formats, mod, documentation. A plan of 0.11 is migrated once, with the user's agreement; a plan's free text is written in its `language`. Glossary validated by Fabien on 2026-10-11 (`0.12.0/GLOSSAIRE.md` in the working folder), contract of the progress in `0.12.0/CONTRACT.md` and `progress.v3.schema.json`. Earlier entries of this changelog stay in French, as written.
+
+- Commands:
+
+  | 0.11 | 0.12 |
+  | :- | :- |
+  | `/orchestre:installer [--equipe]` | `/orchestre:install [--team]` |
+  | `/orchestre:preparer` | `/orchestre:prepare` |
+  | `/orchestre:pret [--sans-repetition]` | `/orchestre:ready [--no-dry-run]` |
+  | `/orchestre:lancer [--reprendre]` | `/orchestre:run [--resume]` |
+  | `/orchestre:etat` | `/orchestre:status` |
+  | `/suivi` (`texte`, `son`, `demo`, `auto`) | `/progress` (`text`, `sound`, `demo`, `auto`) |
+
+- Plan format (`skills/prepare/format.md`):
+  - files: `tasks/` (was `taches/`), `PROGRESS.md` (`SUIVI.md`), `PREREQUISITES.md` (`PREREQUIS.md`); HANDOFF.md and DISCOVERY.md keep their names;
+  - frontmatter keys: `title`, `model`, `model_reason`, `depends_on`, `parallel_batch`, `owned_files`, `resources`, `prerequisites`, `context_budget`, `token_estimate` (written `1.0M`), `max_turns`, `definition_of_done`;
+  - statuses: `todo` · `added` · `merged` · `blocked` · `failed` · `needs-human` · `cancelled`; HANDOFF types `deviation`, `blind-spot`, `decision`, `debt`, `needs-human`, `ticket`, `review` (and `rejection`, `amendment`, `blocker` during a run), rated `minor` or `major`; section titles, table headers and legends in English;
+  - `orchestre.config.json`: `max_parallelism`, `default_mode` (`auto`, `deviation`, `phase`; 0.11's `devia` is refused), `integration_branch`, `base_branch`, `evaluator` (`always`), `max_fixes`, `escalation`, `max_auto_decisions`, `pilot_context_cap`, `setup`, `shared_setup`, `fable`, and the new `language`.
+- `language`: the language of the plan's free text (task titles, criteria, `model_reason`, HANDOFF descriptions, Prerequisite and Evidence cells, DISCOVERY), `"en"` when absent. `/orchestre:prepare` asks for it for each plan (the language of the conversation, recommended, or English), `/orchestre:ready` shows it, `/orchestre:run` passes it to the workflow, which writes it in the prompts of the agents that write free text. The pilot talks to the user in it. Keys, values, section titles, branches and commit messages stay in English.
+- Scripts:
+  - plan-lint: the format above; it refuses a plan of 0.11 (`taches/`) or a French key, naming `migrate.mjs` and the English key, as well as `SUIVI.md`, `PREREQUIS.md` or `suivi.json` left next to `tasks/`, and a `default_mode` outside `auto`, `deviation`, `phase`; it warns about an `evaluator` other than `always`. Its JSON is in English (`errors`, `warnings`, `tasks`, `all`, `max_phase`, `prerequisites`, `ready`, `fable`, `language`);
+  - `progress.mjs` (was `suivi.mjs`): contract `orchestre-progress/3`, file `plans/<name>/progress.json` (was `suivi.json`), commands `run-start`, `step`, `close`, `ruling`, `run-end`, `pilot`, `view`, `status`, `validate`. It reads a file of `orchestre-suivi/2` or `/1` and converts it at its first write;
+  - `status.mjs` (was `etat.mjs`), and `worktrees.mjs clean [--dry-run] [--run-stopped]` (was `nettoyer [--essai] [--run-arrete]`);
+  - git history is read in both languages: merge commits "task <id>: " and "tâche <id> : ", branches `task/*` and `tache/*`.
+- `migrate.mjs` (new) converts a plan of 0.11 once, from the main checkout:
+  - preview by default; `--write` migrates and commits the plan folder alone (`orchestre: migrate plan <name> to the 0.12 format`);
+  - it refuses a plan folder with uncommitted changes, a run still "en-cours" (unless `--run-stopped`), and a linked worktree; on a failure, it restores the plan folder and says nothing is migrated; it is idempotent;
+  - keys, values, file names and section titles move to English, the free text stays as written, the plan gets `"language": "fr"`; CRLF files stay CRLF; git history is not rewritten.
+- Migration at the pre-flight of `/orchestre:ready` and `/orchestre:run`: a plan with `taches/`, or French files left next to `tasks/` by another clone, is shown in a preview and migrated after agreement. The tasks started in 0.11 on `tache/<id>` and not merged are reported, never taken back.
+- Workflow `orchestre:run-phase` (was `orchestre:executer-phase`):
+  - args in English (`parallelism`, `max_fixes`, `escalation`, `max_auto_decisions`, `rulings`, `rerun`, `agent_prefix`, `progress`, `setup`, `shared_setup`, and the new `language`); return value and statuses in English (`finished`, `partial`, `awaiting-ruling`, `rerun`, `error`; `stop_issue`, `open_issues`, `progress_failures`);
+  - `lint` is required: the fallback `.claude/orchestre/plan-lint.mjs` of the manual install (v0.5) is gone;
+  - branches `task/<id>` and `task/<id>-r<n>`, merge commits "task <id>: <title>", the title made safe for the shell; a plan path with a space is quoted;
+  - the keywords of sensitive deviations are in English and in French, as strong in both; the progress command is recognized among the forbidden commands by its exact path; the scribe adds HANDOFF entries word for word.
+- Agents renamed: `plan-reader`, `worker`, `isolated-worker`, `verifier`, `evaluator`, `integrator`, `replanner`, `scribe`, `clerk` (were `lecteur-plan`, `worker`, `worker-isole`, `verificateur`, `evaluateur`, `integrateur`, `replanificateur`, `scribe`, `greffier`).
+- Settings: the rules of 0.11 (`Workflow(orchestre:executer-phase)`, `suivi.mjs`) are replaced by `/orchestre:install` or at the pre-flight of `/orchestre:run`, like those of an older version. The template allows `Workflow(orchestre:run-phase)` and `Bash(git for-each-ref *)` (taking a branch back).
+- Commit messages in English: `plan(<name>): initial plan`, `ready(<name>): <verdict>`, `progress(<id>): <status> by hand`, `progress: PROGRESS.md regenerated by progress.mjs`, `chore: exclude plans/ and .claude/ from the formatter and linter`; dates written with `date +%F`.
+- Mod:
+  - `/progress` (`text`, `demo`, `sound`, `auto`, `plans/<name>`); pane keys y (your turn), r (run), t (tasks), l (log), 1 to 9, c (resume of a stopped run), p (PR draft); buttons "⤢ Details" and "✕ Hide";
+  - it reads `progress.json` in `orchestre-progress/3` only. A plan of 0.11 (`suivi.json`) is not read: a notification says once how to migrate it, `/progress plans/<name>` too, and says which plan is shown instead. A `progress.json` still in a format of 0.11 is converted at the next write of `progress.mjs`;
+  - the sound setting is kept under `sound`, taken once from `son`;
+  - "waits for a human", as `/orchestre:status` says it; the demo plays a plan named `showcase-site`, with the log texts of `progress.mjs`;
+  - fixed on the way: a blocked task whose blocker said "merged" was shown with a green ✓ (the log and the news now read the status from the start of the text); the lines of the tasks card could be wider than the pane; a notification said once came back after `/clear`.
+- Toy repository: `tests/toy-repo.sh` (was `depot-jouet.sh`), with an English plan.
+- Tests:
+  - plan-lint 24 cases, `/orchestre:status` 9, `progress.mjs` 27, `worktrees.mjs` 4, `migrate.mjs` 21 (new: plans written by the real scripts of 0.11, taken from `dd14f89`);
+  - 103 scenarios of the workflow (93 in 0.11, none removed);
+  - settings template, and `tests/commands.test.mjs` (new, 15 tests): the contract between the skills and the workflow, the scripts, the agents and the plan format;
+  - 23 cases of the mod's view model, 21 tests of the mod under the engine;
+  - `npm test` runs `test:scripts`, `test:workflow`, `test:commands` and `test:mod`;
+  - each of the four batches was checked by mutations (75, 68, 102, and 142 of 144: an equivalent mutant and a cosmetic gap left), then reviewed by a separate agent, whose findings were fixed.
+
+### Incompatible with 0.11
+
+- The scripts of 0.12 refuse a plan in the format of 0.11 until it is migrated, and orchestre 0.11 does not read a migrated plan (its plan-lint looks for `taches/`). Once a plan is migrated, it runs with 0.12.
+- A task started in 0.11 and not merged starts again from the integration branch: its branch `tache/<id>` stays in git, for reference.
+- The settings rules of 0.11 do not allow the workflow and the scripts of 0.12: they are replaced at the first `/orchestre:install` or `/orchestre:run`.
+
+### Upgrading from 0.11.0
+
+1. Between two runs: `/plugin marketplace update circle`, then `/reload-plugins`.
+2. In each repository: `/orchestre:install`, which replaces the rules of 0.11.
+3. For each plan in progress: `/orchestre:ready plans/<name>`, which shows the migration and does it after agreement (`/orchestre:run` offers it too). A run of 0.11 left "en-cours": confirm that it is stopped when the command asks.
+4. `/suivi` becomes `/progress`.
+
+### Not verified in real use yet
+
+- The five commands in English in Claude Code, and the questions they ask.
+- The migration of a real plan of 0.11 at the pre-flight, then its run in 0.12.
+- The `language` line: do the agents write their free text in the plan's language (`fr` for a migrated plan)?
+- The mod in English in the terminal and the desktop app: the cards, the keys y, r, t, l, c and p, the sound.
+- Still open from 0.11: does the `model` passed at the call replace the one of the agent's frontmatter; the `model: opus` of `/orchestre:prepare`; the replanner's choice of model; the cost per task (data to collect).
+
 ## 0.11.0 — 10/10/2026 : un modèle par tâche, choisi à la préparation
 
 Plan validé par Fabien le 10/10 (session Chat) : Opus attribue un modèle à chaque tâche quand il prépare le plan, et le workflow l'applique sans le recalculer.
