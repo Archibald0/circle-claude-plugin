@@ -7,7 +7,7 @@
     "test:scripts": "node tests/plan-lint.test.mjs && node tests/status.test.mjs && node tests/progress.test.mjs && node tests/worktrees.test.mjs && node tests/migrate.test.mjs",
     "test:workflow": "node tests/scenarios.mjs plugins/orchestre/workflows/run-phase.js",
     "test:commands": "node tests/settings-template.test.mjs && node tests/commands.test.mjs",
-    "test:mod": "node tests/mod-suivi.test.mjs",
+    "test:mod": "node tests/mod-progress.test.mjs",
     "validate": "claude plugin validate plugins/orchestre && claude plugin validate . && claude plugin test plugins/orchestre"
   }
 }

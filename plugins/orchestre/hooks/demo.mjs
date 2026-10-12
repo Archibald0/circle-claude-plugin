@@ -1,190 +1,190 @@
 // @ts-check
-// Mode démo du mod (/suivi demo) : un run joué en mémoire, sans dépôt ni fichier. Chaque pas donne un document
-// orchestre-suivi/2 tel que scripts/suivi.mjs l'écrirait (mêmes champs, mêmes textes de journal), que le mod passe par
-// normaliser() comme un vrai suivi.json. tests/demo-suivi.mjs joue le même scénario avec le vrai suivi.mjs, et
-// tests/mod-suivi.test.mjs vérifie que les deux annoncent les mêmes notifications et que ces documents
-// respectent le schéma du contrat.
+// Demo mode of the mod (/progress demo): a run played in memory, without a repository or a file. Each frame gives an
+// orchestre-progress/3 document as scripts/progress.mjs would write it (same fields, same log texts), which the mod passes
+// through normalize() like a real progress.json. tests/demo-progress.mjs plays the same scenario with the real progress.mjs,
+// and tests/mod-progress.test.mjs checks that both announce the same notifications and that these documents follow the
+// schema of the contract.
 
-import { normalize } from './modele.mjs'
+import { normalize } from './view-model.mjs'
 
 /** @typedef {import('../types/index.d.ts').Snapshot} Snapshot */
 
 export const DEMO_FRAME_MS = 3000
-// Le vrai suivi reprend une minute après le dernier pas
+// The real progress comes back a minute after the last frame
 export const RETURN_MS = 60000
-export const DEMO_PLAN = 'site-vitrine'
+export const DEMO_PLAN = 'showcase-site'
 
-// Le modèle de chaque tâche, comme /orchestre:preparer le choisit (0.11.0) : haiku pour la documentation
+// The model of each task, as /orchestre:prepare chooses it (0.11.0): haiku for the documentation
 export const TASKS = [
-  { id: 'T01', titre: "Page d'accueil", phase: 1, dep: [], modele: 'sonnet' },
-  { id: 'T02', titre: 'Formulaire de contact', phase: 1, dep: [], modele: 'sonnet' },
-  { id: 'T03', titre: 'Envoi des e-mails', phase: 1, dep: [], modele: 'sonnet' },
-  { id: 'T04', titre: 'Tests de bout en bout', phase: 2, dep: ['T01', 'T02'], modele: 'sonnet' },
-  { id: 'T05', titre: 'Documentation', phase: 2, dep: ['T03'], modele: 'haiku' },
+  { id: 'T01', title: 'Home page', phase: 1, dep: [], model: 'sonnet' },
+  { id: 'T02', title: 'Contact form', phase: 1, dep: [], model: 'sonnet' },
+  { id: 'T03', title: 'Sending e-mails', phase: 1, dep: [], model: 'sonnet' },
+  { id: 'T04', title: 'End-to-end tests', phase: 2, dep: ['T01', 'T02'], model: 'sonnet' },
+  { id: 'T05', title: 'Documentation', phase: 2, dep: ['T03'], model: 'haiku' },
 ]
-const SMTP = { titre: 'Clé SMTP de test', contexte: "les tests d'envoi ont besoin d'un serveur SMTP de test", humain: true }
-export const REJECTION = { essai: 1, par: 'évaluation', manques: ["le message d'erreur n'est pas affiché"] }
-// Le choix du replanificateur pour la correction de T02 (0.11.0)
-export const CHANGE = { de: 'sonnet', vers: 'opus', raison: "l'erreur touche le formulaire et l'API" }
+const SMTP = { title: 'Test SMTP key', context: 'the sending tests need a test SMTP server', human: true }
+export const REJECTION = { attempt: 1, by: 'evaluation', gaps: ['the error message is not shown'] }
+// The replanner's choice for the fix of T02 (0.11.0)
+export const CHANGE = { from: 'sonnet', to: 'opus', reason: 'the error touches the form and the API' }
 
 /** @typedef {Record<string, any>} Doc */
-/** @typedef {(d: Doc, q: string) => void} Pas */
+/** @typedef {(d: Doc, q: string) => void} Frame */
 
 const iso = /** @param {number} ms */ ms => new Date(ms).toISOString()
 /** @param {Doc} d @param {string} id */
-const task = (d, id) => d.taches.find(/** @param {Doc} t */ t => t.id === id)
+const task = (d, id) => d.tasks.find(/** @param {Doc} t */ t => t.id === id)
 /** @param {Doc} d @param {string} q @param {string} kind @param {string | null} id @param {string} text */
-const J = (d, q, kind, id, text) => { d.journal.push({ quand: q, genre: kind, tache: id, texte: text }) }
+const J = (d, q, kind, id, text) => { d.log.push({ at: q, kind, task: id, text }) }
 /** @param {Doc} d */
-const currentRun = d => d.runs.find(/** @param {Doc} r */ r => r.statut === 'en-cours')
+const currentRun = d => d.runs.find(/** @param {Doc} r */ r => r.status === 'in-progress')
 
-// Les écritures de suivi.mjs, réduites à ce que la démo joue, avec les mêmes textes de journal
-/** @param {number} phase @param {string} mode @returns {Pas} */
+// The writes of progress.mjs, reduced to what the demo plays, with the same log texts
+/** @param {number} phase @param {string} mode @returns {Frame} */
 const runStart = (phase, mode) => (d, q) => {
   const number = d.runs.length + 1
-  d.runs.push({ numero: number, run_id: null, phase, mode, parallelisme: 2, corrections_max: 2, decisions_office_max: 3, statut: 'en-cours', debut: q, fin: null, detail: null, arbitrages_appliques: [], amendements_ecartes: [], taches_ajoutees: [], reportees: [], non_lancees: [], en_attente: [], en_attente_prerequis: [] })
-  J(d, q, 'run', null, `run ${number} : phase ${phase}, mode ${mode}, 2 en parallèle`)
+  d.runs.push({ number, run_id: null, phase, mode, parallelism: 2, max_fixes: 2, max_auto_decisions: 3, status: 'in-progress', start: q, end: null, detail: null, rulings_applied: [], discarded_amendments: [], added_tasks: [], deferred: [], not_started: [], waiting: [], waiting_on_prerequisites: [] })
+  J(d, q, 'run', null, `run ${number}: phase ${phase}, mode ${mode}, 2 in parallel`)
 }
-/** @param {Doc} ch */
-const changeText = (id, ch) => `${id} : ${ch.de ?? '—'} → ${ch.vers}${ch.raison ? ` (${ch.raison})` : ''}`
-/** @param {string} id @param {string} step @param {{ isolated?: boolean, rejection?: Doc, model?: string, change?: Doc }} [o] @returns {Pas} */
+/** @param {string} id @param {Doc} ch */
+const changeText = (id, ch) => `${id}: ${ch.from ?? '—'} → ${ch.to}${ch.reason ? ` (${ch.reason})` : ''}`
+/** @param {string} id @param {string} step @param {{ isolated?: boolean, rejection?: Doc, model?: string, change?: Doc }} [o] @returns {Frame} */
 const step = (id, step, o = {}) => (d, q) => {
   const t = task(d, id)
-  if (o.isolated !== undefined) t.isole = o.isolated
-  const model = o.change ? o.change.vers : o.model ?? null
-  // La démo ne joue de changement de modèle que sur une correction, comme le workflow
+  if (o.isolated !== undefined) t.isolated = o.isolated
+  const model = o.change ? o.change.to : o.model ?? null
+  // The demo only plays a model change on a fix, as the workflow does
   if (step === 'worker') {
-    Object.assign(t, { etape: step, debut: q, fin: null, essais: 1, refus: [], blocage: [], modele_utilise: model })
-    J(d, q, 'tache', id, `${id} démarre (${t.isole ? 'worktree' : 'checkout principal'})`)
+    Object.assign(t, { step, start: q, end: null, attempts: 1, rejections: [], blocker: [], model_used: model })
+    J(d, q, 'task', id, `${id} starts (${t.isolated ? 'worktree' : 'main checkout'})`)
     return
   }
-  t.etape = step
-  if (step === 'correction' && o.rejection) {
-    t.refus.push(o.rejection)
-    t.essais = Math.max(t.essais, o.rejection.essai + 1)
-    J(d, q, 'refus', id, `${id} : essai ${o.rejection.essai} refusé (${o.rejection.par}) : ${o.rejection.manques.length} manque(s)`)
+  t.step = step
+  if (step === 'fix' && o.rejection) {
+    t.rejections.push(o.rejection)
+    t.attempts = Math.max(t.attempts, o.rejection.attempt + 1)
+    J(d, q, 'rejection', id, `${id}: attempt ${o.rejection.attempt} rejected (${o.rejection.by}): ${o.rejection.gaps.length} gap(s)`)
   }
-  if (model) t.modele_utilise = model
-  if (o.change) J(d, q, 'modele', id, changeText(id, o.change))
-  J(d, q, 'etape', id, `${id} : ${step}${step === 'correction' ? ` (essai ${t.essais})` : ''}`)
+  if (model) t.model_used = model
+  if (o.change) J(d, q, 'model', id, changeText(id, o.change))
+  J(d, q, 'step', id, `${id}: ${step}${step === 'fix' ? ` (attempt ${t.attempts})` : ''}`)
 }
-/** Le worker d'une tâche, sur son modèle. @param {string} id @param {boolean} isolated */
-const worker = (id, isolated) => step(id, 'worker', { isolated, model: /** @type {Doc} */ (TASKS.find(t => t.id === id)).modele })
-/** @param {string} id @param {{ status: string, attempts: number, rejection?: Doc[], blocker?: string[], reviews?: string[], decisions?: Doc[], issues?: Doc[] }} o @returns {Pas} */
+/** The worker of a task, on its model. @param {string} id @param {boolean} isolated */
+const worker = (id, isolated) => step(id, 'worker', { isolated, model: /** @type {Doc} */ (TASKS.find(t => t.id === id)).model })
+/** @param {string} id @param {{ status: string, attempts: number, rejections?: Doc[], blocker?: string[], reviews?: string[], decisions?: Doc[], issues?: Doc[] }} o @returns {Frame} */
 const close = (id, o) => (d, q) => {
   const t = task(d, id), run = currentRun(d)
-  Object.assign(t, { statut: o.status, essais: o.attempts, branche: `tache/${id}`, tokens_reels: 'voir /workflows', fin: q, etape: null, refus: o.rejection ?? t.refus, blocage: o.blocker ?? [] })
-  J(d, q, 'statut', id, `${id} : ${o.status} (${o.attempts} essai${o.attempts > 1 ? 's' : ''})${t.blocage.length ? ' — ' + t.blocage[0] : ''}`)
+  Object.assign(t, { status: o.status, attempts: o.attempts, branch: `task/${id}`, actual_tokens: 'see /workflows', end: q, step: null, rejections: o.rejections ?? t.rejections, blocker: o.blocker ?? [] })
+  J(d, q, 'status', id, `${id}: ${o.status} (${o.attempts} attempt${o.attempts > 1 ? 's' : ''})${t.blocker.length ? ' — ' + t.blocker[0] : ''}`)
   for (const text of o.reviews ?? []) {
-    d.relectures.push({ tache: id, phase: t.phase, texte: text, run: run?.numero ?? null, quand: q })
-    J(d, q, 'relecture', id, `${id} : relecture avant la PR — ${text}`)
+    d.reviews.push({ task: id, phase: t.phase, text, run: run?.number ?? null, at: q })
+    J(d, q, 'review', id, `${id}: review before the PR — ${text}`)
   }
   for (const x of o.decisions ?? []) {
-    d.decisions_office.push({ run: run?.numero ?? null, tache: id, titre: x.titre, option: x.option, description: x.description })
-    J(d, q, 'decision-office', id, `${id} : « ${x.titre} », option ${x.option} prise d'office`)
+    d.auto_decisions.push({ run: run?.number ?? null, task: id, title: x.title, option: x.option, description: x.description })
+    J(d, q, 'auto-decision', id, `${id}: "${x.title}", option ${x.option} taken automatically`)
   }
   for (const p of o.issues ?? []) {
-    d.points.push({ run: run?.numero ?? null, tache: id, titre: p.titre, contexte: p.contexte, humain: p.humain, options: [], role: 'a-trancher', statut: 'ouvert', option_choisie: null })
-    J(d, q, 'point', id, `${id} : point « ${p.titre} »${p.humain ? ' (humain)' : ''}`)
+    d.issues.push({ run: run?.number ?? null, task: id, title: p.title, context: p.context, human: p.human, options: [], role: 'open', status: 'open', chosen_option: null })
+    J(d, q, 'issue', id, `${id}: issue "${p.title}"${p.human ? ' (human)' : ''}`)
   }
 }
-/** @param {string} id @param {string} title @param {string} option @returns {Pas} */
+/** @param {string} id @param {string} title @param {string} option @returns {Frame} */
 const ruling = (id, title, option) => (d, q) => {
-  const p = d.points.filter(/** @param {Doc} x */ x => x.tache === id && x.titre === title && x.statut === 'ouvert').pop()
-  if (p) Object.assign(p, { statut: 'tranché', option_choisie: option })
-  J(d, q, 'arbitrage', id, `${id} : « ${title} » tranché, option ${option}`)
-  currentRun(d)?.arbitrages_appliques.push({ tache: id, titre: title, option })
+  const p = d.issues.filter(/** @param {Doc} x */ x => x.task === id && x.title === title && x.status === 'open').pop()
+  if (p) Object.assign(p, { status: 'settled', chosen_option: option })
+  J(d, q, 'ruling', id, `${id}: "${title}" settled, option ${option}`)
+  currentRun(d)?.rulings_applied.push({ task: id, title, option })
 }
-/** @param {string} status @param {{ arret?: string, en_attente?: string[] }} [o] @returns {Pas} */
+/** @param {string} status @param {{ stop?: string, waiting?: string[] }} [o] @returns {Frame} */
 const runEnd = (status, o = {}) => (d, q) => {
   const run = currentRun(d)
-  Object.assign(run, { statut: status, fin: q, en_attente: o.en_attente ?? [] })
-  if (o.arret) { const p = d.points.find(/** @param {Doc} x */ x => x.tache === o.arret && x.statut === 'ouvert'); if (p) p.role = 'arret' }
-  J(d, q, 'run', null, `run ${run.numero} : ${status}`)
+  Object.assign(run, { status, end: q, waiting: o.waiting ?? [] })
+  if (o.stop) { const p = d.issues.find(/** @param {Doc} x */ x => x.task === o.stop && x.status === 'open'); if (p) p.role = 'stop' }
+  J(d, q, 'run', null, `run ${run.number}: ${status}`)
 }
-/** @param {...Pas} frameMs @returns {Pas} */
-const together = (...frameMs) => (d, q) => { for (const p of frameMs) p(d, q) }
+/** @param {...Frame} frames @returns {Frame} */
+const together = (...frames) => (d, q) => { for (const p of frames) p(d, q) }
 
-// Le scénario de tests/demo-suivi.mjs, pas pour pas ; le second nombre est la durée du pas, en pas
-/** @type {[string, number, Pas][]} */
+// The scenario of tests/demo-progress.mjs, frame by frame; the number is the duration of the frame, in frames
+/** @type {[string, number, Frame][]} */
 export const SCENARIO = [
-  ['Run 1 lancé, phase 1', 1, runStart(1, 'phase')],
-  ['T01 et T02 démarrent', 1, together(worker('T01', true), worker('T02', true))],
-  ['T01 en vérification', 1, step('T01', 'vérification')],
-  ['T02 en vérification, T01 en évaluation', 1, together(step('T02', 'vérification'), step('T01', 'évaluation'))],
-  ["T02 refusée par l'évaluation : correction sur opus", 1, step('T02', 'correction', { rejection: REJECTION, model: 'opus', change: CHANGE })],
-  ['T01 en fusion', 1, step('T01', 'fusion')],
-  ['T01 fusionnée, avec une relecture', 1, close('T01', { status: 'fusionnée', attempts: 1, reviews: ['.env.example : ajouter DEMO_URL'] })],
-  ['T03 démarre ; T02 en vérification', 1, together(worker('T03', true), step('T02', 'vérification'))],
-  ['T02 en fusion ; T03 en vérification', 1, together(step('T02', 'fusion'), step('T03', 'vérification'))],
-  ["T02 fusionnée au 2e essai, une décision d'office", 1, close('T02', { status: 'fusionnée', attempts: 2, rejection: [REJECTION], decisions: [{ titre: 'Longueur maximale du message', option: 'B', description: '2 000 caractères' }] })],
-  ['T03 attend un humain', 1, close('T03', { status: 'besoin-humain', attempts: 1, blocker: ['clé SMTP de test absente'], issues: [SMTP] })],
-  // Une pause à l'arrêt du run 1 : le temps d'ouvrir /suivi
-  ['Fin du run 1 : arbitrage sur T03', 4, runEnd('arbitrage', { arret: 'T03', en_attente: ['T03'] })],
-  ["Run 2 lancé, arbitrage de T03 appliqué", 1, together(runStart(1, 'auto'), ruling('T03', SMTP.titre, 'A'))],
-  ['T03 reprend', 1, worker('T03', true)],
-  ['T03 en vérification', 1, step('T03', 'vérification')],
-  ['T03 fusionnée : phase 1 terminée', 1, close('T03', { status: 'fusionnée', attempts: 2 })],
-  ['T04 et T05 démarrent', 1, together(worker('T04', true), worker('T05', false))],
-  ['T05 fusionnée, deux relectures', 1, close('T05', { status: 'fusionnée', attempts: 1, reviews: ['README.md : relire la section installation', 'docs/smtp.md : vérifier le nom de la variable'] })],
-  ['T04 en vérification', 1, step('T04', 'vérification')],
-  ['T04 fusionnée : phase 2 terminée', 1, close('T04', { status: 'fusionnée', attempts: 1 })],
-  ['Fin du run 2 : terminé', 1, runEnd('terminé')],
+  ['Run 1 started, phase 1', 1, runStart(1, 'phase')],
+  ['T01 and T02 start', 1, together(worker('T01', true), worker('T02', true))],
+  ['T01 in verification', 1, step('T01', 'verification')],
+  ['T02 in verification, T01 in evaluation', 1, together(step('T02', 'verification'), step('T01', 'evaluation'))],
+  ['T02 rejected by the evaluation: fix on opus', 1, step('T02', 'fix', { rejection: REJECTION, model: 'opus', change: CHANGE })],
+  ['T01 in merge', 1, step('T01', 'merge')],
+  ['T01 merged, with a review', 1, close('T01', { status: 'merged', attempts: 1, reviews: ['.env.example: add DEMO_URL'] })],
+  ['T03 starts; T02 in verification', 1, together(worker('T03', true), step('T02', 'verification'))],
+  ['T02 in merge; T03 in verification', 1, together(step('T02', 'merge'), step('T03', 'verification'))],
+  ['T02 merged at the 2nd attempt, an auto-decision', 1, close('T02', { status: 'merged', attempts: 2, rejections: [REJECTION], decisions: [{ title: 'Maximum length of the message', option: 'B', description: '2,000 characters' }] })],
+  ['T03 needs a human', 1, close('T03', { status: 'needs-human', attempts: 1, blocker: ['test SMTP key missing'], issues: [SMTP] })],
+  // A pause when run 1 stops: the time to open /progress
+  ['End of run 1: awaiting a ruling on T03', 4, runEnd('awaiting-ruling', { stop: 'T03', waiting: ['T03'] })],
+  ['Run 2 started, ruling on T03 applied', 1, together(runStart(1, 'auto'), ruling('T03', SMTP.title, 'A'))],
+  ['T03 starts again', 1, worker('T03', true)],
+  ['T03 in verification', 1, step('T03', 'verification')],
+  ['T03 merged: phase 1 finished', 1, close('T03', { status: 'merged', attempts: 2 })],
+  ['T04 and T05 start', 1, together(worker('T04', true), worker('T05', false))],
+  ['T05 merged, two reviews', 1, close('T05', { status: 'merged', attempts: 1, reviews: ['README.md: read the installation section again', 'docs/smtp.md: check the name of the variable'] })],
+  ['T04 in verification', 1, step('T04', 'verification')],
+  ['T04 merged: phase 2 finished', 1, close('T04', { status: 'merged', attempts: 1 })],
+  ['End of run 2: finished', 1, runEnd('finished')],
 ]
 export const FRAME_COUNT = SCENARIO.length
 
-/** L'heure du pas k (0 pour le premier). @param {number} k @param {number} start @param {number} frameMs */
+/** The time of frame k (0 for the first). @param {number} k @param {number} start @param {number} frameMs */
 export function frameInstant(k, start, frameMs = DEMO_FRAME_MS) {
   let t = start
-  for (let i = 0; i < k; i++) t += frameMs * /** @type {[string, number, Pas]} */ (SCENARIO[i])[1]
+  for (let i = 0; i < k; i++) t += frameMs * /** @type {[string, number, Frame]} */ (SCENARIO[i])[1]
   return t
 }
-/** Le dernier pas joué à `maintenant` (-1 avant le premier, NB_PAS - 1 après le dernier). @param {number} now @param {number} start @param {number} frameMs */
+/** The last frame played at `now` (-1 before the first, FRAME_COUNT - 1 after the last). @param {number} now @param {number} start @param {number} frameMs */
 export function frameAt(now, start, frameMs = DEMO_FRAME_MS) {
   let k = -1
   while (k + 1 < FRAME_COUNT && frameInstant(k + 1, start, frameMs) <= now) k++
   return k
 }
-/** L'heure où la démo rend la main au vrai suivi. @param {number} start @param {number} frameMs */
+/** The time at which the demo hands back to the real progress. @param {number} start @param {number} frameMs */
 export const demoEnd = (start, frameMs = DEMO_FRAME_MS) => frameInstant(FRAME_COUNT - 1, start, frameMs) + RETURN_MS
 
 /**
- * Le document orchestre-suivi/2 après le pas k : les pas 0 à k joués à leur heure, au schéma du contrat.
+ * The orchestre-progress/3 document after frame k: frames 0 to k played at their time, following the schema of the contract.
  * @param {number} k @param {number} start @param {number} [frameMs] @returns {Doc}
  */
 export function demoDoc(k, start, frameMs = DEMO_FRAME_MS) {
   /** @type {Doc} */
   const d = {
-    format: 'orchestre-suivi/2', plan: DEMO_PLAN, dossier: `plans/${DEMO_PLAN}`, integration: `plan/${DEMO_PLAN}`, base: null, maj: iso(start),
-    taches: TASKS.map(t => ({ id: t.id, titre: t.titre, phase: t.phase, lot: null, depend_de: t.dep, modele: t.modele, modele_utilise: null, statut: 'à-faire', essais: 0, branche: null, estimation_tokens: 400000, tokens_reels: null, ajoutee_par: null, etape: null, isole: null, debut: null, fin: null, attend: [], refus: [], instables: [], non_verifiables: [], blocage: [] })),
-    runs: [], points: [], decisions_office: [], relectures: [], prerequis: [], handoff: {}, lint: { ok: true, erreurs: [] }, journal: [], journal_omis: 0,
+    format: 'orchestre-progress/3', plan: DEMO_PLAN, dir: `plans/${DEMO_PLAN}`, integration: `plan/${DEMO_PLAN}`, base: null, updated: iso(start),
+    tasks: TASKS.map(t => ({ id: t.id, title: t.title, phase: t.phase, batch: null, depends_on: t.dep, model: t.model, model_used: null, status: 'todo', attempts: 0, branch: null, token_estimate: 400000, actual_tokens: null, added_by: null, step: null, isolated: null, start: null, end: null, waiting: [], rejections: [], flaky: [], unverifiable: [], blocker: [] })),
+    runs: [], issues: [], auto_decisions: [], reviews: [], prerequisites: [], handoff: {}, lint: { ok: true, errors: [] }, log: [], log_omitted: 0,
   }
   for (let i = 0; i <= Math.min(k, FRAME_COUNT - 1); i++) {
     const q = iso(frameInstant(i, start, frameMs))
-    ;/** @type {[string, number, Pas]} */ (SCENARIO[i])[2](d, q)
-    d.maj = q
+    ;/** @type {[string, number, Frame]} */ (SCENARIO[i])[2](d, q)
+    d.updated = q
   }
   return d
 }
 
-/** Ce que le mod affiche après le pas k : le document lu comme un suivi.json, marqué démo (« DÉMO » au bandeau). @param {number} k @param {number} start @param {number} [frameMs] @returns {Snapshot} */
+/** What the mod shows after frame k: the document read as a progress.json, marked demo ("DEMO" in the banner). @param {number} k @param {number} start @param {number} [frameMs] @returns {Snapshot} */
 export function demoSnapshot(k, start, frameMs = DEMO_FRAME_MS) {
   return { .../** @type {Snapshot} */ (normalize(demoDoc(k, start, frameMs))), demo: true, legend: legend(k) }
 }
 
-// Ce qu'il y a à regarder ou à essayer à certains pas, dans l'en-tête du panneau
-const MANUAL_ACTIONS = /** @type {Record<number, string>} */ ({
-  0: 'clique « ⤢ Détail » au bout du bandeau pour ouvrir le panneau',
-  1: 'la frise de chaque tâche se colorie étape par étape',
-  4: 'la correction passe en ambre dans la frise de T02, son modèle en « sonnet → opus » (journal : j)',
-  6: '« ⚑ 1 à relire » se clique au bandeau',
-  10: 'la carte « À toi » est en tête ; sa touche 1 prépare la reprise dans le prompt',
-  11: 'le run s\'arrête : la carte du run donne la suite, touche l',
-  12: 'le point est tranché : T03 n\'attend plus personne',
-  20: 'touche p : le brouillon de PR dans le prompt',
+// What to look at or to try at some frames, in the header of the pane
+const TO_TRY = /** @type {Record<number, string>} */ ({
+  0: 'click "⤢ Details" at the end of the banner to open the pane',
+  1: "each task's timeline fills in step by step",
+  4: 'the fix turns amber in the timeline of T02, its model shows "sonnet → opus" (log: l)',
+  6: '"⚑ 1 to review" can be clicked in the banner',
+  10: 'the "Your turn" card comes first; its key 1 prepares the resume in the prompt',
+  11: 'the run stops: the run card gives what comes next, key c',
+  12: 'the issue is settled: T03 no longer waits for anyone',
+  20: 'key p: the PR draft in the prompt',
 })
-/** La légende du pas k : « pas 11/21 · T03 attend un humain », puis, à la ligne, le geste à essayer. @param {number} k */
+/** The legend of frame k: "frame 11/21 · T03 needs a human", then, on the next line, what to try. @param {number} k */
 export function legend(k) {
-  const i = Math.min(Math.max(0, k), FRAME_COUNT - 1), manualAction = MANUAL_ACTIONS[i]
-  return `pas ${i + 1}/${FRAME_COUNT} · ${/** @type {[string, number, Pas]} */ (SCENARIO[i])[0]}${manualAction ? `\n→ ${manualAction}` : ''}`
+  const i = Math.min(Math.max(0, k), FRAME_COUNT - 1), toTry = TO_TRY[i]
+  return `frame ${i + 1}/${FRAME_COUNT} · ${/** @type {[string, number, Frame]} */ (SCENARIO[i])[0]}${toTry ? `\n→ ${toTry}` : ''}`
 }
