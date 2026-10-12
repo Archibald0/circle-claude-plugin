@@ -41,12 +41,16 @@ const RULINGS = (A.rulings || []).filter(a => a && a.option)
 const RERUN = new Set(A.rerun || [])
 // Namespaced agents ("orchestre:worker"); /orchestre:run passes agent_prefix and lint
 const AG = n => (A.agent_prefix ?? 'orchestre:') + n
-const LINT = A.lint
+const LINT = typeof A.lint === 'string' && A.lint.trim() ? A.lint : null
 const LINTCMD = LINT && (/\s/.test(LINT) ? `node "${LINT}"` : `node ${LINT}`)
 const BASE = A.base ? ` --base ${A.base}` : ''
 const PROGRESS = A.progress || null
 const PROGRESS_CMD = PROGRESS && (/\s/.test(PROGRESS) ? `node "${PROGRESS}"` : `node ${PROGRESS}`)
 const PLANARG = /\s/.test(PLAN || '') ? `"${PLAN}"` : PLAN
+// A file of the plan in a command, quoted when the plan path has a space
+const planFile = f => (/\s/.test(PLAN || '') ? `"${PLAN}/${f}"` : `${PLAN}/${f}`)
+// Task title in the merge message, between double quotes: no quote, backtick, dollar or backslash for the shell to read
+const forMessage = x => oneLine(x).replace(/["`]/g, "'").replace(/[$\\]/g, '')
 // JSON object in single quotes: apostrophe, backtick and dollar as \u escapes, nothing else in it is interpreted by the shell.
 // A single command, without heredoc or pipe: the rule Bash(node <progress.mjs> *) is enough
 const forShell = x => `'${JSON.stringify(x).replace(/'/g, '\\u0027').replace(/`/g, '\\u0060').replace(/\$/g, '\\u0024')}'`
@@ -73,7 +77,7 @@ Language: write the free text you return or add to the plan files (summaries, de
 // Sensitive deviation (data, database, prod, secret): major automatically, whatever the replanner's rating
 // Sensitive deviations, spotted by keywords, in English and French (plans of 0.11); SENSITIVE_NOT_ENV is used when a forbidden file
 // is reclassified as a review
-const SENSITIVE_NOT_ENV = /base de (données|dev|prod)|\bbdd\b|database|\bdump\b|\bprod\b|production|données (personnelles|réelles|de prod|utilisateur)|personal data|\bpii\b|rgpd|gdpr|secret|mot de passe|password|api[ -]?key|clé (d')?api|credential|pg_restore|pg_dump|database_url/i
+const SENSITIVE_NOT_ENV = /base de (données|dev|prod)|\bbdd\b|database|\bdump\b|\bprod\b|production|données (personnelles|réelles|de prod|utilisateur)|personal data|\bdbs?\b(?!:)|\b(?:real|user|customer|live|production) data\b|\bpii\b|rgpd|gdpr|secret|mot de passe|password|api[ -]?key|clé (d')?api|credential|pg_restore|pg_dump|database_url/i
 const SENSITIVE = new RegExp(SENSITIVE_NOT_ENV.source + '|\\.env\\b', 'i')
 if (!PLAN || !PHASE || !INTEG || !LINT) return { status: 'error', detail: 'args required: plan, phase, integration, lint' }
 if (!['auto', 'deviation', 'phase'].includes(MODE)) return { status: 'error', detail: `unknown mode: ${MODE} (auto, deviation or phase)` }
@@ -167,9 +171,9 @@ const pFix = (t, r, gaps, rejection, choice) => `${pStep(t.id, 'fix', { rejectio
 Gaps to fix:
 ${bullets(gaps)}
 Same rules as the task: owned files only, commits on ${r.branch}, nothing in the progress files${PROGRESS ? ' (the progress command above aside)' : ''}, no merge into another branch and no push.${setupOf(t).length ? ` If your fix changes the dependencies or what is generated, first run again, in this folder, these setup commands of the project: ${setupOf(t).map(x => '\`' + x + '\`').join(', ')}.` : ''} Run the verifications again, then return the same report format.${(r.deviations || []).length ? `
-Deviations already reported at earlier attempts, kept in progress: ${JSON.stringify(r.deviations)}. Do not repeat them; if your fix cancels one, say so in a deviation.` : ''}${(r.findings || []).length ? `
+Deviations already reported at earlier attempts, already recorded in the plan's progress: ${JSON.stringify(r.deviations)}. Do not repeat them; if your fix cancels one, say so in a deviation.` : ''}${(r.findings || []).length ? `
 Findings of earlier attempts: ${JSON.stringify(r.findings)}. Return in your report the updated list: those that still hold, without those your fix makes false, plus the new ones.` : ''}${pLanguage}`
-const pMerge = (t, r, isolated, check) => `${pStep(t.id, 'merge')}Merge the task ${t.id} in the main checkout: \`git switch ${INTEG}\`, then \`git merge --no-ff ${r.branch} -m "task ${t.id}: ${t.title}"\`.
+const pMerge = (t, r, isolated, check) => `${pStep(t.id, 'merge')}Merge the task ${t.id} in the main checkout: \`git switch ${INTEG}\`, then \`git merge --no-ff ${r.branch} -m "task ${t.id}: ${forMessage(t.title)}"\`.
 On a conflict: \`git merge --abort\`, then return ok=false, merged=false, conflict=true and the files involved.
 Otherwise, return merged=true.${pSetup(t, `on ${INTEG}, after the merge and before the check`, 'If one fails, do not run the check: return check_ok=false, with "setup:" followed by the command and an excerpt of its output in detail. After them, `git status --porcelain` must be empty: a setup changes no tracked file and leaves no file that is not ignored; otherwise, do not run the check and return check_ok=false, with "setup: changed files" and their list in detail.')}
 Then run on ${INTEG} this check command, without a pipe (add \`; echo "code=$?"\`): ${check}. Return check_ok according to its exit code, a useful excerpt in detail on a failure, and ok=true only if the merge and the check succeeded.${isolated ? `
@@ -185,27 +189,27 @@ A file the agents may not read or write (organization or project settings), and 
 // Shared instructions for the scribe: created tasks, amendments, check by plan-lint, report
 const pUpdates = (id, updates, view = '') => `${updates.tasks.length ? `
 - New tasks: create them in ${PLAN}/tasks/ with the content given, as is, and ${PROGRESS ? 'do not touch PROGRESS.md: the progress command below adds their row' : 'add their row to PROGRESS.md, status "added"'}: ${JSON.stringify(updates.tasks)}` : ''}${updates.amendments.length ? `
-- Amendments, for tasks not yet started: in the frontmatter of each task concerned, add the items listed at the end of the matching list (definition_of_done, owned_files, verification, depends_on), without removing or rewording anything, then note "amendment · major · <id>: <reason>" under "## ${id}" in HANDOFF.md. Do not amend a task missing from the plan: return it in "rejected". A task "merged" or "cancelled" in PROGRESS.md can no longer be amended: note "blind-spot · major · amendment not applied to <id>: <reason>" under "## ${id}" in HANDOFF.md and return it in "discarded", not in "rejected". Amendments: ${JSON.stringify(updates.amendments)}` : ''}${updates.discarded.length ? `
+- Amendments, for tasks not yet started: in the frontmatter of each task concerned, append the items listed to the end of the matching list (definition_of_done, owned_files, verification, depends_on), without removing or rewording anything, then note "amendment · major · <id>: <reason>" under "## ${id}" in HANDOFF.md. Do not amend a task missing from the plan: return it in "rejected". A task "merged" or "cancelled" in PROGRESS.md can no longer be amended: note "blind-spot · major · amendment not applied to <id>: <reason>" under "## ${id}" in HANDOFF.md and return it in "discarded", not in "rejected". Amendments: ${JSON.stringify(updates.amendments)}` : ''}${updates.discarded.length ? `
 - Amendments not applied, because the task concerned has already started or finished: note each under "## ${id}" in HANDOFF.md, as "blind-spot · major · amendment not applied to <id>: <reason>": ${JSON.stringify(updates.discarded)}` : ''}${(updates.auto || []).length ? `
 - Decisions taken automatically in this update: ${JSON.stringify(updates.auto)}. For each file path they cite, check that it exists in the repository (\`test -e <path>\`) or that a task created here owns it; otherwise, note "needs-human · major · inconsistent auto-decision: <path> does not exist and no task creates it" under "## ${id}" in HANDOFF.md and return the decision in "rejected".` : ''}${updates.tasks.length || updates.amendments.length ? `
-- Then run \`${LINTCMD} ${PLAN} --integration ${INTEG}${BASE}\`. Any error that concerns a task created or amended here: put that task back in its original state (\`git checkout HEAD -- <file>\` for an amended file; for a created task, remove its file${PROGRESS ? '' : ' and its row of PROGRESS.md'}).
+- Then run \`${LINTCMD} ${PLANARG} --integration ${INTEG}${BASE}\`. Any error that concerns a task created or amended here: put that task back in its original state (\`git checkout HEAD -- <file>\` for an amended file; for a created task, remove its file${PROGRESS ? '' : ' and its row of PROGRESS.md'}).
 - Each task created or amended that you could not apply, or that you put back in its original state: note "needs-human · major · <id> not applied: <reason>" under "## ${id}" in HANDOFF.md, and return it in "rejected".` : ''}${view}
 Return ok=true once the commit is done, with its hash, "rejected" (empty if everything is applied) and "discarded" (empty if no amendment concerned a merged or cancelled task).${pLanguage}`
-const pScribe = (t, status, attempts, r, updates, gaps, { flaky = [], rejections = [], unverifiable = [] } = {}, closeInput = null) => `${PROGRESS ? `${pStep(t.id, 'progress', {}, false)}In the main checkout, then switch to the integration branch: \`git switch ${INTEG}\`. Update the progress of the plan ${PLAN}, then commit PROGRESS.md, HANDOFF.md and DISCOVERY.md, and the tasks created or amended, with the message "progress(${t.id}): ${status}".` : `In the main checkout, start with \`git switch ${INTEG}\`. Update the progress of the plan ${PLAN}, then commit these files only, and the tasks created or amended, with the message "progress(${t.id}): ${status}".
+const pScribe = (t, status, attempts, r, updates, gaps, { flaky = [], rejections = [], unverifiable = [] } = {}, closeInput = null) => `${PROGRESS ? `${pStep(t.id, 'progress', {}, false)}Then, in the main checkout, switch to the integration branch: \`git switch ${INTEG}\`. Update the progress of the plan ${PLAN}, then commit PROGRESS.md, HANDOFF.md and DISCOVERY.md, and the tasks created or amended, with the message "progress(${t.id}): ${status}".` : `In the main checkout, start with \`git switch ${INTEG}\`. Update the progress of the plan ${PLAN}, then commit these files only, and the tasks created or amended, with the message "progress(${t.id}): ${status}".
 - PROGRESS.md: row ${t.id} → status "${status}", attempts ${attempts}, branch ${r ? r.branch : '—'}; actual tokens: "see /workflows".`}
-- HANDOFF.md: under "## ${t.id}", add these entries: ${JSON.stringify(updates.entries)}${gaps.length ? `, and this blocker: ${JSON.stringify(gaps)}` : ''}.${(rejections || []).length ? `
+- HANDOFF.md: under "## ${t.id}", add these entries, word for word: ${JSON.stringify(updates.entries)}${gaps.length ? `, and this blocker: ${JSON.stringify(gaps)}` : ''}.${(rejections || []).length ? `
 - HANDOFF.md, still under "## ${t.id}": an entry "rejection · minor · attempt <n>, <by>: <gaps separated by semicolons>" for each of these attempts rejected then fixed: ${JSON.stringify(rejections)}` : ''}${unverifiable.length ? `
 - HANDOFF.md, still under "## ${t.id}": an entry "blind-spot · minor · criterion unverifiable in the context of the task: <criterion and reason>" for each of these: ${JSON.stringify(unverifiable)}` : ''}
 - DISCOVERY.md: integrate these findings without duplicates, in the right section: ${JSON.stringify((r && r.findings) || [])}.${(flaky || []).length ? `
 - Flaky tests (passed on the second run): add them to DISCOVERY.md, section "Pitfalls and fixes", and a "debt · minor" entry in HANDOFF.md: ${JSON.stringify(flaky)}` : ''}${pUpdates(t.id, updates, PROGRESS ? pView('close', closeInput, 'it closes the task in progress.json and regenerates the table of PROGRESS.md') : '')}`
 const pRuling = (a, updates, opens = false) => PROGRESS ? `${opens ? pRunStart('return ok=false') : ''}In the main checkout, ${opens ? 'then, ' : ''}start with \`git switch ${INTEG}\`. Apply the user's ruling to the plan ${PLAN}, then commit PROGRESS.md, HANDOFF.md and the tasks created or amended, with the message "progress(${a.task}): ruling ${a.option.id}".
-- HANDOFF.md: under "## ${a.task}" (create this heading if it is missing), add these entries: ${JSON.stringify(updates.entries)}.${pUpdates(a.task, updates, pView('ruling', {
+- HANDOFF.md: under "## ${a.task}" (create this heading if it is missing), add these entries, word for word: ${JSON.stringify(updates.entries)}.${pUpdates(a.task, updates, pView('ruling', {
   task: a.task, title: a.title, option: a.option.id,
   ...(updates.tasks.length ? { added_tasks: updates.tasks.map(x => ({ id: x.id, title: x.title, phase: x.phase })) } : {}),
   ...(updates.amendments.length ? { amendments: updates.amendments.map(m => ({ id: m.id, reason: m.reason })) } : {}),
 }, 'it notes the ruling in progress.json and regenerates the table of PROGRESS.md'))}` : `In the main checkout, start with \`git switch ${INTEG}\`. Apply the user's ruling to the plan ${PLAN}, then commit these files only, and the tasks created or amended, with the message "progress(${a.task}): ruling ${a.option.id}".
-- HANDOFF.md: under "## ${a.task}" (create this heading if it is missing), add these entries: ${JSON.stringify(updates.entries)}.${pUpdates(a.task, updates)}`
-const pReader = opens => `${opens ? pRunStart('return ok=false and empty tasks') : ''}Run \`${LINTCMD} ${PLAN} --json --phase ${PHASE} --integration ${INTEG}${BASE}\` and return its JSON as is${opens ? ', with run_start_ok' : ''}.`
+- HANDOFF.md: under "## ${a.task}" (create this heading if it is missing), add these entries, word for word: ${JSON.stringify(updates.entries)}.${pUpdates(a.task, updates)}`
+const pReader = opens => `${opens ? pRunStart('return ok=false and empty tasks') : ''}Run \`${LINTCMD} ${PLANARG} --json --phase ${PHASE} --integration ${INTEG}${BASE}\` and return its JSON as is${opens ? ', with run_start_ok' : ''}.`
 // End of run: the clerk runs run-end with the summary, then commits PROGRESS.md if it changed (task closed without a scribe, exception E:316)
 const withoutActions = p => ({
   task: p.task, title: short(p.title), context: short(p.context), human: !!p.human, ...(p.circuit_breaker ? { circuit_breaker: true } : {}), ...(p.inconsistency ? { inconsistency: short(p.inconsistency) } : {}),
@@ -223,7 +227,7 @@ const progressSummary = v => ({
 const pClerk = v => `End of the run: phase ${PHASE} of the plan ${PLAN}, status "${v.status}". In the main checkout, in this order:
 1. \`git switch ${INTEG}\`.
 2. \`${progressCmd('run-end', progressSummary(v))}\`, as is, once. ${reportProgress}
-3. \`git diff --quiet HEAD -- ${PLAN}/PROGRESS.md\`: if it exits with code 1, PROGRESS.md changed: \`git commit -m "progress: end of the run of phase ${PHASE}" -- ${PLAN}/PROGRESS.md\`, which only commits that file, and return its hash in commit. Otherwise, no commit.
+3. \`git diff --quiet HEAD -- ${planFile('PROGRESS.md')}\`: if it exits with code 1, PROGRESS.md changed: \`git commit -m "progress: end of the run of phase ${PHASE}" -- ${planFile('PROGRESS.md')}\`, which only commits that file, and return its hash in commit. Otherwise, no commit.
 4. \`${WTCMD} clean ${PLANARG}\`: it removes the clean worktrees the plan's tasks left behind (branches kept). Return its output, or its error message, in worktrees.
 If step 1 fails, run step 2 anyway, skip steps 3 and 4 and say why in detail. If the commit fails, say why in detail. Otherwise, leave detail empty. Run nothing else and change no other file.`
 
@@ -452,7 +456,7 @@ async function runTask(t, isolated) {
       if (v && (v.flaky || []).length) trace.flaky.push(...v.flaky)
       // Commands refused by permissions: only the task's count as forbidden; another one is a failure
       // Progress command cited among the refused ones (authorization rule missing): neither a task command nor a failure
-      const refused = ((v && v.forbidden) || []).filter(x => !(PROGRESS && String(x).includes('progress.mjs')))
+      const refused = ((v && v.forbidden) || []).filter(x => !(PROGRESS && String(x).includes(PROGRESS)))
       const unknown = refused.filter(x => !(t.verification || []).some(c => sameCommand(c, x, r.path)))
       trace.forbidden = [...new Set([...trace.forbidden, ...(t.verification || []).filter(c => refused.some(x => sameCommand(c, x, r.path)))])]
       if (!v) gaps = ['verifier without an answer']

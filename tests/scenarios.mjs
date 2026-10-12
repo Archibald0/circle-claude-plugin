@@ -1197,6 +1197,9 @@ await test('W4: branches task/<id> and task/<id>-r<n>, never tache/; merge messa
     assert.ok(byLabel(calls, 'T00 · merge')[0].prompt.includes('`git merge --no-ff task/T00 -m "task T00: Tooling"`'), `${name}: merge message`)
     assert.ok(byLabel(calls, 'T00 · progress')[0].prompt.includes('with the message "progress(T00): merged"'), `${name}: scribe commit`)
     if (args.rulings) assert.ok(byLabel(calls, 'ruling T02 · progress')[0].prompt.includes('with the message "progress(T02): ruling B"'), `${name}: ruling commit`)
+    // HANDOFF entries copied word for word, whatever the language: progress.mjs matches the reviews with them
+    assert.ok(byLabel(calls, 'T00 · progress')[0].prompt.includes('add these entries, word for word: ['), `${name}: entries word for word`)
+    if (args.rulings) assert.ok(byLabel(calls, 'ruling T02 · progress')[0].prompt.includes('add these entries, word for word: ['), `${name}: ruling entries word for word`)
     drained(name, q)
   }
 })
@@ -1229,5 +1232,50 @@ await test('W7: integrator — check_ok decides over ok (0.12 name of controle_o
   const schema = byLabel(calls, 'T00 · merge')[0].opts.schema
   assert.ok(schema.properties.check_ok && schema.properties.merged && !schema.properties.controle_ok, 'integrator: schema in English')
   drained('W7', q)
+})
+await test('W8: sensitive deviations spotted in English and in French (free text of a plan in "fr"); a db: script name is not one', async () => {
+  const sensitive = ['le test tourne sur la base de dev', 'copie des données réelles pour la recette', 'the test writes to the dev db', 'seeded with real user data', 'copied live customer data into fixtures', 'uses the staging DBs']
+  for (const [i, d] of sensitive.entries()) {
+    const name = `W8 ${i}`
+    const { res, calls, q } = await scenario(name, { 'plan-reader': [plan(T00, T01)], ...t00([{ type: 'decision', description: d }]), 'T00 · replanning': [{ major: false, entries: [{ type: 'decision', severity: 'minor', description: d }], issues: [] }], 'T00 · progress': [SOK] }, { mode: 'auto' })
+    assert.equal(res.status, 'awaiting-ruling', `${name}: ${d}`); assert.equal(res.stop_issue.title, 'Sensitive deviation of T00 without a decision issue'); assert.equal(res.stop_issue.context, d)
+    assert.ok(byLabel(calls, 'T00 · replanning')[0].prompt.includes('major automatically'), `${name}: listed as sensitive`)
+    assert.ok(byLabel(calls, 'T00 · progress')[0].prompt.includes(`"severity":"major","description":${JSON.stringify(d)}`), `${name}: entry forced to major`)
+    drained(name, q)
+  }
+  const plain = 'pnpm db:test:prepare added to the verification of T01'
+  const { res, calls, q } = await scenario('W8 plain', { 'plan-reader': [plan(T00, T01)], ...t00([{ type: 'decision', description: plain }]), 'T00 · replanning': [{ major: false, entries: [{ type: 'decision', severity: 'minor', description: plain }], issues: [] }], 'T00 · progress': [SOK], ...t01() }, { mode: 'auto' })
+  assert.equal(res.status, 'finished'); assert.ok(!byLabel(calls, 'T00 · replanning')[0].prompt.includes('major automatically'))
+  assert.ok(byLabel(calls, 'T00 · progress')[0].prompt.includes(`"severity":"minor","description":${JSON.stringify(plain)}`))
+  drained('W8 plain', q)
+})
+await test('W9: shell — plan path with a space quoted in the plan-lint and clerk commands; task title made safe in the merge message', async () => {
+  const P = 'plans/my plan', T = { ...T00, title: 'Add `--json` "flag" for $HOME \\ paths', file: 'plans/my plan/tasks/T00.md' }
+  const { res, calls, q } = await scenario('W9', { 'plan-reader': [planOpened(T)], ...s00(), 'run end · progress': [COK] }, { ...AP, plan: P })
+  assert.equal(res.status, 'finished')
+  assert.ok(byLabel(calls, 'plan-reader')[0].prompt.includes('`node /plug/scripts/plan-lint.mjs "plans/my plan" --json --phase 1 --integration plan/p`'))
+  const g = byLabel(calls, 'run end · progress')[0].prompt
+  assert.ok(g.includes('`git diff --quiet HEAD -- "plans/my plan/PROGRESS.md"`') && g.includes('-- "plans/my plan/PROGRESS.md"`, which only commits'))
+  assert.ok(g.includes('worktrees.mjs clean "plans/my plan"`'))
+  const m = byLabel(calls, 'T00 · merge')[0].prompt
+  assert.ok(m.includes(`-m "task T00: Add '--json' 'flag' for HOME  paths"\``), m.split('\n')[0])
+  drained('W9', q)
+})
+await test('W10: blank lint → error; language cut at 40 characters; a forbidden project command named progress.mjs is still forbidden', async () => {
+  const blank = await scenario('W10 lint', {}, { lint: '   ' })
+  assert.deepEqual(blank.res, { status: 'error', detail: 'args required: plan, phase, integration, lint' }); assert.equal(blank.calls.length, 0)
+  const long = 'x'.repeat(60)
+  const l = await scenario('W10 language', { 'plan-reader': [plan(T00)], ...t00(), 'T00 · progress': [SOK] }, { language: long })
+  assert.ok(byLabel(l.calls, 'T00 · worker')[0].prompt.includes(`in the language "${'x'.repeat(39)}…"`))
+  drained('W10 language', l.q)
+  // A verification command of the project that runs its own progress.mjs, refused by the permissions: a review for the human, not hidden
+  const T = { ...T00, verification: ['node scripts/progress.mjs --check', 'sh scripts/e2e-local.sh'] }
+  const f = await scenario('W10 forbidden', { 'plan-reader': [planOpened(T)], 'T00 · worker': [withProgress(report(0))],
+    'T00 · verification': [withProgress({ ok: true, results: [{ command: 'sh scripts/e2e-local.sh', code: 0, excerpt: '96 passed' }], forbidden: ['node scripts/progress.mjs --check', `node ${PROG} step plans/p --json '{}'`] })],
+    'T00 · evaluation': [withProgress({ verdict: 'pass' })], 'T00 · merge': [withProgress(MOK)], 'T00 · progress': [withProgress(SOK)], 'run end · progress': [COK] }, AP)
+  assert.equal(f.res.status, 'finished')
+  assert.deepEqual(f.res.reviews, [{ task: 'T00', review: 'command `node scripts/progress.mjs --check` refused to the agents: to run by the human before the PR' }])
+  assert.ok(byLabel(f.calls, 'T00 · merge')[0].prompt.includes('this check command, without a pipe (add `; echo "code=$?"`): sh scripts/e2e-local.sh.'))
+  drained('W10 forbidden', f.q)
 })
 console.log(`scenarios: ALL GREEN (${n} cases)`)
