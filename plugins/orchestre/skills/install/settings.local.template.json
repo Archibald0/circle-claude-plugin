@@ -3,7 +3,7 @@
   "autoContinueAtUsageLimit": true,
   "permissions": {
     "allow": [
-      "Workflow(orchestre:executer-phase)",
+      "Workflow(orchestre:run-phase)",
       "Bash(git switch *)",
       "Bash(git add *)",
       "Bash(git commit *)",
