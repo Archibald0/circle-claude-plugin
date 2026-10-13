@@ -4,7 +4,7 @@
   "description": "Claude Code plugin marketplace \"circle\": tests and validation.",
   "scripts": {
     "test": "npm run test:scripts && npm run test:workflow && npm run test:commands && npm run test:mod",
-    "test:scripts": "node tests/plan-lint.test.mjs && node tests/status.test.mjs && node tests/progress.test.mjs && node tests/worktrees.test.mjs && node tests/migrate.test.mjs",
+    "test:scripts": "node tests/plan-lint.test.mjs && node tests/status.test.mjs && node tests/progress.test.mjs && node tests/worktrees.test.mjs && node tests/migrate.test.mjs && node tests/settings.test.mjs",
     "test:workflow": "node tests/scenarios.mjs plugins/orchestre/workflows/run-phase.js",
     "test:commands": "node tests/settings-template.test.mjs && node tests/commands.test.mjs",
     "test:mod": "node tests/mod-progress.test.mjs",

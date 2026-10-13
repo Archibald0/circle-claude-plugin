@@ -1,6 +1,5 @@
 {
   "worktree": { "baseRef": "head" },
-  "autoContinueAtUsageLimit": true,
   "permissions": {
     "allow": [
       "Workflow(orchestre:run-phase)",

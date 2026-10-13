@@ -16,7 +16,9 @@ for (const file of ['.env.example', '.env.sample', '.env.template', '.env.dist']
 // Branch taken back: the worker checks that it contains the integration branch before merging it in
 assert.ok(allow.includes('Bash(git merge-base *)'), 'missing permission: git merge-base')
 assert.equal(template.worktree.baseRef, 'head')
-assert.equal(template.autoContinueAtUsageLimit, true)
+// Resume on a usage limit: a setting of the user or the organization (scope "User or managed", code.claude.com/docs/en/settings-reference),
+// on by default; it does not apply from .claude/settings.local.json, so the template leaves it out (0.13.0)
+assert.equal(template.autoContinueAtUsageLimit, undefined)
 // The workflow allowed is the plugin's one, by its name in run-phase.js (0.12.0), never the executer-phase of 0.11
 const workflow = read('../plugins/orchestre/workflows/run-phase.js').match(/export const meta = \{\s*name: '([^']+)'/)
 assert.ok(workflow, 'name of the workflow not found in run-phase.js')
