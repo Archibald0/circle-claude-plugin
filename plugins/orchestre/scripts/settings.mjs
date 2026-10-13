@@ -16,16 +16,19 @@
 //          commands, PATH), checked and written with the model.
 //   --team: also the declaration of the marketplace and of the plugin in .claude/settings.json (versioned), for the team.
 // Scopes read (code.claude.com/docs/en/settings): local, .claude/settings.local.json of the main checkout; project,
-// .claude/settings.json at the root of the checkout; user, $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json.
+// .claude/settings.json at the root of the checkout (Claude Code reads it in the folder it starts in: run the commands from the
+// root); user, $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json.
 // Managed settings are not read. Lists merge across scopes; a scalar takes the value of the highest scope (local, then
 // project, then user). The exceptions "Read(!…)" only cancel the rule before them in the same file: Read(./.env.*) and its
 // exceptions are checked in .claude/settings.local.json itself.
+// "settings missing" when the local file holds no rule of orchestre, of any version: the repository was never installed.
 // Rules removed: those of the scripts of another installed version of the plugin (path …/orchestre/<version>/scripts/), those
 // of orchestre 0.11 and earlier (Workflow(orchestre:executer-phase), suivi.mjs, etat.mjs) and of the manual install of v0.5
 // (Workflow(executer-phase), .claude/orchestre/).
 // Exit codes: 0 complete (check) or written (apply); 1 incomplete (check); 2 invalid call, not in a git repository, or a
-// settings file that is not valid JSON (nothing written); 3 write refused by the system (the Bash sandbox refuses writes to
-// the settings files of Claude Code: the user runs the same command in a terminal, prefixed with !).
+// settings file that is not valid JSON (nothing written); 3 write refused by the system (the Bash sandbox, when it is on,
+// refuses writes to the settings files of Claude Code: the user runs the same command at the prompt prefixed with !, which
+// runs outside the sandbox, or in a terminal).
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync, appendFileSync, realpathSync } from 'node:fs'
 import { join, dirname, resolve, basename, relative, isAbsolute } from 'node:path'
 import { homedir } from 'node:os'
@@ -45,8 +48,9 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const show = v => JSON.stringify(v)
 class Failure extends Error { constructor(m, code) { super(m); this.code = code } }
 
-// The rule of a script of the plugin, as the skills and the workflow launch it: node <plugin root>/scripts/<script> …
-export const scriptRule = (root, script) => `Bash(node ${root}/scripts/${script} *)`
+// The rule of a script of the plugin, as the workflow's agents launch it: node <plugin root>/scripts/<script> …, the path
+// between double quotes when it holds a space (workflows/run-phase.js)
+export const scriptRule = (root, script) => (/\s/.test(root) ? `Bash(node "${root}/scripts/${script}" *)` : `Bash(node ${root}/scripts/${script} *)`)
 
 // The model: the template's scalars (dotted keys), its allow and deny lists, and the rules of this copy's scripts
 export function model(template, root) {
@@ -64,21 +68,22 @@ export function model(template, root) {
 }
 
 // Why a rule of the settings is left over from an older install, or null
-export function obsolete(rule, root) {
+export function obsolete(rule, root, version = null) {
   if (rule === 'Workflow(orchestre:executer-phase)') return 'orchestre 0.11 and earlier'
   if (rule === 'Workflow(executer-phase)' || /^Bash\(node \.claude\/orchestre\//.test(rule)) return 'manual install of v0.5 and earlier'
-  const m = rule.match(/^Bash\(node (.+)\/scripts\/([a-z-]+\.mjs)(?: \*|:\*)\)$/)
+  const m = rule.match(/^Bash\(node "?(.+?)\/scripts\/([a-z-]+\.mjs)"?(?: \*|:\*)\)$/)
   if (!m || m[1] === root) return null
   const segments = m[1].split('/')
   if (!segments.includes('orchestre')) return null
   if (['suivi.mjs', 'etat.mjs'].includes(m[2])) return 'orchestre 0.11 and earlier'
-  const version = segments[segments.length - 1]
-  if (segments[segments.length - 2] === 'orchestre' && /^\d+\.\d+\.\d+/.test(version) && [...SCRIPTS, 'status.mjs', 'migrate.mjs'].includes(m[2])) return `orchestre ${version}`
+  const other = segments[segments.length - 1]
+  // The same version reached by another path (a symbolic link) is not an older install
+  if (segments[segments.length - 2] === 'orchestre' && /^\d+\.\d+\.\d+/.test(other) && other !== version && [...SCRIPTS, 'status.mjs', 'migrate.mjs'].includes(m[2])) return `orchestre ${other}`
   return null
 }
 
 // A rule of orchestre, of any version: the workflow or a script of the plugin
-const orchestreRule = (rule, root) => /^Workflow\((orchestre:[a-z-]+|executer-phase)\)$/.test(rule) || rule.includes(`${root}/scripts/`) || obsolete(rule, root) != null
+const orchestreRule = (rule, root, version) => /^Workflow\((orchestre:[a-z-]+|executer-phase)\)$/.test(rule) || rule.includes(`${root}/scripts/`) || obsolete(rule, root, version) != null || /^Bash\(node .*\/orchestre\/[^/]+\/scripts\/[a-z-]+\.mjs(?: \*|:\*)\)$/.test(rule)
 
 const getPath = (o, path) => path.reduce((x, k) => (isObject(x) && k in x ? x[k] : undefined), o)
 function setPath(o, path, value) {
@@ -116,7 +121,7 @@ export function parseAdd(text) {
 
 // Compares the scopes with the model. scopes: { local, project, user } as returned by readSettings. Returns the rules, the rules
 // to remove, the changes per file and the warnings; pure, writes nothing.
-export function evaluate({ template, root, scopes, team = null, add = { allow: [], deny: [], env: {} } }) {
+export function evaluate({ template, root, scopes, team = null, add = { allow: [], deny: [], env: {} }, version = null }) {
   const M = model(template, root)
   const ORDER = ['local', 'project', 'user']
   const rules = [], remove = [], warnings = []
@@ -176,24 +181,30 @@ export function evaluate({ template, root, scopes, team = null, add = { allow: [
   }
   // Team: the marketplace and the plugin declared in the versioned settings of the project
   if (team) {
-    for (const [path, value] of [[['extraKnownMarketplaces', MARKETPLACE], { source: { source: 'github', repo: team.repo } }], [['enabledPlugins', `${team.plugin}@${MARKETPLACE}`], true]]) {
-      const found = getPath(scopes.project.data, path)
-      const status = found === undefined ? 'missing' : same(found, value) ? 'ok' : 'wrong'
-      rules.push({ rule: path.join('.'), key: path.join('.'), expected: value, found: found === undefined ? null : found, status, scope: found === undefined ? null : 'project' })
-      if (status !== 'ok') project.set.push({ path, value, found: found === undefined ? null : found })
-    }
+    // The marketplace: its source and repository only; other fields (a ref, for one) are kept
+    const mp = getPath(scopes.project.data, ['extraKnownMarketplaces', MARKETPLACE])
+    const mpSource = isObject(mp) && isObject(mp.source) ? mp.source : null
+    const mpStatus = mp === undefined ? 'missing' : mpSource && mpSource.source === 'github' && mpSource.repo === team.repo ? 'ok' : 'wrong'
+    rules.push({ rule: `extraKnownMarketplaces.${MARKETPLACE}`, key: `extraKnownMarketplaces.${MARKETPLACE}`, expected: { source: { source: 'github', repo: team.repo } }, found: mp === undefined ? null : mp, status: mpStatus, scope: mp === undefined ? null : 'project' })
+    if (mpStatus !== 'ok') project.set.push({ path: ['extraKnownMarketplaces', MARKETPLACE, 'source'], value: { ...(mpSource || {}), source: 'github', repo: team.repo }, found: mpSource })
+    const path = ['enabledPlugins', `${team.plugin}@${MARKETPLACE}`]
+    const found = getPath(scopes.project.data, path)
+    const status = found === undefined ? 'missing' : found === true ? 'ok' : 'wrong'
+    rules.push({ rule: path.join('.'), key: path.join('.'), expected: true, found: found === undefined ? null : found, status, scope: found === undefined ? null : 'project' })
+    if (status !== 'ok') project.set.push({ path, value: true, found: found === undefined ? null : found })
   }
   // Rules of an older install: removed from the local file; reported elsewhere
   for (const key of ['allow', 'deny']) for (const s of ORDER) for (const rule of list(scopes[s].data, key)) {
-    const reason = obsolete(rule, root)
+    const reason = obsolete(rule, root, version)
     if (!reason) continue
     if (s === 'local') { remove.push({ rule, key: `permissions.${key}`, scope: s, reason }); local.remove[key].push(rule) } else warnings.push(`${rule} (${reason}): in the ${s} settings, which this script does not change; remove it by hand`)
   }
   // Resume on a usage limit: a setting of the user (scope "User or managed"), on by default
   if (getPath(scopes.user.data, ['autoContinueAtUsageLimit']) === false) warnings.push('autoContinueAtUsageLimit is false in the user settings: a run that hits a usage limit fails instead of waiting for the reset (not changed here: /config, "Continue automatically at usage limit")')
-  if (scopes.local.tracked) warnings.push('.claude/settings.local.json is tracked by git: Claude Code holds its allow rules until the folder is trusted, and every change shows in git status')
+  if (scopes.local.tracked) warnings.push('.claude/settings.local.json is tracked by git: Claude Code holds its allow rules until the folder is trusted, and a change to it stops /orchestre:ready and /orchestre:run (uncommitted change on a tracked file) until it is committed, or untracked (git rm --cached)')
 
-  const firstInstall = !ORDER.some(s => ['allow', 'deny'].some(k => list(scopes[s].data, k).some(r => orchestreRule(r, root))))
+  // Never installed in this repository: no rule of orchestre in the local file, whatever the user settings hold
+  const firstInstall = !['allow', 'deny'].some(k => list(scopes.local.data, k).some(r => orchestreRule(r, root, version)))
   const localChanges = local.set.length + local.allow.length + local.deny.length + (local.exceptions || []).length + local.remove.allow.length + local.remove.deny.length
   const writes = []
   if (localChanges) writes.push({ scope: 'local', set: local.set, add: { allow: local.allow, deny: local.deny }, exceptions: local.exceptions || [], remove: local.remove })
@@ -286,7 +297,9 @@ export function check({ cwd, root, team, add }) {
   }
   const repo = (String(manifest.repository || '').match(/github\.com[/:]([^/]+\/[^/.]+)/) || [])[1] || null
   if (team && !repo) errors.push(`${display(MANIFEST, at.top)}: no GitHub repository in "repository", needed to declare the marketplace for the team`)
-  const r = evaluate({ template, root, scopes, team: team ? { repo, plugin: manifest.name } : null, add })
+  const r = evaluate({ template, root, scopes, team: team ? { repo, plugin: manifest.name } : null, add, version: manifest.version })
+  const lf = files[0]
+  if (lf.exists && lf.valid && !lf.ignored_by_git && !lf.tracked) r.warnings.push('.claude/settings.local.json is neither ignored nor tracked by git: git status shows it, and a commit could take it; settings.mjs apply adds it to .git/info/exclude')
   return { at, scopes, files, errors, version: manifest.version, ...r }
 }
 
@@ -318,13 +331,13 @@ function report(r, { root, team, mode, written = null }) {
   else if (written && written.files.length) {
     const c = count(r)
     lines.push(`✓ settings written for ${head}: ${written.files.join(', ')} (${c.changed} added or changed, ${c.removed} removed)`, ...changeLines(r, paths))
-    if (written.excluded) lines.push(`ℹ ${written.excluded}: .claude/settings.local.json added, so that git does not show it`)
   } else if (r.complete) lines.push(`✓ settings complete for ${head}${mode === 'apply' ? ': nothing to write' : ''}`)
   else {
     const c = count(r), where = r.writes.map(w => paths[w.scope]).join(' and ')
     // "missing": no rule of orchestre yet, the whole install is to do; "incomplete": an older install or a plugin updated since
     lines.push(`✗ settings ${r.first_install ? 'missing' : 'incomplete'} for ${head}: ${where}, ${c.changed} to add or change, ${c.removed} to remove`, ...changeLines(r, paths))
   }
+  if (written && written.excluded) lines.push(`ℹ ${written.excluded}: .claude/settings.local.json added, so that git does not show it`)
   if (!r.errors.length) lines.push(...r.warnings.map(w => `⚠ ${w}`))
   return { json, text: lines.join('\n') }
 }
@@ -336,33 +349,41 @@ function writeAtomic(path, data) {
   try { writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n'); renameSync(tmp, path) } catch (e) { attempt(() => unlinkSync(tmp)); throw e }
 }
 
+// Claude Code excludes the local file from git only when it creates it itself: a local file, written here or already there,
+// neither ignored nor tracked, goes into .git/info/exclude (personal, nothing to commit). A failure is only a warning: the
+// settings are written.
+function excludeLocal(r) {
+  const lf = r.files.find(f => f.scope === 'local')
+  if (lf.ignored_by_git || lf.tracked) return { excluded: null }
+  try {
+    const f = resolve(r.at.main, git(['rev-parse', '--git-path', 'info/exclude'], r.at.main).trim())
+    const before = attempt(() => readFileSync(f, 'utf8')) || ''
+    mkdirSync(dirname(f), { recursive: true })
+    appendFileSync(f, `${before && !before.endsWith('\n') ? '\n' : ''}# orchestre: personal settings of Claude Code, outside git\n/.claude/settings.local.json\n`)
+    return { excluded: '.git/info/exclude' }
+  } catch (e) {
+    return { excluded: null, warning: `.git/info/exclude could not be written (${e.code || e.message}): git shows .claude/settings.local.json; add it to .gitignore or to .git/info/exclude by hand` }
+  }
+}
+
 export function apply({ cwd, root, team, add }) {
   const r = check({ cwd, root, team, add })
   if (r.errors.length) return { r, written: null }
   const files = []
-  let excluded = null
   for (const w of r.writes) {
     const path = r.at[w.scope], created = !r.scopes[w.scope].exists
     const next = applyChanges(r.scopes[w.scope].data, w)
     if (!created && same(next, r.scopes[w.scope].data)) continue
     try { writeAtomic(path, next) } catch (e) {
-      throw new Failure(`write refused for ${display(path, r.at.top)} (${e.code || e.message})${['EPERM', 'EACCES', 'EROFS'].includes(e.code) ? ': the Bash sandbox of Claude Code refuses writes to its settings files. Run the same command in a terminal, prefixed with !' : ''}`, 3)
+      throw new Failure(`write refused for ${display(path, r.at.top)} (${e.code || e.message}). If the Bash sandbox of Claude Code is on, it refuses writes to its settings files: run the same command at the Claude Code prompt prefixed with ! (outside the sandbox), or in a terminal`, 3)
     }
     files.push(display(path, r.at.top))
-    // Claude Code excludes the local file from git only when it creates it itself: a file written here, neither ignored nor
-    // tracked, goes into .git/info/exclude (personal, nothing to commit)
-    const lf = r.files.find(f => f.scope === 'local')
-    if (w.scope === 'local' && !lf.ignored_by_git && !lf.tracked) {
-      const exclude = attempt(() => resolve(r.at.main, git(['rev-parse', '--git-path', 'info/exclude'], r.at.main).trim()))
-      if (exclude) {
-        const before = attempt(() => readFileSync(exclude, 'utf8')) || ''
-        mkdirSync(dirname(exclude), { recursive: true })
-        appendFileSync(exclude, `${before && !before.endsWith('\n') ? '\n' : ''}# orchestre: personal settings of Claude Code, outside git\n/.claude/settings.local.json\n`)
-        excluded = '.git/info/exclude'
-      }
-    }
   }
-  return { r: files.length ? check({ cwd, root, team, add }) : r, written: { files, excluded }, before: r }
+  const localThere = r.scopes.local.exists || r.writes.some(w => w.scope === 'local' && files.includes(display(r.at.local, r.at.top)))
+  const x = localThere ? excludeLocal(r) : { excluded: null }
+  const after = files.length || x.excluded ? check({ cwd, root, team, add }) : r
+  if (x.warning) after.warnings.push(x.warning)
+  return { r: after, written: { files, excluded: x.excluded }, before: r }
 }
 
 const USAGE = "usage: settings.mjs <check|apply> [--team] [--json] [--add '<json>']"

@@ -57,13 +57,13 @@ Four commands, in order, and a fifth one to see where a plan stands:
 
 Once per repository, at its root; `/orchestre:prepare` runs it on its own when the settings are missing. A plugin cannot set the settings the orchestrator needs: the command writes them into the project, showing each change before making it. Their model and their check are in one script, `scripts/settings.mjs`, which `/orchestre:prepare`, `/orchestre:ready` and `/orchestre:run` run too: it compares the settings Claude Code merges (personal, project, user) with the model, rule by rule, and writes only what is missing.
 
-- `.claude/settings.local.json` (personal, not versioned; excluded from git through `.git/info/exclude` when git does not ignore it yet): `worktree.baseRef: "head"` (the worktrees start from the integration branch), permissions for the workflow `orchestre:run-phase`, the plugin's scripts (plan-lint, progress, worktree cleanup), the agents' git commands and, if you accept them, the project's test and build commands; `git push`, the project's deployment tool and reading `.env` and `.env.*` are denied, at every depth, except the versioned templates (`.env.example`, `.env.sample`, `.env.template`, `.env.dist`), which the agents read and change.
+- `.claude/settings.local.json` (personal, not versioned; excluded from git through `.git/info/exclude` when git does not ignore it yet): `worktree.baseRef: "head"` (the worktrees start from the integration branch), permissions for the workflow `orchestre:run-phase`, the plugin's scripts (plan-lint, progress, worktree cleanup), the agents' git commands and, if you accept them, the project's test and build commands; `git push`, the project's deployment tool and reading `.env` and `.env.*` at the root of the repository are denied, except the versioned templates (`.env.example`, `.env.sample`, `.env.template`, `.env.dist`), which the agents read and change.
 - `.worktreeinclude`: the unversioned files (`.env`…) to copy into the worktrees of parallel tasks.
 - Exclusion of `plans/` and `.claude/` from the project's formatter and linter.
 - If the project's tools (node, pnpm, php…) cannot be found in the agents' shell, an `env` key (PATH) in `.claude/settings.local.json`: without it, the agents would prefix their commands with `export PATH=…`, which the isolation guard of the worktrees refuses.
 - Removal of an old manual install of the orchestrator (v0.5 and earlier), and of the settings rules of an older version of the plugin.
 
-A run paused on a usage limit starts again on its own: `autoContinueAtUsageLimit`, a setting of the user (on by default, in `/config`), which the plugin does not write; the check warns if your user settings turn it off.
+A run paused on a usage limit starts again on its own: `autoContinueAtUsageLimit`, a setting of the user (on by default in an interactive session signed in with a claude.ai subscription, in `/config`), which the plugin does not write; the check warns if your user settings turn it off.
 
 The pilot ran in auto permission mode. In manual mode, any command that is not allowed suspends the run until you answer.
 
@@ -121,7 +121,7 @@ At any time, including in the pilot session during a run: the command only reads
 
 ### Follow a run: `/progress`
 
-The mod follows the run without a turn of Claude; `/orchestre:status` gives the plan, `/workflows` the step of each agent. The pane opens by itself at the first run started in the session, without taking the keyboard from the prompt; Claude Code keeps a pane opened that way waiting in a terminal narrower than 144 columns, and a notification then says that `/progress` opens it.
+The mod follows the run without a turn of Claude; `/orchestre:status` gives the plan, `/workflows` the step of each agent. The pane opens by itself at the first run started in the session, without taking the keyboard from the prompt. Claude Code keeps a pane opened that way waiting in a terminal narrower than 144 columns (110 once you have opened it yourself), until the terminal is widened; a notification then says that `/progress` opens it.
 
 - The banner, above the prompt: progress, then what waits for you ("⚑ to review", "⚠ your turn", which can be clicked), then the task in progress; "⤢ Details", at the end, opens the pane. At the end of a run, "✕ Hide" hides the banner; the status line then keeps "orchestre ✓ 5/5 · ⚑ 3" as long as something is left to do. These buttons are clicked; they have no key.
 - The pane, in cards: "Your turn" first, when something waits for you, then the run, the tasks and the log. y, r, t and l scroll to a card (l also shows the whole log). The keys 1 to 9 prepare in the prompt the action of a line of "Your turn" (resume the run, review a file, go over an auto-decision…), c the resume of a stopped run, p the PR draft: nothing is sent without you. ← and → stay with Claude Code. `/progress text` gives the same state as text.
@@ -273,7 +273,7 @@ tests/
 
 - Try a change without installing it: `claude --plugin-dir plugins/orchestre`, then `/reload-plugins` after each change.
 - Tests: `npm test` runs four groups, which can also be run alone:
-  - `npm run test:scripts`: 24 cases of plan-lint, 9 of `/orchestre:status`, 27 of `progress.mjs`, 4 of `worktrees.mjs`, 21 of `migrate.mjs` and 20 of `settings.mjs`, in temporary git repositories;
+  - `npm run test:scripts`: 24 cases of plan-lint, 9 of `/orchestre:status`, 27 of `progress.mjs`, 4 of `worktrees.mjs`, 21 of `migrate.mjs` and 21 of `settings.mjs`, in temporary git repositories;
   - `npm run test:workflow`: 103 scenarios of the workflow, with simulated agents, 6 of which run the real `progress.mjs` and `worktrees.mjs` in a temporary repository;
   - `npm run test:commands`: the settings template, and 15 tests of the contract between the skills and the rest of the plugin;
   - `npm run test:mod`: 24 cases of the mod's view model on `progress.json` files written by `progress.mjs`, `/progress demo` compared with the real `progress.mjs` included.
@@ -293,7 +293,8 @@ tests/
 - The reviews are read by no agent: without you before the PR, a file forbidden to the agents goes out without a review.
 - A ban that the worker reports as an ordinary deviation is only reclassified as a review if its description cites neither a database, nor production, nor a secret (`DATABASE_URL`, `JWT_SECRET`…): otherwise the run stops for a human.
 - `/orchestre:ready` spots the "safe" commands on the strength of the configuration and of DISCOVERY.md: when in doubt, it asks you to run them yourself with `!`.
-- The settings (worktree, permissions) cannot come from a plugin: `scripts/settings.mjs` writes them into each project, from `/orchestre:install`, `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run`. Its check does not read the managed settings of an organization. Claude Code reloads the permission rules during the session; for `worktree.baseRef`, its documentation does not say, hence a run in a new session. If the Bash sandbox is on, it refuses the writes of the script into the settings files: the command gives the line to run yourself with `!`.
+- The settings (worktree, permissions) cannot come from a plugin: `scripts/settings.mjs` writes them into each project, from `/orchestre:install`, `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run`. Its check does not read the managed settings of an organization. Claude Code reloads the permission rules during the session; for `worktree.baseRef`, its documentation does not say, hence a run in a new session. If the Bash sandbox is on, it refuses the writes of the script into the settings files: the command gives the line to run yourself at the prompt with `!`, which runs outside the sandbox.
+- The denials of the template cover `.env` and `.env.*` at the root of the repository only: `Read(./.env)` matches the file in the current folder (code.claude.com/docs/en/permissions), so a `.env` in a subfolder (`apps/api/.env`) can be read by the agents. Add a rule for it with `/orchestre:install`, or a `Read(.env)` without `./`, which matches at any depth.
 - The actual tokens are not collected automatically: read them in `/workflows`, task by task. On the pilot, the actual figure was 3 to 8 times the estimate.
 - In autonomous mode, the auto-decisions are only reviewed at the PR; the circuit breaker caps their number, not their quality.
 - Sensitive deviations are spotted by keywords (data, database, production, secret…, in English and in French): the filter catches wide, but does not see a risk worded otherwise.

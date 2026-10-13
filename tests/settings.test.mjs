@@ -15,7 +15,8 @@ const SCRIPT = join(PLUGIN, 'scripts', 'settings.mjs')
 const TEMPLATE = JSON.parse(readFileSync(join(PLUGIN, 'skills', 'install', 'settings.local.template.json'), 'utf8'))
 const MANIFEST = JSON.parse(readFileSync(join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8'))
 const SCRIPTS = ['plan-lint.mjs', 'progress.mjs', 'worktrees.mjs']
-const RULE = (root, s) => `Bash(node ${root}/scripts/${s} *)`
+// The rule as the workflow launches the script: its path between double quotes when it holds a space (run-phase.js)
+const RULE = (root, s) => (/\s/.test(root) ? `Bash(node "${root}/scripts/${s}" *)` : `Bash(node ${root}/scripts/${s} *)`)
 const OWN = SCRIPTS.map(s => RULE(PLUGIN, s))
 const OLD_ROOT = '/Users/someone/.claude/plugins/cache/circle/orchestre/0.11.0'
 // The template of orchestre 0.11.0, as its /orchestre:installer merged it, with the rules of its scripts
@@ -116,11 +117,29 @@ try {
     assert.equal(json(r3, ['check']).j.files[0].ignored_by_git, false)
     assert.equal(json(r3, ['apply']).j.excluded, '.git/info/exclude')
     assert.equal(git(r3.d, 'status', '--porcelain'), '')
+    // Complete, but shown by git: check warns, apply writes no setting and excludes it
     const r4 = newRepo()
     write(local(r4), { ...TEMPLATE, permissions: { allow: [...TEMPLATE.permissions.allow, ...OWN], deny: TEMPLATE.permissions.deny } })
+    const c4 = json(r4, ['check'])
+    assert.equal(c4.j.complete, true)
+    assert.match(c4.j.warnings.join('\n'), /neither ignored nor tracked by git/)
     const a4 = json(r4, ['apply'])
-    assert.deepEqual([a4.j.written, a4.j.excluded], [[], null], 'complete: no write, no exclusion')
-    assert.match(git(r4.d, 'status', '--porcelain'), /\.claude\//)
+    assert.deepEqual([a4.code, a4.j.written, a4.j.excluded], [0, [], '.git/info/exclude'])
+    assert.match(run(r4, ['check']).out, /^✓ settings complete for orchestre [\d.]+\n$/, 'no warning once excluded')
+    assert.equal(git(r4.d, 'status', '--porcelain'), '')
+    // An exclude file without a final newline: the exclusion goes on a line of its own
+    const r5 = newRepo()
+    writeFileSync(join(r5.d, '.git', 'info', 'exclude'), '*.log')
+    run(r5, ['apply'])
+    assert.deepEqual(readFileSync(join(r5.d, '.git', 'info', 'exclude'), 'utf8').split('\n').slice(0, 3), ['*.log', '# orchestre: personal settings of Claude Code, outside git', '/.claude/settings.local.json'])
+    // .git/info/exclude cannot be written: a warning, the settings are written all the same, exit 0
+    const r6 = newRepo()
+    rmSync(join(r6.d, '.git', 'info', 'exclude'), { force: true }); mkdirSync(join(r6.d, '.git', 'info', 'exclude'), { recursive: true })
+    const a6 = json(r6, ['apply'])
+    assert.equal(a6.code, 0, a6.out)
+    assert.deepEqual(a6.j.written, ['.claude/settings.local.json'])
+    assert.match(a6.j.warnings.join('\n'), /\.git\/info\/exclude could not be written \(EISDIR\)/)
+    assert.equal(json(r6, ['check']).j.complete, true)
   })
 
   test('complete, with keys and rules of the user: nothing written, the file kept byte for byte', () => {
@@ -298,6 +317,19 @@ try {
     assert.deepEqual(p, { enabledPlugins: { 'other@x': true, [`${MANIFEST.name}@circle`]: true }, extraKnownMarketplaces: { circle: { source: { source: 'github', repo } } }, hooks: { Stop: [] } })
     assert.equal(p.permissions, undefined, 'no rule in the versioned file')
     assert.equal(json(r, ['check', '--team']).j.complete, true)
+    // A ref pinned by the team: kept, and the declaration counts as complete; another repository: fixed, the ref kept
+    const q = readJson(project(r)); q.extraKnownMarketplaces.circle = { source: { source: 'github', repo: 'someone/fork', ref: 'v1' }, autoUpdate: true }; write(project(r), q)
+    assert.equal(json(r, ['check', '--team']).j.complete, false)
+    run(r, ['apply', '--team'])
+    assert.deepEqual(readJson(project(r)).extraKnownMarketplaces.circle, { source: { source: 'github', repo, ref: 'v1' }, autoUpdate: true })
+    assert.equal(json(r, ['check', '--team']).j.complete, true)
+    // The plugin turned off in the versioned file: --team turns it on, after the line shown
+    const q2 = readJson(project(r)); q2.enabledPlugins[`${MANIFEST.name}@circle`] = false; write(project(r), q2)
+    const off = json(r, ['check', '--team'])
+    assert.deepEqual([rule(off.j, `enabledPlugins.${MANIFEST.name}@circle`).status, rule(off.j, `enabledPlugins.${MANIFEST.name}@circle`).found], ['wrong', false])
+    assert.match(run(r, ['check', '--team']).out, new RegExp(`^~ enabledPlugins\\.${MANIFEST.name}@circle: false → true$`, 'm'))
+    run(r, ['apply', '--team'])
+    assert.equal(readJson(project(r)).enabledPlugins[`${MANIFEST.name}@circle`], true)
     // Without --team, the project file is not required
     const r2 = newRepo()
     run(r2, ['apply'])
@@ -306,10 +338,27 @@ try {
     assert.equal(existsSync(project(r2)), false)
   })
 
+  test('never installed in this repository: "settings missing", even when the user settings hold rules of orchestre', () => {
+    const r = newRepo()
+    write(user(r), { permissions: { allow: ['Workflow(orchestre:run-phase)', ...OWN] } })
+    const c = json(r, ['check'])
+    assert.equal(c.j.first_install, true)
+    assert.match(run(r, ['check']).out, /^✗ settings missing for orchestre /)
+    // One rule of orchestre in the local file, of any version: an install to complete
+    write(local(r), { permissions: { allow: [RULE('/x/.claude/plugins/cache/circle/orchestre/0.9.1', 'plan-lint.mjs')] } })
+    assert.equal(json(r, ['check']).j.first_install, false)
+    write(local(r), { permissions: { allow: ['Workflow(orchestre:run-phase)'] } })
+    assert.equal(json(r, ['check']).j.first_install, false)
+    // The rules of this version reached through another path (a symbolic link): installed, and nothing to remove
+    write(local(r), { permissions: { allow: [RULE(`/x/.claude/plugins/cache/circle/orchestre/${MANIFEST.version}`, 'plan-lint.mjs')] } })
+    const same = json(r, ['check'])
+    assert.deepEqual([same.j.first_install, same.j.remove], [false, []])
+  })
+
   test('scopes: rules of the user or project settings count, a scalar takes the highest scope, a deny elsewhere is reported', () => {
     const r = newRepo()
     write(user(r), { autoContinueAtUsageLimit: false, permissions: { allow: TEMPLATE.permissions.allow, deny: ['Bash(git commit *)', 'Read(./.env.*)', RULE(OLD_ROOT, 'suivi.mjs')] } })
-    write(project(r), { worktree: { baseRef: 'fresh' } })
+    write(project(r), { worktree: { baseRef: 'fresh' }, permissions: { deny: ['Read(./.env.*)'] } })
     const c = json(r, ['check'])
     assert.equal(rule(c.j, 'Bash(git add *)').scope, 'user')
     assert.deepEqual(rule(c.j, 'worktree.baseRef'), { rule: 'worktree.baseRef', key: 'worktree.baseRef', expected: 'head', found: 'fresh', status: 'wrong', scope: 'project' })
@@ -320,6 +369,7 @@ try {
     const w = c.j.warnings.join('\n')
     assert.match(w, /Bash\(git commit \*\): also denied in the user settings/)
     assert.match(w, /Read\(\.\/\.env\.\*\): also denied in the user settings/)
+    assert.match(w, /Read\(\.\/\.env\.\*\): also denied in the project settings/)
     assert.match(w, /autoContinueAtUsageLimit is false in the user settings/)
     assert.match(w, /suivi\.mjs \*\) \(orchestre 0\.11 and earlier\): in the user settings, which this script does not change/)
     assert.deepEqual(c.j.remove, [], 'nothing removed outside the local file')
@@ -369,14 +419,13 @@ try {
     assert.equal(p.code, 2); assert.match(p.j.errors[0], /not in a git repository/)
   })
 
-  test('write refused: exit 3, the file named, the advice for the sandbox only on a permission refusal', () => {
+  test('write refused: exit 3, the file named, the advice for the sandbox, nothing changed', () => {
     const r = newRepo()
     write(join(r.d, '.claude'), 'a file where the folder goes\n')
     const p = run(r, ['apply'])
     assert.equal(p.code, 3)
-    assert.match(p.err, /^settings: write refused for \.claude\/settings\.local\.json \(E[A-Z]+\)/)
-    assert.doesNotMatch(p.err, /sandbox/, 'not a permission refusal')
-    assert.match(readFileSync(join(SCRIPT), 'utf8'), /\['EPERM', 'EACCES', 'EROFS'\]\.includes\(e\.code\) \? ': the Bash sandbox of Claude Code refuses writes to its settings files\. Run the same command in a terminal, prefixed with !'/)
+    assert.match(p.err, /^settings: write refused for \.claude\/settings\.local\.json \(E[A-Z]+\)\. If the Bash sandbox of Claude Code is on, it refuses writes to its settings files: run the same command at the Claude Code prompt prefixed with ! \(outside the sandbox\), or in a terminal$/m)
+    assert.equal(readFileSync(join(r.d, '.claude'), 'utf8'), 'a file where the folder goes\n')
   })
 
   test('from a linked worktree: the local settings of the main checkout, as Claude Code reads them', () => {
@@ -403,7 +452,7 @@ try {
 
   test('plugin root with a space, reached through a symbolic link: the rules name the root as the command typed it', () => {
     const base = tempDir('root-')
-    const real = join(base, 'Circle Claude plugin', 'orchestre', '0.13.0')
+    const real = join(base, 'Circle Claude plugin', 'orchestre', MANIFEST.version)
     for (const p of ['scripts', 'skills/install', '.claude-plugin']) cpSync(join(PLUGIN, p), join(real, p), { recursive: true })
     const link = join(base, 'link')
     symlinkSync(real, link)
@@ -414,9 +463,20 @@ try {
     const viaReal = json(r, ['check'], { script: join(real, 'scripts', 'settings.mjs') })
     assert.ok(rule(viaReal.j, RULE(real, 'plan-lint.mjs')), 'the real path when typed')
     assert.equal(json(r, ['apply'], { script: join(real, 'scripts', 'settings.mjs') }).code, 0)
-    assert.ok(readJson(local(r)).permissions.allow.includes(`Bash(node ${real}/scripts/progress.mjs *)`))
-    // The other copy of the same version is not taken for an older one
+    assert.ok(readJson(local(r)).permissions.allow.includes(`Bash(node "${real}/scripts/progress.mjs" *)`), 'quoted, as the workflow runs it')
+    // The same command as the workflow builds it (run-phase.js: node "<path>" when the path holds a space)
+    const wf = readFileSync(join(PLUGIN, 'workflows', 'run-phase.js'), 'utf8')
+    assert.match(wf, /const PROGRESS_CMD = PROGRESS && \(\/\\s\/\.test\(PROGRESS\) \? `node "\$\{PROGRESS\}"` : `node \$\{PROGRESS\}`\)/)
     assert.deepEqual(json(r, ['check'], { script: join(real, 'scripts', 'settings.mjs') }).j.remove, [])
+    // The same version reached through the link: its rules are added, those of the real path are not taken for an older install
+    const viaLink = json(r, ['check'], { script: join(link, 'scripts', 'settings.mjs') })
+    assert.deepEqual(viaLink.j.remove, [])
+    assert.equal(viaLink.j.first_install, false, 'installed, through the other path')
+    assert.deepEqual(viaLink.j.rules.filter(x => x.status !== 'ok').map(x => x.rule), SCRIPTS.map(s => RULE(link, s)))
+    // Another version under the same cache folder is
+    const older = RULE(join(base, 'Circle Claude plugin', 'orchestre', '0.1.0'), 'progress.mjs')
+    const s0 = readJson(local(r)); s0.permissions.allow.push(older); write(local(r), s0)
+    assert.deepEqual(json(r, ['check'], { script: join(real, 'scripts', 'settings.mjs') }).j.remove.map(x => [x.rule, x.reason]), [[older, 'orchestre 0.1.0']])
   })
 
   test('JSON through a pipe: one complete line, and the source never calls process.exit()', () => {
@@ -426,6 +486,13 @@ try {
     const j = JSON.parse(p.stdout)
     assert.equal(j.complete, false)
     assert.equal(p.stdout.trim().split('\n').length, 1)
+    // Over 64 KB: the whole line, and the exit code of an incomplete check
+    const many = JSON.stringify({ allow: Array.from({ length: 2500 }, (_, i) => `Bash(tool-number-${i} --with-a-long-option *)`) })
+    const big = spawnSync('sh', ['-c', `node "${SCRIPT}" check --json --add '${many}' | cat; exit 0`], { cwd: r.d, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: r.home } })
+    assert.ok(big.stdout.length > 65536, `${big.stdout.length} bytes`)
+    assert.equal(JSON.parse(big.stdout).rules.filter(x => x.added).length, 2500)
+    const code = spawnSync('node', [SCRIPT, 'check', '--json', '--add', many], { cwd: r.d, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: r.home } })
+    assert.equal(code.status, 1)
     assert.doesNotMatch(readFileSync(SCRIPT, 'utf8'), /process\.exit\(/)
   })
 

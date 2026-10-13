@@ -156,7 +156,7 @@ async function autoOpen($: EngineInterface, inst: Snapshot): Promise<void> {
   autoOpenedHere = true
   if (await read($, autoOpened)) return
   await update($, autoOpened, () => true)
-  if (!(await openPane($, inst, null, false))) $.ui.toast(`orchestre: run ${inst.run?.number} started: /progress opens its pane.`, { timeoutMs: IMPORTANT_TOAST_MS })
+  if (!(await openPane($, inst, null, false))) $.ui.toast(`orchestre: run ${inst.run?.number} started. /progress opens its pane.`, { timeoutMs: IMPORTANT_TOAST_MS })
 }
 
 // Only what asks for someone becomes a notification (and a sound, if /progress sound turned it on); the rest can be read
@@ -273,6 +273,8 @@ async function animate($: EngineInterface): Promise<void> {
 async function restore($: EngineInterface): Promise<void> {
   if (chosenPlan) await update($, followedPlan, () => chosenPlan)
   if (chosenHidden != null) await update($, hidden, () => chosenHidden)
+  // The pane already opened by itself: kept in $.state too, so that a reload after /clear does not open it again
+  if (autoOpenedHere) await update($, autoOpened, () => true)
   await refresh($, true).catch(() => undefined)
   await updateStatus($)
 }

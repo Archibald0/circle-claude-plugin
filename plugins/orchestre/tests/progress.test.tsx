@@ -327,7 +327,7 @@ function state(on: On) {
     values.set(e.key, { value: e.value, version: before + 1 })
     return { value: { isSet: true, version: before + 1 } } as never
   })
-  return { erase: () => values.clear(), put: (key: string, value: unknown) => { values.set(key, { value, version: 1 }) } }
+  return { erase: () => values.clear(), put: (key: string, value: unknown) => { values.set(key, { value, version: 1 }) }, get: (key: string) => values.get(key)?.value }
 }
 
 // $.store kept by the test, with the values left by an earlier version of the mod
@@ -686,6 +686,7 @@ test('pane opened by itself at the first run started during the session, without
   await clock.advance(60000)
   memory.erase()
   await $.classic.SessionStart({ source: 'clear' } as never)
+  expect(memory.get('autoOpened')).toBe(true)
   w.startRun(4, '2026-10-08T12:02:00+02:00')
   await clock.advance(60000)
   expect(w.opens).toEqual(['orchestre (Esc closes)'])
@@ -713,7 +714,7 @@ test('pane opened by itself where the terminal keeps it waiting: a notification 
   w.startRun(2, '2026-10-08T12:00:05+02:00')
   await clock.advance(5000)
   expect(w.opens).toEqual(['orchestre (Esc closes)'])
-  expect(w.toasts.filter(t => /pane/.test(t))).toEqual(['orchestre: run 2 started: /progress opens its pane.'])
+  expect(w.toasts.filter(t => /pane/.test(t))).toEqual(['orchestre: run 2 started. /progress opens its pane.'])
   w.startRun(3, '2026-10-08T12:01:00+02:00')
   await clock.advance(60000)
   expect(w.opens.length).toBe(1)
