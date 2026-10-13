@@ -162,6 +162,18 @@ try {
     assert.equal(json(r, ['check']).j.complete, true)
   })
 
+  test('exceptions of the .env templates without Read(./.env.*) in the local file: misplaced; the rule added, they follow it', () => {
+    const r = newRepo()
+    write(local(r), { permissions: { deny: [...exceptions, 'Bash(curl *)'] } })
+    const c = json(r, ['check'])
+    assert.equal(rule(c.j, 'Read(./.env.*)').status, 'missing')
+    for (const e of exceptions) assert.equal(rule(c.j, e).status, 'misplaced', e)
+    run(r, ['apply'])
+    const deny = readJson(local(r)).permissions.deny
+    assert.ok(placed(deny), JSON.stringify(deny))
+    assert.equal(deny.filter(x => x.startsWith('Read(!')).length, exceptions.length, 'no duplicate')
+  })
+
   test('install of orchestre 0.11 (its real template and script rules): incomplete; the rules of 0.11 removed, the others completed', () => {
     const r = newRepo()
     const old = JSON.parse(JSON.stringify(TEMPLATE_011))
@@ -197,17 +209,22 @@ try {
     const r = newRepo()
     const v012 = '/Users/someone/.claude/plugins/cache/circle/orchestre/0.12.0'
     const dev = '/Users/someone/Projects/Circle Claude plugin/circle-claude-plugin/plugins/orchestre'
-    write(local(r), { ...TEMPLATE, permissions: { allow: [...TEMPLATE.permissions.allow, ...OWN, RULE(v012, 'progress.mjs'), RULE(dev, 'plan-lint.mjs'), 'Workflow(executer-phase)', 'Bash(node .claude/orchestre/plan-lint.mjs:*)', 'Bash(node /opt/other/scripts/progress.mjs *)'], deny: TEMPLATE.permissions.deny } })
+    const v06 = '/Users/someone/.claude/plugins/cache/circle/orchestre/0.6.3'
+    // Kept: a development copy, scripts of the same names in another tool, a folder orchestre/ that is not the plugin cache
+    const kept = [RULE(dev, 'plan-lint.mjs'), 'Bash(node /opt/other/scripts/progress.mjs *)', 'Bash(node /opt/other/scripts/suivi.mjs *)', RULE('/opt/orchestre/tools', 'plan-lint.mjs'), RULE('/opt/x/0.12.0', 'progress.mjs'), RULE('/opt/orchestre/other/0.12.0', 'progress.mjs')]
+    write(local(r), { ...TEMPLATE, permissions: { allow: [...TEMPLATE.permissions.allow, ...OWN, RULE(v012, 'progress.mjs'), `Bash(node ${v06}/scripts/plan-lint.mjs:*)`, RULE(dev, 'etat.mjs'), 'Workflow(executer-phase)', 'Bash(node .claude/orchestre/plan-lint.mjs:*)', ...kept], deny: TEMPLATE.permissions.deny } })
     const c = json(r, ['check'])
     assert.deepEqual(c.j.remove.map(x => [x.rule, x.reason]), [
       [RULE(v012, 'progress.mjs'), 'orchestre 0.12.0'],
+      [`Bash(node ${v06}/scripts/plan-lint.mjs:*)`, 'orchestre 0.6.3'],
+      [RULE(dev, 'etat.mjs'), 'orchestre 0.11 and earlier'],
       ['Workflow(executer-phase)', 'manual install of v0.5 and earlier'],
       ['Bash(node .claude/orchestre/plan-lint.mjs:*)', 'manual install of v0.5 and earlier'],
     ])
     assert.equal(c.j.complete, false); assert.equal(c.code, 1)
     run(r, ['apply'])
     const s = readJson(local(r))
-    assert.ok(s.permissions.allow.includes(RULE(dev, 'plan-lint.mjs')) && s.permissions.allow.includes('Bash(node /opt/other/scripts/progress.mjs *)'))
+    for (const k of kept) assert.ok(s.permissions.allow.includes(k), k)
     assert.equal(json(r, ['check']).j.complete, true)
   })
 
@@ -235,6 +252,34 @@ try {
       assert.equal(readFileSync(file(r), 'utf8'), text, 'file unchanged')
       if (file !== local) assert.equal(existsSync(local(r)), false, 'nothing written next to it')
     }
+  })
+
+  test('a rule of an older install in the versioned project settings: reported, left in place; a settings file not valid JSON makes the check incomplete', () => {
+    const r = newRepo()
+    run(r, ['apply'])
+    write(project(r), { permissions: { allow: ['Workflow(orchestre:executer-phase)'] } })
+    const c = json(r, ['check'])
+    assert.deepEqual(c.j.remove, [])
+    assert.equal(c.j.complete, true)
+    assert.match(c.j.warnings.join('\n'), /Workflow\(orchestre:executer-phase\) \(orchestre 0\.11 and earlier\): in the project settings/)
+    run(r, ['apply'])
+    assert.deepEqual(readJson(project(r)).permissions.allow, ['Workflow(orchestre:executer-phase)'])
+    write(user(r), '{')
+    const bad = json(r, ['check'])
+    assert.deepEqual([bad.code, bad.j.ok, bad.j.complete], [2, false, false])
+  })
+
+  test('--team without a GitHub repository in plugin.json: refused, nothing written', () => {
+    const base = tempDir('norepo-')
+    for (const p of ['scripts', 'skills/install', '.claude-plugin']) cpSync(join(PLUGIN, p), join(base, p), { recursive: true })
+    const m = readJson(join(base, '.claude-plugin', 'plugin.json')); delete m.repository
+    writeFileSync(join(base, '.claude-plugin', 'plugin.json'), JSON.stringify(m))
+    const r = newRepo()
+    const p = json(r, ['apply', '--team'], { script: join(base, 'scripts', 'settings.mjs') })
+    assert.equal(p.code, 2)
+    assert.match(p.j.errors.join('\n'), /no GitHub repository in "repository"/)
+    assert.equal(existsSync(local(r)), false)
+    assert.equal(json(r, ['check'], { script: join(base, 'scripts', 'settings.mjs') }).code, 1, 'without --team, no repository needed')
   })
 
   test('--team: the marketplace and the plugin in .claude/settings.json, its keys kept; the rules stay local; without --team, not checked', () => {
@@ -278,6 +323,7 @@ try {
     assert.match(w, /autoContinueAtUsageLimit is false in the user settings/)
     assert.match(w, /suivi\.mjs \*\) \(orchestre 0\.11 and earlier\): in the user settings, which this script does not change/)
     assert.deepEqual(c.j.remove, [], 'nothing removed outside the local file')
+    assert.equal(c.j.files[2].path, '~/settings.json', 'the user file under the home folder')
     run(r, ['apply'])
     assert.equal(readJson(local(r)).worktree.baseRef, 'head', 'the local scope wins over the project')
     assert.equal(readJson(project(r)).worktree.baseRef, 'fresh', 'the project file untouched')

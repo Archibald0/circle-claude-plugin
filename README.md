@@ -16,9 +16,9 @@ Private marketplace of [Claude Code](https://code.claude.com/docs/en/plugins) pl
 
 | Plugin | Version | Role |
 | :- | :- | :- |
-| `orchestre` | 0.12.0 | Runs a dev plan split into tasks (`plans/<name>/`, one file per task) from a pilot Claude Code session. Each phase of the plan is a run of the workflow `orchestre:run-phase`: work by subagents, verification, evaluation, fixes, merge into an integration branch, progress. Each task carries its model and the reason for it, chosen by Opus when the plan is prepared; after a rejected attempt, the replanner chooses the model of the fix, never below the task's. The plugin includes a progress mod, read-only on `plans/<name>/progress.json`: an animated banner above the prompt during a run, a suffix to the spinner, `/progress` (a pane in cards: what waits for you, with one action per line, the run, the tasks as timelines, the log; or `/progress text`), a commented `/progress demo`, notifications for what asks for someone, what changed while you were away. |
+| `orchestre` | 0.13.0 | Runs a dev plan split into tasks (`plans/<name>/`, one file per task) from a pilot Claude Code session. Each phase of the plan is a run of the workflow `orchestre:run-phase`: work by subagents, verification, evaluation, fixes, merge into an integration branch, progress. Each task carries its model and the reason for it, chosen by Opus when the plan is prepared; after a rejected attempt, the replanner chooses the model of the fix, never below the task's. The plugin includes a progress mod, read-only on `plans/<name>/progress.json`: an animated banner above the prompt during a run, a suffix to the spinner, `/progress` (a pane in cards: what waits for you, with one action per line, the run, the tasks as timelines, the log; or `/progress text`), a commented `/progress demo`, notifications for what asks for someone, what changed while you were away. |
 
-The orchestration was worked out on a pilot of 15 tasks in 4 phases (SPACE-Platform, plan `acces-par-metier`). Version history: [CHANGELOG.md](CHANGELOG.md). Coming from orchestre 0.11: see [Upgrading from 0.11](#upgrading-from-011).
+The orchestration was worked out on a pilot of 15 tasks in 4 phases (SPACE-Platform, plan `acces-par-metier`). Version history: [CHANGELOG.md](CHANGELOG.md). Coming from an earlier version: see [Upgrading from 0.12](#upgrading-from-012) and [Upgrading from 0.11](#upgrading-from-011).
 
 ## Requirements
 
@@ -55,17 +55,21 @@ Four commands, in order, and a fifth one to see where a plan stands:
 
 ### 1. `/orchestre:install`: prepare the repository
 
-Once per repository, at its root. A plugin cannot set the settings the orchestrator needs: the command writes them into the project, showing each change before making it.
+Once per repository, at its root; `/orchestre:prepare` runs it on its own when the settings are missing. A plugin cannot set the settings the orchestrator needs: the command writes them into the project, showing each change before making it. Their model and their check are in one script, `scripts/settings.mjs`, which `/orchestre:prepare`, `/orchestre:ready` and `/orchestre:run` run too: it compares the settings Claude Code merges (personal, project, user) with the model, rule by rule, and writes only what is missing.
 
-- `.claude/settings.local.json` (personal, not versioned): `worktree.baseRef: "head"` (the worktrees start from the integration branch), `autoContinueAtUsageLimit` (a run paused on a usage limit starts again on its own), permissions for the workflow `orchestre:run-phase`, the plugin's scripts (plan-lint, progress, worktree cleanup), the agents' git commands and, if you accept them, the project's test and build commands; `git push`, the project's deployment tool and reading `.env` and `.env.*` are denied, at every depth, except the versioned templates (`.env.example`, `.env.sample`, `.env.template`, `.env.dist`), which the agents read and change.
+- `.claude/settings.local.json` (personal, not versioned; excluded from git through `.git/info/exclude` when git does not ignore it yet): `worktree.baseRef: "head"` (the worktrees start from the integration branch), permissions for the workflow `orchestre:run-phase`, the plugin's scripts (plan-lint, progress, worktree cleanup), the agents' git commands and, if you accept them, the project's test and build commands; `git push`, the project's deployment tool and reading `.env` and `.env.*` are denied, at every depth, except the versioned templates (`.env.example`, `.env.sample`, `.env.template`, `.env.dist`), which the agents read and change.
 - `.worktreeinclude`: the unversioned files (`.env`…) to copy into the worktrees of parallel tasks.
 - Exclusion of `plans/` and `.claude/` from the project's formatter and linter.
 - If the project's tools (node, pnpm, php…) cannot be found in the agents' shell, an `env` key (PATH) in `.claude/settings.local.json`: without it, the agents would prefix their commands with `export PATH=…`, which the isolation guard of the worktrees refuses.
 - Removal of an old manual install of the orchestrator (v0.5 and earlier), and of the settings rules of an older version of the plugin.
 
+A run paused on a usage limit starts again on its own: `autoContinueAtUsageLimit`, a setting of the user (on by default, in `/config`), which the plugin does not write; the check warns if your user settings turn it off.
+
 The pilot ran in auto permission mode. In manual mode, any command that is not allowed suspends the run until you answer.
 
 ### 2. `/orchestre:prepare`: write or convert a plan
+
+It starts by checking the install: if orchestre was never installed in the repository, it runs `/orchestre:install` (each write and each commit after your agreement); if an older version or an update of the plugin left the settings incomplete, it shows the rules to add or replace and writes them after one agreement. If you decline, the preparation goes on, and `/orchestre:ready` and `/orchestre:run` stop until `/orchestre:install` has run.
 
 - `/orchestre:prepare docs/my-plan.md`: converts a plan already written (file or folder). The splitting, the vocabulary and the decisions of the source plan are kept; what is missing (owned files, verification commands, definition of done) comes from an exploration of the repository. The summary gives a correspondence table, source plan → tasks.
 - `/orchestre:prepare add the CSV export of the bookings`: explores the repository, splits and writes a new plan.
@@ -76,7 +80,7 @@ It first asks the language of the plan's free text (`language`: task titles, cri
 
 The day before the launch, without executing any task:
 
-- the environment: settings, tools, git, formatter, untracked folders, permissions of the verification commands;
+- the environment: settings (checked by `scripts/settings.mjs`: left incomplete by an older version or an update of the plugin, they are written on the spot after your agreement; missing, the check stops and sends to `/orchestre:install`), tools, git, formatter, untracked folders, permissions of the verification commands;
 - the plan format: a plan of orchestre 0.11 is migrated here, after agreement (see [Upgrading from 0.11](#upgrading-from-011));
 - the prerequisites: the decisions still open, to settle on the spot, and the actions that are yours, with how to do them;
 - a dry run of the safe verification commands (no shared database, real data, paid call or deployment), which reveals the missing tools or permissions and the failures already present;
@@ -87,7 +91,7 @@ It gives a verdict phase by phase, for example "phases 1 to 3 ready; phase 4: T1
 
 ### 4. `/orchestre:run plans/<name>`: execute
 
-In a new session. Pre-flight (version, settings, git, migration of a plan of 0.11, cleanup of the worktrees left by earlier attempts, plan-lint and prerequisites of the phase, formatter, progress), choice of the mode and of the number of simultaneous tasks, then one run of the workflow per phase:
+In a new session. Pre-flight (version, settings, checked as by `/orchestre:ready`, git, migration of a plan of 0.11, cleanup of the worktrees left by earlier attempts, plan-lint and prerequisites of the phase, formatter, progress), choice of the mode and of the number of simultaneous tasks, then one run of the workflow per phase:
 
 - **stop at each phase**: issues to settle, then a summary of the phase in the question "go on?" (advised for a first plan);
 - **stop on deviation**: the run stops on any major deviation, for a ruling;
@@ -117,7 +121,7 @@ At any time, including in the pilot session during a run: the command only reads
 
 ### Follow a run: `/progress`
 
-The mod follows the run without a turn of Claude; `/orchestre:status` gives the plan, `/workflows` the step of each agent.
+The mod follows the run without a turn of Claude; `/orchestre:status` gives the plan, `/workflows` the step of each agent. The pane opens by itself at the first run started in the session, without taking the keyboard from the prompt; Claude Code keeps a pane opened that way waiting in a terminal narrower than 144 columns, and a notification then says that `/progress` opens it.
 
 - The banner, above the prompt: progress, then what waits for you ("⚑ to review", "⚠ your turn", which can be clicked), then the task in progress; "⤢ Details", at the end, opens the pane. At the end of a run, "✕ Hide" hides the banner; the status line then keeps "orchestre ✓ 5/5 · ⚑ 3" as long as something is left to do. These buttons are clicked; they have no key.
 - The pane, in cards: "Your turn" first, when something waits for you, then the run, the tasks and the log. y, r, t and l scroll to a card (l also shows the whole log). The keys 1 to 9 prepare in the prompt the action of a line of "Your turn" (resume the run, review a file, go over an auto-decision…), c the resume of a stopped run, p the PR draft: nothing is sent without you. ← and → stay with Claude Code. `/progress text` gives the same state as text.
@@ -168,14 +172,22 @@ Or from a terminal: `claude plugin update orchestre@circle`, then a new session.
 
 - An update only arrives if the version in `plugins/orchestre/.claude-plugin/plugin.json` changed: otherwise, the command answers that the plugin is already up to date.
 - Automatic update: `/plugin` → *Marketplaces* → `circle` → *Enable auto-update*. For a private repository, it needs a git credential already saved (SSH key in `ssh-agent`, or `gh auth setup-git`); otherwise it fails silently and keeps the version in place.
-- The path of the plugin's scripts contains the version number: after an update, `/orchestre:run` offers to replace the corresponding permission rules.
+- The path of the plugin's scripts contains the version number: after an update, `scripts/settings.mjs` finds the rules of the older version, and `/orchestre:prepare`, `/orchestre:ready` and `/orchestre:run` offer to replace them, in one agreement.
 - Installed version: `claude plugin list`.
+
+## Upgrading from 0.12
+
+0.13.0 checks and writes the settings through one script, `scripts/settings.mjs`, and `/orchestre:prepare` installs orchestre when it is missing. Between two runs:
+
+1. Update the plugin (above). In each repository, the next `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run` finds the rules of 0.12 (the path of the scripts contains the version) and offers to replace them, in one agreement; `/orchestre:install` does it too.
+2. `autoContinueAtUsageLimit`, which 0.12 and earlier wrote into `.claude/settings.local.json`: the settings reference of Claude Code gives it the scope "User or managed", so it most likely has no effect there; it is on by default. The plugin no longer writes it, and leaves the old line in place.
+3. The `/progress` pane opens by itself at the first run started in the session.
 
 ## Upgrading from 0.11
 
 0.12.0 moves the whole plugin to English, plan and progress formats included. Between two runs:
 
-1. Update the plugin (above), then run `/orchestre:install` again in each repository: it replaces the rules of 0.11 (`Workflow(orchestre:executer-phase)`, the `suivi.mjs` rule) with those of 0.12 (`Workflow(orchestre:run-phase)`, the `progress.mjs` rule) and adds the rules of the template that are missing. `/orchestre:run` also offers the replacement at its pre-flight.
+1. Update the plugin (above). The next `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run`, or `/orchestre:install`, finds through `scripts/settings.mjs` the rules of 0.11 (`Workflow(orchestre:executer-phase)`, the `suivi.mjs` rule) and offers to replace them with those of this version (`Workflow(orchestre:run-phase)`, the `progress.mjs` rule), with the rules of the model that are missing, in one agreement.
 2. The commands change names:
 
    | 0.11 | 0.12 |
@@ -195,7 +207,7 @@ orchestre 0.11 does not read a migrated plan: once a plan is migrated, it runs w
 
 ## Share with the team of a repository
 
-`/orchestre:install --team` declares the marketplace and the plugin in `.claude/settings.json` (versioned). The people who open the repository are offered the plugin after accepting the trust of the folder. Each of them needs read access to this GitHub repository, then runs `/orchestre:install` for their own settings.
+`/orchestre:install --team` declares the marketplace and the plugin in `.claude/settings.json` (versioned). The people who open the repository are offered the plugin after accepting the trust of the folder. Each of them needs read access to this GitHub repository; their first `/orchestre:prepare` offers their own settings, or `/orchestre:install` writes them. The permission rules stay in each person's `.claude/settings.local.json`: the paths of the scripts differ from one machine to the next, and a denial of `git push` in the versioned file would hold for the whole team.
 
 ## What a run does
 
@@ -233,7 +245,8 @@ plugins/orchestre/
 ├── workflows/run-phase.js           the workflow, one run per phase
 ├── scripts/                         plan-lint.mjs (validates and compiles a plan), status.mjs (/orchestre:status),
 │                                    progress.mjs (progress.json and PROGRESS.md), worktrees.mjs (cleanup of the
-│                                    worktrees), migrate.mjs (plans of 0.11 to the 0.12 format)
+│                                    worktrees), migrate.mjs (plans of 0.11 to the 0.12 format), settings.mjs (the
+│                                    settings of Claude Code checked against the model of /orchestre:install, and written)
 ├── hooks/hooks.json                 declares the module of the mod
 ├── hooks/register.tsx               the mod: files, timer, drawing, /progress
 ├── hooks/view-model.mjs             reading of progress.json and layout, without the engine
@@ -248,6 +261,7 @@ tests/
 ├── progress.test.mjs                progress.mjs in temporary repositories
 ├── worktrees.test.mjs               worktrees.mjs in temporary repositories
 ├── migrate.test.mjs                 migrate.mjs on plans written by the real scripts of 0.11
+├── settings.test.mjs                settings.mjs in temporary repositories, the install of 0.11 included
 ├── settings-template.test.mjs       settings template of /orchestre:install
 ├── commands.test.mjs                contract between the skills and the workflow, scripts, agents and plan format
 ├── mod-progress.test.mjs            view model of the mod on progress.json files written by progress.mjs
@@ -259,11 +273,11 @@ tests/
 
 - Try a change without installing it: `claude --plugin-dir plugins/orchestre`, then `/reload-plugins` after each change.
 - Tests: `npm test` runs four groups, which can also be run alone:
-  - `npm run test:scripts`: 24 cases of plan-lint, 9 of `/orchestre:status`, 27 of `progress.mjs`, 4 of `worktrees.mjs` and 21 of `migrate.mjs`, in temporary git repositories;
+  - `npm run test:scripts`: 24 cases of plan-lint, 9 of `/orchestre:status`, 27 of `progress.mjs`, 4 of `worktrees.mjs`, 21 of `migrate.mjs` and 20 of `settings.mjs`, in temporary git repositories;
   - `npm run test:workflow`: 103 scenarios of the workflow, with simulated agents, 6 of which run the real `progress.mjs` and `worktrees.mjs` in a temporary repository;
   - `npm run test:commands`: the settings template, and 15 tests of the contract between the skills and the rest of the plugin;
-  - `npm run test:mod`: 23 cases of the mod's view model on `progress.json` files written by `progress.mjs`, `/progress demo` compared with the real `progress.mjs` included.
-- Validation: `npm run validate` (`claude plugin validate` on the plugin and on the marketplace, then `claude plugin test` of the plugin, which runs the 21 tests of the mod under the engine).
+  - `npm run test:mod`: 24 cases of the mod's view model on `progress.json` files written by `progress.mjs`, `/progress demo` compared with the real `progress.mjs` included.
+- Validation: `npm run validate` (`claude plugin validate` on the plugin and on the marketplace, then `claude plugin test` of the plugin, which runs the 25 tests of the mod under the engine).
 - Try the mod without installing it: `claude --plugin-dir plugins/orchestre`, then `/progress demo`; or, on a real `progress.json`, `node tests/demo-progress.mjs <folder>` in another terminal.
 - The workflow script has no access to files and cannot import anything; `Date.now()`, `Math.random()` and `new Date()` are forbidden there. Before changing it, load the reference `/workflow-authoring`.
 - Publish a version:
@@ -275,11 +289,11 @@ tests/
 
 ## Known limits
 
-- The plugin first ran for real on 2026-09-29, on a plan of 37 tasks: phases 1 and 2 ran in 0.6.0. The prerequisites and `/orchestre:ready` (0.6.1) and the reviews (0.6.2) have not run for real yet. Nor has 0.12.0: the commands in English, the migration of a real plan of 0.11 and the mod in English were only checked by the tests.
+- The plugin first ran for real on 2026-09-29, on a plan of 37 tasks: phases 1 and 2 ran in 0.6.0. The prerequisites and `/orchestre:ready` (0.6.1) and the reviews (0.6.2) have not run for real yet. Nor has 0.12.0: the commands in English, the migration of a real plan of 0.11 and the mod in English were only checked by the tests. Nor has 0.13.0: the install from `/orchestre:prepare`, the settings written during a session and the pane opened by itself.
 - The reviews are read by no agent: without you before the PR, a file forbidden to the agents goes out without a review.
 - A ban that the worker reports as an ordinary deviation is only reclassified as a review if its description cites neither a database, nor production, nor a secret (`DATABASE_URL`, `JWT_SECRET`…): otherwise the run stops for a human.
 - `/orchestre:ready` spots the "safe" commands on the strength of the configuration and of DISCOVERY.md: when in doubt, it asks you to run them yourself with `!`.
-- The settings (worktree, resume on usage limit, permissions) cannot come from a plugin: `/orchestre:install` writes them into each project.
+- The settings (worktree, permissions) cannot come from a plugin: `scripts/settings.mjs` writes them into each project, from `/orchestre:install`, `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run`. Its check does not read the managed settings of an organization. Claude Code reloads the permission rules during the session; for `worktree.baseRef`, its documentation does not say, hence a run in a new session. If the Bash sandbox is on, it refuses the writes of the script into the settings files: the command gives the line to run yourself with `!`.
 - The actual tokens are not collected automatically: read them in `/workflows`, task by task. On the pilot, the actual figure was 3 to 8 times the estimate.
 - In autonomous mode, the auto-decisions are only reviewed at the PR; the circuit breaker caps their number, not their quality.
 - Sensitive deviations are spotted by keywords (data, database, production, secret…, in English and in French): the filter catches wide, but does not see a risk worded otherwise.

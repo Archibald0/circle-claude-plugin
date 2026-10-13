@@ -2,6 +2,45 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.13.0 — 2026-10-13: the install from /orchestre:prepare, through one script
+
+`/orchestre:prepare` installs orchestre in the repository when its settings are missing, and one script checks and writes the settings for the four commands that need them. The progress pane opens by itself at the first run of the session. Decided by Fabien on 2026-10-13.
+
+- `scripts/settings.mjs check|apply [--team] [--json] [--add '<json>']` (new):
+  - it compares the settings Claude Code merges (`.claude/settings.local.json`, `.claude/settings.json`, user settings) with the model of `/orchestre:install`, rule by rule: `ok`, `missing`, `wrong` (a value such as `worktree.baseRef: "fresh"`), `misplaced` (an exception `Read(!.env.example)` before the rule it corrects). Settings present but incomplete count as missing: it tests the rules, not the file;
+  - the model has one source: `skills/install/settings.local.template.json`, read as is, plus the rules of the plugin's three scripts at the root as the command typed it (`${CLAUDE_PLUGIN_ROOT}`, symbolic links kept);
+  - it lists the rules of an older install, to remove from the local file: another installed version of the plugin, orchestre 0.11 and earlier (`Workflow(orchestre:executer-phase)`, `suivi.mjs`), the manual install of v0.5. A rule of a development copy of the plugin is kept;
+  - `apply` writes the local file only (and `.claude/settings.json` with `--team`: the marketplace and the plugin, no permission rule), keeps every other key and rule, writes nothing when there is nothing to change, refuses a settings file that is not valid JSON, and excludes from git, through `.git/info/exclude`, a local file that git neither ignores nor tracks (Claude Code excludes it only when it creates it itself);
+  - `--add` carries the rules of the project chosen with the user (deployment tool, project commands, `env.PATH`), checked and written with the model;
+  - text: "settings complete", "settings missing" (no rule of orchestre yet) or "settings incomplete" (an older install, or the plugin updated since), then one line per change; JSON on one line, like plan-lint; exit codes 0 complete or written, 1 incomplete, 2 invalid call or file, 3 write refused (the Bash sandbox refuses writes to the settings files: the command to run with `!`); warnings for a rule denied elsewhere, a rule of an older install in the user settings, `autoContinueAtUsageLimit` off in the user settings, a tracked `settings.local.json`. Managed settings are not read.
+- `/orchestre:prepare`: at its prerequisites, after the git check and before the name of the plan, `settings.mjs check`. "missing": the sections 1 to 5 of `/orchestre:install`, read from the plugin, each agreement with the question tool; "incomplete": its lines, then `apply` after one agreement. Declined: the preparation goes on, and the summary says that `/orchestre:ready` and `/orchestre:run` will stop until `/orchestre:install`.
+- `/orchestre:ready` (point 1.2) and `/orchestre:run` (pre-flight point 3): `settings.mjs check`, before the migration of a plan of 0.11. "missing" stops and sends to `/orchestre:install`; "incomplete" is written on the spot after agreement, otherwise it stops and sends to `/orchestre:install`. The deployment tool stays checked by the command.
+- `/orchestre:install [--team]`: the same script, sole source of the settings. The merge of the template, the rules of the scripts and the removal of older rules move to it; the deployment tool, the project commands and `PATH` go through `--add`; the `.gitignore` point gives way to `.git/info/exclude`.
+- Template: `autoContinueAtUsageLimit` removed. The settings reference of Claude Code gives it the scope "User or managed" (code.claude.com/docs/en/settings-reference), and it is on by default in an interactive session signed in with a claude.ai subscription (code.claude.com/docs/en/interactive-mode). The line written by 0.12 and earlier stays in place.
+- Mod: the `/progress` pane opens by itself once per session, when a run started since the session began is read in progress; without focus, so the prompt keeps the keyboard. Not for a run started before the session, nor for the demo, nor again after `/clear` or a reload of the module. Claude Code keeps a pane opened by a mod on its own waiting in a terminal narrower than 144 columns (code.claude.com/docs/en/plugins/mods/interface): a notification then says once that `/progress` opens it.
+- Documentation found on the way (code.claude.com/docs/en/settings, "When edits take effect"): Claude Code watches its settings files and reloads them during the session, permission rules included; it says nothing of `worktree.baseRef`. `/orchestre:run` offers a new session when it writes that key.
+- Tests:
+  - `tests/settings.test.mjs` (new, 20 tests, in `test:scripts`): settings absent, complete, partial, the real install of 0.11.0 taken from `dd14f89`, rules of other versions and of other tools, not valid JSON, `--team` (with and without a repository in `plugin.json`), scopes and precedence, `--add`, linked worktree, tracked file, plugin root with a space and through a symbolic link, output through a pipe;
+  - `tests/commands.test.mjs`: one script for the four commands, its three headers quoted by the skills, `/ready` and `/run` send to `/orchestre:install`, the check before the migration, the install after the git check in `/prepare`, the allowed-tools of `/install` in `/prepare`;
+  - the mod: 24 cases of the view model, 25 tests under the engine (4 new);
+  - 71 mutations of the new code (settings.mjs, the four skills, the template, the mod), 70 detected; the one left is equivalent (a guard against rewriting an unchanged file, never reached with a change to write);
+  - REVIEW_PLACEHOLDER
+
+### Upgrading from 0.12.0
+
+1. Between two runs: `/plugin marketplace update circle`, then `/reload-plugins`.
+2. In each repository, the next `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run` offers to replace the rules of 0.12 (the path of the scripts contains the version), in one agreement; `/orchestre:install` does it too.
+
+### Not verified in real use yet
+
+- The install launched by `/orchestre:prepare`, on opus, with the question tool: sections 1 to 5 of `/orchestre:install` followed from the file.
+- Settings written during a session: are the permission rules taken by the workflow launched next in the same session? Is `worktree.baseRef` reloaded?
+- The rendering of the pre-flight in Claude Code: the lines of `settings.mjs`, the question, the stop on "settings missing".
+- `autoContinueAtUsageLimit` written in `.claude/settings.local.json` by 0.12: really without effect (`/status`, Setting sources)?
+- The Bash sandbox: refusal of the write, exit code 3, the command with `!`.
+- The pane opened by itself in the terminal and in the desktop app, without the focus; the notification in a narrow terminal.
+- Still open from 0.12: the five commands in Claude Code, the migration of a real plan of 0.11, the `language` line, the mod in English.
+
 ## 0.12.0 — 2026-10-12: everything in English
 
 The whole plugin moves to English, apart from its name, orchestre: commands, workflow, agents, plan and progress formats, mod, documentation. A plan of 0.11 is migrated once, with the user's agreement; a plan's free text is written in its `language`. Glossary validated by Fabien on 2026-10-11 (`0.12.0/GLOSSAIRE.md` in the working folder), contract of the progress in `0.12.0/CONTRACT.md` and `progress.v3.schema.json`, in the same folder, outside the repository. Earlier entries of this changelog stay in French, as written.
