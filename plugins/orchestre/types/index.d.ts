@@ -96,6 +96,8 @@ declare module 'claude-code' {
       hidden: number | null
       // Unknown format or plan of 0.11 already reported, to say it only once
       alert: string | null
+      // The pane already opened by itself in this session, at the first run started since it began (0.13.0)
+      autoOpened: boolean
     }
   }
 }

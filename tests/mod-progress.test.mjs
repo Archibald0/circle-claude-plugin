@@ -185,6 +185,20 @@ try {
     assert.doesNotMatch(text(M.taskLines(A, later, 100)), /◐ T0/)
   })
 
+  testCase('pane opened by itself (0.13.0): a run in progress started since the session began; not one started before, finished, nor the demo', () => {
+    const start = A.run?.start
+    assert.ok(start != null && A.run?.status === 'in-progress')
+    assert.equal(M.runStartedSince(A, start), true, 'started at the start of the session')
+    assert.equal(M.runStartedSince(A, start - 60000), true, 'started during the session')
+    assert.equal(M.runStartedSince(A, start + 1), false, 'started before the session')
+    assert.equal(M.runStartedSince(C, 0), false, 'run finished')
+    assert.equal(M.runStartedSince(null, 0), false)
+    assert.equal(M.runStartedSince({ ...A, run: { ...A.run, start: null } }, 0), false, 'run without a start')
+    const demo = D.demoSnapshot(3, 1000, D.DEMO_FRAME_MS)
+    assert.deepEqual([demo.demo, demo.run?.status], [true, 'in-progress'])
+    assert.equal(M.runStartedSince(demo, 0), false, 'the demo')
+  })
+
   testCase('phase whose tasks are all cancelled: no longer counted', () => {
     const doc = rawFile()
     for (const t of doc.tasks) if (t.phase === 2) t.status = 'cancelled'

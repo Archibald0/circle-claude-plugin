@@ -647,3 +647,88 @@ test('reload of the mod in the middle of the demo, with nothing to follow: the f
   expect(await ui.find({ type: 'Text', text: ' DEMO ' })).toBeUndefined()
   await ui.unmount()
 })
+
+// The pane opened by itself (0.13.0): a repository whose progress.json the test replaces, the openings and their focus noted
+function autoWorld(on: On, placed = true) {
+  const file = { text: doc([task('T01', 1, { step: 'worker', isolated: true })]), mtime: 1 }
+  const opens: string[] = [], toasts: string[] = []
+  down(on)
+  on('fs.exists', ($, e) => ({ value: e.path === `${ROOT}/plans` || e.path === PROGRESS }))
+  on('fs.list', () => ({ value: [{ name: 'demo', kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false }] }))
+  on('fs.stat', ($, e) => (e.path === PROGRESS ? { value: { kind: 'file' as const, size: file.text.length, mtimeMs: file.mtime, isLink: false } } : { deny: 'ENOENT' }))
+  on('fs.read', ($, e) => (e.path === PROGRESS ? { value: file.text } : { deny: 'ENOENT' }))
+  on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined } })
+  on('ui.open', ($, e) => { opens.push(`${e.id}${e.focus ? ' (focus)' : ''}${e.closeOnEscape ? ' (Esc closes)' : ''}`); return { value: placed ? { isPlaced: true as const } : { isPlaced: false as const, reason: 'terminal narrower than 144 columns' } } as never })
+  on('ui.close', () => ({ value: undefined }))
+  // Run <n> started at <start>, after the runs before it (interrupted)
+  const startRun = (n: number, start: string) => {
+    file.text = doc([task('T01', 1, { step: 'worker', isolated: true })], { runs: [...Array.from({ length: n - 1 }, (_, i) => run({ number: i + 1, status: 'interrupted', end: start })), run({ number: n, start })] })
+    file.mtime += 1
+  }
+  return { file, opens, toasts, startRun }
+}
+
+test('pane opened by itself at the first run started during the session, without the keyboard; never again in the session', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 })
+  const memory = state(on)
+  const w = autoWorld(on)
+  // Run 1, left in progress since 11:30, before the session: nothing opens
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await clock.advance(2100)
+  expect(w.opens).toEqual([])
+  // Run 2, started during the session: the pane, Esc closes it, the prompt keeps the keyboard
+  w.startRun(2, '2026-10-08T12:00:05+02:00')
+  await clock.advance(5000)
+  expect(w.opens).toEqual(['orchestre (Esc closes)'])
+  expect(w.toasts.filter(t => /pane/.test(t))).toEqual([])
+  // Run 3, same session: not again; nor after /clear ($.state back to its defaults)
+  w.startRun(3, '2026-10-08T12:01:00+02:00')
+  await clock.advance(60000)
+  memory.erase()
+  await $.classic.SessionStart({ source: 'clear' } as never)
+  w.startRun(4, '2026-10-08T12:02:00+02:00')
+  await clock.advance(60000)
+  expect(w.opens).toEqual(['orchestre (Esc closes)'])
+  // /progress still opens it, with the keyboard
+  await $.command.run(CMD(''))
+  expect(w.opens.at(-1)).toBe('orchestre (focus) (Esc closes)')
+})
+
+test('pane opened by itself: a reload of the mod in the session does not open it again', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 })
+  const memory = state(on)
+  const w = autoWorld(on)
+  // What $.state keeps from before the reload: the pane already opened by itself
+  memory.put('autoOpened', true)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  w.startRun(2, '2026-10-08T12:00:05+02:00')
+  await clock.advance(5000)
+  expect(w.opens).toEqual([])
+})
+
+test('pane opened by itself where the terminal keeps it waiting: a notification says /progress, once', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 })
+  const w = autoWorld(on, false)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  w.startRun(2, '2026-10-08T12:00:05+02:00')
+  await clock.advance(5000)
+  expect(w.opens).toEqual(['orchestre (Esc closes)'])
+  expect(w.toasts.filter(t => /pane/.test(t))).toEqual(['orchestre: run 2 started: /progress opens its pane.'])
+  w.startRun(3, '2026-10-08T12:01:00+02:00')
+  await clock.advance(60000)
+  expect(w.opens.length).toBe(1)
+  expect(w.toasts.filter(t => /pane/.test(t)).length).toBe(1)
+})
+
+test('pane opened by itself: never for the demo', { timeoutMs: 30000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: T0 })
+  const opens: string[] = []
+  down(on)
+  on('fs.exists', () => ({ value: false }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.open', ($, e) => { opens.push(e.id); return { value: { isPlaced: true as const } } })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.command.run(CMD('demo'))
+  await clock.advance(frameInstant(5, 0) + 100)
+  expect(opens).toEqual([])
+})

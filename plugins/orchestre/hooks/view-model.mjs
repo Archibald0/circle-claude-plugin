@@ -96,6 +96,12 @@ const runView = r => ({
 const isMerged = /** @param {TaskView} t */ t => t.status === 'merged'
 /** The run marked in progress, if there is one. @param {Snapshot} inst */
 export const runInProgress = inst => (inst.run && inst.run.status === 'in-progress' ? inst.run : null)
+/**
+ * A run in progress that started at or after `since` (the start of the session): the first one opens the pane by itself
+ * (0.13.0). A run started before, left in progress by another session or interrupted, does not. @param {Snapshot | null} inst
+ * @param {number} since
+ */
+export const runStartedSince = (inst, since) => { const r = inst && !inst.demo ? runInProgress(inst) : null; return !!r && r.start != null && r.start >= since }
 /** A run in progress without a write of progress.json for SILENCE_MS. @param {Snapshot} inst @param {number} now */
 export const silent = (inst, now) => !!runInProgress(inst) && inst.updated != null && now - inst.updated >= SILENCE_MS
 /** The run in progress that gives news. @param {Snapshot} inst @param {number} now */

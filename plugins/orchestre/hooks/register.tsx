@@ -5,7 +5,8 @@
 //   - /progress: a pane in cards (your turn, the run, the tasks as timelines, the log), or the same state as text;
 //   - a notification only for what asks for someone: task that needs a human, blocked or failed, run stopped or in
 //     error; with /progress sound, a sound too;
-//   - on returning after 15 min without a prompt, what changed; a status line when the end banner is hidden.
+//   - on returning after 15 min without a prompt, what changed; a status line when the end banner is hidden;
+//   - the pane opened by itself at the first run started during the session (0.13.0).
 // It never writes in the repository: its only writes are in $.state (display), $.store (the sound) and the prompt (the
 // actions of the pane prepare a text there, never sent).
 import { atom, read, update } from 'claude-code'
@@ -13,7 +14,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Action, Card, Snapshot, Line, Section } from '../types'
 import { FRAME_COUNT, DEMO_FRAME_MS, DEMO_PLAN, demoEnd, demoSnapshot, frameAt } from './demo.mjs'
-import { IMPORTANT_TOAST_MS, DETAILS_GAP, DETAILS_LABEL, DETAILS_RESERVE, HIDE_GAP, HIDE_LABEL, HIDE_RESERVE, FORMAT, FORMATS, LEGACY_FORMATS, IMAGE_MS, banner, plainText, changes, cut, since, formatOf, isImportant, statusLine, normalize, news, pane, activeRun, runInProgress, suffix, stateText } from './view-model.mjs'
+import { IMPORTANT_TOAST_MS, DETAILS_GAP, DETAILS_LABEL, DETAILS_RESERVE, HIDE_GAP, HIDE_LABEL, HIDE_RESERVE, FORMAT, FORMATS, LEGACY_FORMATS, IMAGE_MS, banner, plainText, changes, cut, since, formatOf, isImportant, statusLine, normalize, news, pane, activeRun, runInProgress, runStartedSince, suffix, stateText } from './view-model.mjs'
 
 const PANE_ID = 'orchestre'
 // The sound played when something waits for you, with /progress sound (afplay on macOS; nothing on a Linux or Windows terminal)
@@ -30,6 +31,7 @@ const lastRead = atom({ plugin: 'orchestre', key: 'lastRead' } as const, 0)
 const fullLog = atom({ plugin: 'orchestre', key: 'fullLog' } as const, false)
 const hidden = atom({ plugin: 'orchestre', key: 'hidden' } as const, null)
 const alert = atom({ plugin: 'orchestre', key: 'alert' } as const, null)
+const autoOpened = atom({ plugin: 'orchestre', key: 'autoOpened' } as const, false)
 
 // The buttons after the banner ("⤢ Details", "✕ Hide") are clicked, without a key: a digit typed alone in an empty prompt
 // would have pressed them instead of writing it. Their labels and their room are in view-model.mjs.
@@ -40,6 +42,10 @@ const alert = atom({ plugin: 'orchestre', key: 'alert' } as const, null)
 let chosenPlan: string | null = null
 let chosenHidden: number | null = null
 let alerted: string | null = null
+// The pane opens by itself once per session, at the first run started since the session began (0.13.0): kept here and in
+// $.state, so that neither /clear nor a reload of the module opens it again
+let autoOpenedHere = false
+let sessionStart: number | null = null
 
 const parent = (p: string) => p.replace(/\/+$/, '').replace(/\/[^/]*$/, '') || '/'
 
@@ -140,6 +146,17 @@ async function refresh($: EngineInterface, force: boolean): Promise<void> {
   await update($, snapshot, () => after)
   notify($, changes(before, after))
   await updateStatus($)
+  await autoOpen($, after)
+}
+
+// The first run started during the session opens the pane, without taking the keyboard from the prompt. Where Claude Code
+// keeps a pane opened by a mod on its own waiting (a terminal narrower than 144 columns), a notification says /progress.
+async function autoOpen($: EngineInterface, inst: Snapshot): Promise<void> {
+  if (autoOpenedHere || sessionStart == null || !runStartedSince(inst, sessionStart)) return
+  autoOpenedHere = true
+  if (await read($, autoOpened)) return
+  await update($, autoOpened, () => true)
+  if (!(await openPane($, inst, null, false))) $.ui.toast(`orchestre: run ${inst.run?.number} started: /progress opens its pane.`, { timeoutMs: IMPORTANT_TOAST_MS })
 }
 
 // Only what asks for someone becomes a notification (and a sound, if /progress sound turned it on); the rest can be read
@@ -219,6 +236,7 @@ async function startFollowing($: EngineInterface): Promise<void> {
   if (started) return
   started = true
   lastPrompt = await $.clock.now()
+  sessionStart = lastPrompt
   // The sound setting, kept under "sound"; taken once from "son", its key before 0.12, then written under "sound"
   let saved = await $.store.get('sound').catch(() => null)
   if (saved == null) {
@@ -418,9 +436,11 @@ function scrollTo($: EngineInterface, id: Section): void {
   attempt().catch(() => { void $.clock.sleep(250).then(attempt).catch(() => undefined) })
 }
 
-// The pane, scrolled to a card if one is named. Opened during the demo, it will close with it.
-async function openPane($: EngineInterface, inst: Snapshot, target: Section | null = null): Promise<boolean> {
-  const opened = await $.ui.open({ id: PANE_ID, title: `Orchestre · ${inst.plan}${inst.demo ? ' (demo)' : ''}`, focus: true, closeOnEscape: true }).catch(() => null)
+// The pane, scrolled to a card if one is named. Opened during the demo, it will close with it. Opened by the mod on its own,
+// it does not ask for the keyboard (focus accepts only true: left out).
+async function openPane($: EngineInterface, inst: Snapshot, target: Section | null = null, focus = true): Promise<boolean> {
+  const options = { id: PANE_ID, title: `Orchestre · ${inst.plan}${inst.demo ? ' (demo)' : ''}`, closeOnEscape: true as const }
+  const opened = await $.ui.open(focus ? { ...options, focus: true as const } : options).catch(() => null)
   if (!opened?.isPlaced) return false
   demoPane = inst.demo
   const now = await $.clock.now()
