@@ -1,10 +1,11 @@
 ---
 name: ready
-description: Checks that an orchestre plan is ready to run, without executing any task — environment, migration of a plan of orchestre 0.11, prerequisites of PREREQUISITES.md (decisions to settle on the spot, manual actions), dry run of the safe verifications — and gives a verdict phase by phase. To run the day before, when the user types /orchestre:ready.
+description: Checks that an orchestre plan is ready to run, without executing any task — settings and environment, migration of a plan of orchestre 0.11, prerequisites of PREREQUISITES.md (decisions to settle on the spot, manual actions), dry run of the safe verifications — and gives a verdict phase by phase. To run the day before, when the user types /orchestre:ready.
 argument-hint: <plan-dir> [--no-dry-run]
 disable-model-invocation: true
 allowed-tools:
   - Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-lint.mjs *)
+  - Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/settings.mjs *)
   - Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/worktrees.mjs *)
   - Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/migrate.mjs *)
   - Bash(claude --version)
@@ -19,7 +20,7 @@ allowed-tools:
 ---
 # Ready to run?
 
-You check that the plan `$ARGUMENTS` can run without stopping on what could be settled beforehand. You execute no task of the plan and you change no application code. You only write in the plan folder (PREREQUISITES.md, HANDOFF.md, DISCOVERY.md, `orchestre.config.json`, and the tasks not started yet for an amendment), after agreement, apart from the migration of a plan of orchestre 0.11 (1.4), which `migrate.mjs` writes and commits. You never read the content of a `.env`, of a dump or of a copy of real data. Short messages.
+You check that the plan `$ARGUMENTS` can run without stopping on what could be settled beforehand. You execute no task of the plan and you change no application code. You only write in the plan folder (PREREQUISITES.md, HANDOFF.md, DISCOVERY.md, `orchestre.config.json`, and the tasks not started yet for an amendment), after agreement, apart from the settings that `settings.mjs` writes (1.2) and the migration of a plan of orchestre 0.11 (1.4), which `migrate.mjs` writes and commits. You never read the content of a `.env`, of a dump or of a copy of real data. Short messages.
 
 Language: until you know the plan's language, and for a plan of orchestre 0.11 not migrated yet, talk to the user in the language of the conversation. From then on, talk to the user, and write the free text you add to the plan (HANDOFF descriptions, Prerequisite and Evidence cells, DISCOVERY content, verdict), in the plan's language: `language` of `orchestre.config.json`, `"en"` when absent, `"fr"` for a plan migrated from orchestre 0.11. Keys, values, section titles and commit messages stay in English.
 
@@ -32,7 +33,12 @@ plan-lint, in this plugin: `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-lint.mjs`.
 Note each point without stopping, except where it says so: they go to the verdict.
 
 1. `claude --version`: 2.1.271 or later. `node --version`: 18 or later. The agents `orchestre:*` are among the available agent types.
-2. Settings: `worktree.baseRef: "head"`, `autoContinueAtUsageLimit`, `git push` and the deployment tool denied, `Workflow(orchestre:run-phase)` and the rules `Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-lint.mjs *)`, `Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/progress.mjs *)` and `Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/worktrees.mjs *)` in `allow`, tools of the verifications found in the agents' shell (`command -v`, otherwise the `env` key). Settings of orchestre 0.11 (`Workflow(orchestre:executer-phase)`, `Bash(node <plugin path>/scripts/suivi.mjs *)`): the run would ask for permission at each progress command. What is missing or outdated is for `/orchestre:install`.
+2. Settings: `node ${CLAUDE_PLUGIN_ROOT}/scripts/settings.mjs check` (below, `settings.mjs`), which compares the settings of Claude Code with the model of `/orchestre:install`, rule by rule (workflow, rules of the plugin's scripts for this version, git commands, `worktree.baseRef`, denials of `git push` and of the `.env`), and lists the rules of an older install to remove, those of orchestre 0.11 included. Copy its output.
+   - "settings complete": go on; its warnings (`⚠`) block nothing.
+   - "settings missing": orchestre was never installed in this repository. Stop the check here: say to run `/orchestre:install`, then `/orchestre:ready <plan>` again.
+   - "settings incomplete" (an older install, or the plugin updated since): offer, with the question tool, to write what it lists ("Yes (recommended)", "No"); after agreement, `settings.mjs apply`, copy its first line and go on. Exit code 3: the Bash sandbox refuses writes to the settings files; give the user the command to run with `!` (`node ${CLAUDE_PLUGIN_ROOT}/scripts/settings.mjs apply`), then run `settings.mjs check` again. If the user declines: stop the check here, and say to run `/orchestre:install`.
+   - Exit code 2: a settings file is not valid JSON; show the error and stop the check here.
+   - Outside the script: the project's deployment tool, if it has one, denied (`Bash(<tool> *)`), and the tools of the verifications found in the agents' shell (`command -v`, otherwise the `env` key). What is missing there is for `/orchestre:install`, and goes to the verdict.
 3. `orchestre.config.json`: integration branch (`integration_branch`; `branche_integration` in a plan of orchestre 0.11) and base branch (`base_branch`, `branche_base` in 0.11; `main` by default). Git: no uncommitted change on tracked files; the integration branch exists and the plan folder is committed on it. Switch to it now: the plan only exists there. `.worktreeinclude` lists the `.env` if there are any.
 4. Plan format: `node ${CLAUDE_PLUGIN_ROOT}/scripts/migrate.mjs <plan>`, from the main checkout, on the integration branch. If the integration branch does not exist yet, do not migrate: say that `/orchestre:run` creates it from the base branch and then offers the migration, and stop the check here. Without option, the script only reads: if it answers "already in the 0.12 format, nothing to migrate", go on. Otherwise the plan, or part of it, is still in the French format of orchestre 0.11 or earlier (`<plan>/taches/`, or `SUIVI.md`, `PREREQUIS.md`, `suivi.json` or French keys left next to `<plan>/tasks/` by another clone), which the scripts of this version refuse:
    - Show its summary of the changes and say in one line that keys, values, file names and section titles move to English, that the free text stays as written and the plan gets `"language": "fr"`, and that the git history of 0.11 (branches `tache/*`, commits "tâche <id> : ") is not rewritten.

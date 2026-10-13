@@ -1,12 +1,18 @@
 ---
 name: prepare
-description: Writes a plan that /orchestre:run can execute (folder plans/<name>/) — converts a plan already written or drafts a new one from a goal —, has every decision settled, lists what must be ready (PREREQUISITES.md), then validates it with plan-lint. Use when the user types /orchestre:prepare or asks to prepare, write or convert a plan for the orchestrator.
+description: Writes a plan that /orchestre:run can execute (folder plans/<name>/) — converts a plan already written or drafts a new one from a goal —, has every decision settled, lists what must be ready (PREREQUISITES.md), then validates it with plan-lint. Installs orchestre in the repository first when its settings are missing. Use when the user types /orchestre:prepare or asks to prepare, write or convert a plan for the orchestrator.
 argument-hint: "<existing plan (file or folder) | goal of the plan>"
 model: opus
 allowed-tools:
   - Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-lint.mjs *)
+  - Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/settings.mjs *)
   - Bash(git status *)
   - Bash(git rev-parse *)
+  - Bash(git ls-files *)
+  - Bash(claude --version)
+  - Bash(node --version)
+  - Bash(command -v *)
+  - Bash(printenv PATH)
 ---
 # Prepare an orchestre plan
 
@@ -25,6 +31,12 @@ A folder `plans/<name>/` already written for orchestre is not a plan to convert:
 ## 0. Prerequisites
 
 - A git repository on its base branch (`main`, unless the user names another), up to date, without uncommitted changes: otherwise, stop and say so.
+- Install of orchestre in this repository: `node ${CLAUDE_PLUGIN_ROOT}/scripts/settings.mjs check` (below, `settings.mjs`), from the root of the repository. It compares the settings of Claude Code with the model of `/orchestre:install`, rule by rule.
+  - "settings complete": go on without a word; a warning (`⚠`) in one line each.
+  - "settings missing": orchestre was never installed here. Read `${CLAUDE_PLUGIN_ROOT}/skills/install/SKILL.md` and do its sections 1 to 5, as `/orchestre:install` without `--team`, on this base branch: each agreement with the question tool ("Yes (recommended)", "No"), its summary (section 7) in two lines at most. Then go on.
+  - "settings incomplete" (an older install, or the plugin updated since): show its lines, then ask with the question tool "Write these settings into .claude/settings.local.json?", "Yes (recommended)" or "No". On "Yes": `settings.mjs apply`; copy its first line. Exit code 3: the Bash sandbox refuses writes to the settings files; give the user the command to run with `!` (`node ${CLAUDE_PLUGIN_ROOT}/scripts/settings.mjs apply`), then run `settings.mjs check` again.
+  - Exit code 2: a settings file is not valid JSON; show the error, and offer to go on once the user has fixed it (run `settings.mjs check` again), or to go on without the install.
+  - The user declines the install or the write: go on preparing the plan. Say in one line that `/orchestre:ready` and `/orchestre:run` will stop until `/orchestre:install` has written the settings, and repeat it in the summary (step 6).
 - Name of the plan: short, in kebab-case, to have confirmed. If `plans/<name>/` already exists, stop and ask.
 - Language of the plan's free text (`language`, see "Language" in `format.md`), with the question tool: "Language of the plan?", with two options: the language of the conversation first, recommended, then English; when the conversation is in English, the second option is the language of the source plan for a conversion, French otherwise. The tool adds "Other" on its own. Note it as a short code (`fr`, `en`, `es`…). From here on, you write the free text of the plan in that language: task titles, launch prompts and body sections, criteria of `definition_of_done`, `model_reason`, HANDOFF descriptions, Prerequisite and Evidence cells, DISCOVERY content. Keys, values, section titles, table headers and legends, commands and commit messages stay in English.
 
@@ -99,4 +111,4 @@ Write `plans/<name>/`: the tasks in `tasks/`, each with `model` and `model_reaso
 
 ## 6. Summary
 
-Give the table of PROGRESS.md, then the reason for each task's model (one line per task), the `fable` setting and the `language` of the plan, then the estimate line and the "Ready to run" block of plan-lint. List next the open prerequisites, that is what remains to do before launching, with the first phase each one blocks. Add the reviews to plan before the PR. For a conversion, add the correspondence table (task or section of the source plan → orchestre task) and what was split, merged or added (global review included). Next: `/orchestre:install` if the repository is not prepared yet, `/orchestre:ready plans/<name>` the day before the launch, then, in a new session, `/orchestre:run plans/<name>`, with a first run in "stop at each phase" mode.
+Give the table of PROGRESS.md, then the reason for each task's model (one line per task), the `fable` setting and the `language` of the plan, then the estimate line and the "Ready to run" block of plan-lint. List next the open prerequisites, that is what remains to do before launching, with the first phase each one blocks. Add the reviews to plan before the PR. For a conversion, add the correspondence table (task or section of the source plan → orchestre task) and what was split, merged or added (global review included). Next: `/orchestre:install` if the settings were declined at step 0, `/orchestre:ready plans/<name>` the day before the launch, then, in a new session, `/orchestre:run plans/<name>`, with a first run in "stop at each phase" mode.

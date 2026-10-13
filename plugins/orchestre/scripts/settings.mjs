@@ -6,9 +6,12 @@
 // Usage: node <plugin root>/scripts/settings.mjs check [--team] [--json] [--add '<json>']
 //        node <plugin root>/scripts/settings.mjs apply [--team] [--json] [--add '<json>']
 //   check: reads, writes nothing. "complete" when every rule of the model holds in the settings Claude Code merges (local,
-//          project, user), and no rule of an older install of orchestre is left in .claude/settings.local.json.
+//          project, user), and no rule of an older install of orchestre is left in .claude/settings.local.json. Text: "settings
+//          complete", "settings missing" (no rule of orchestre yet: the whole of /orchestre:install is to do) or "settings
+//          incomplete" (an older install, or the plugin updated since), then one line per change.
 //   apply: writes what check lists into .claude/settings.local.json only (and .claude/settings.json with --team), keeping every
-//          other key and rule where it is; writes nothing when there is nothing to change.
+//          other key and rule where it is; writes nothing when there is nothing to change. A local file it writes, neither
+//          ignored nor tracked by git, is excluded through .git/info/exclude.
 //   --add '{"allow":[…],"deny":[…],"env":{"PATH":"…"}}': rules of the project, chosen with the user (deployment tool, project
 //          commands, PATH), checked and written with the model.
 //   --team: also the declaration of the marketplace and of the plugin in .claude/settings.json (versioned), for the team.
@@ -319,7 +322,8 @@ function report(r, { root, team, mode, written = null }) {
   } else if (r.complete) lines.push(`✓ settings complete for ${head}${mode === 'apply' ? ': nothing to write' : ''}`)
   else {
     const c = count(r), where = r.writes.map(w => paths[w.scope]).join(' and ')
-    lines.push(`✗ settings incomplete for ${head}: ${where}, ${c.changed} to add or change, ${c.removed} to remove`, ...changeLines(r, paths))
+    // "missing": no rule of orchestre yet, the whole install is to do; "incomplete": an older install or a plugin updated since
+    lines.push(`✗ settings ${r.first_install ? 'missing' : 'incomplete'} for ${head}: ${where}, ${c.changed} to add or change, ${c.removed} to remove`, ...changeLines(r, paths))
   }
   if (!r.errors.length) lines.push(...r.warnings.map(w => `⚠ ${w}`))
   return { json, text: lines.join('\n') }
@@ -345,8 +349,10 @@ export function apply({ cwd, root, team, add }) {
       throw new Failure(`write refused for ${display(path, r.at.top)} (${e.code || e.message})${['EPERM', 'EACCES', 'EROFS'].includes(e.code) ? ': the Bash sandbox of Claude Code refuses writes to its settings files. Run the same command in a terminal, prefixed with !' : ''}`, 3)
     }
     files.push(display(path, r.at.top))
-    // A local file created here is not excluded from git by Claude Code: the exclusion goes into .git/info/exclude
-    if (w.scope === 'local' && created && !r.files.find(f => f.scope === 'local').ignored_by_git) {
+    // Claude Code excludes the local file from git only when it creates it itself: a file written here, neither ignored nor
+    // tracked, goes into .git/info/exclude (personal, nothing to commit)
+    const lf = r.files.find(f => f.scope === 'local')
+    if (w.scope === 'local' && !lf.ignored_by_git && !lf.tracked) {
       const exclude = attempt(() => resolve(r.at.main, git(['rev-parse', '--git-path', 'info/exclude'], r.at.main).trim()))
       if (exclude) {
         const before = attempt(() => readFileSync(exclude, 'utf8')) || ''

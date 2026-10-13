@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { LEGACY, LEGEND } from '../plugins/orchestre/scripts/progress.mjs'
 import { convertHandoff } from '../plugins/orchestre/scripts/migrate.mjs'
+import { SCRIPTS as RULED } from '../plugins/orchestre/scripts/settings.mjs'
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const PLUGIN = join(ROOT, 'plugins', 'orchestre')
@@ -21,7 +22,7 @@ const SKILLS = ['install', 'prepare', 'ready', 'run', 'status']
 const text = Object.fromEntries(SKILLS.map(s => [s, read(join(PLUGIN, 'skills', s, 'SKILL.md'))]))
 const FORMAT = read(join(PLUGIN, 'skills', 'prepare', 'format.md'))
 const WF = read(join(PLUGIN, 'workflows', 'run-phase.js'))
-const SRC = Object.fromEntries(['plan-lint', 'progress', 'worktrees', 'migrate', 'status'].map(s => [s, read(join(SCRIPTS, `${s}.mjs`))]))
+const SRC = Object.fromEntries(['plan-lint', 'progress', 'worktrees', 'migrate', 'status', 'settings'].map(s => [s, read(join(SCRIPTS, `${s}.mjs`))]))
 const AGENTS = sorted(readdirSync(join(PLUGIN, 'agents')).filter(f => f.endsWith('.md')).map(f => f.slice(0, -3)))
 const RULE = s => `Bash(node \${CLAUDE_PLUGIN_ROOT}/scripts/${s} *)`
 
@@ -179,6 +180,7 @@ try {
       const sub = rest.match(/^([a-z][a-z-]*)/)
       if (script === 'progress') assert.ok(sub && progressCommands.includes(sub[1]), `${s}: progress.mjs ${sub && sub[1]}`)
       if (script === 'worktrees') assert.equal(sub && sub[1], 'clean', `${s}: worktrees.mjs ${sub && sub[1]}`)
+      if (script === 'settings') assert.ok(sub && ['check', 'apply'].includes(sub[1]), `${s}: settings.mjs ${sub && sub[1]}`)
     }
     for (const s of ['run', 'ready']) {
       for (const o of ['`--write`', '`--write --run-stopped`']) assert.ok(text[s].includes(o), `${s}: ${o}`)
@@ -188,15 +190,48 @@ try {
     assert.ok(text.ready.includes('worktrees.mjs clean <plan> --dry-run`'))
   })
 
-  test('settings: the same script rules in /install, /run and /ready, the workflow allowed, those of 0.11 replaced', () => {
-    for (const s of ['install', 'run', 'ready']) {
-      for (const script of ['plan-lint.mjs', 'progress.mjs', 'worktrees.mjs']) assert.ok(text[s].includes(`\`${RULE(script)}\``), `${s}: rule of ${script}`)
-      assert.ok(text[s].includes('`Workflow(orchestre:executer-phase)`') && text[s].includes('scripts/suivi.mjs *)`'), `${s}: rules of 0.11 not detected`)
+  test('settings: one script, settings.mjs, for /install, /prepare, /ready and /run; its headers are those the skills read', () => {
+    // The model holds the rules of the scripts the workflow's agents run: plan-lint (lint), progress, worktrees (derived from it)
+    assert.deepEqual(sorted(RULED), ['plan-lint.mjs', 'progress.mjs', 'worktrees.mjs'])
+    assert.ok(WF.includes('worktrees.mjs'))
+    // The rules of 0.11 and of other versions are the script's business, no longer written in the skills
+    for (const old of ['executer-phase', 'suivi.mjs', 'etat.mjs']) assert.ok(SRC.settings.includes(old), `settings.mjs: ${old}`)
+    for (const s of SKILLS) {
+      assert.ok(!text[s].includes('settings.local.template.json'), `${s}: template merged by hand`)
+      for (const script of RULED) assert.ok(!text[s].includes(`\`${RULE(script)}\``), `${s}: rule of ${script} written in the skill`)
     }
-    for (const s of ['run', 'ready']) assert.ok(text[s].includes('`Workflow(orchestre:run-phase)`'), `${s}: workflow rule`)
-    assert.ok(text.install.includes('${CLAUDE_SKILL_DIR}/settings.local.template.json'))
-    // The agents run these scripts: plan-lint (lint), progress and worktrees (derived from progress)
-    assert.ok(WF.includes("worktrees.mjs"))
+    for (const s of ['install', 'prepare', 'ready', 'run']) {
+      assert.ok(text[s].includes('`node ${CLAUDE_PLUGIN_ROOT}/scripts/settings.mjs check`') || text[s].includes('`node ${CLAUDE_PLUGIN_ROOT}/scripts/settings.mjs` (below, `settings.mjs`)'), `${s}: settings.mjs check`)
+      assert.ok(text[s].includes('`settings.mjs apply`'), `${s}: settings.mjs apply`)
+    }
+    assert.ok(text.install.includes('`settings.mjs check` (plus `--team` if given)') && text.install.includes('with the same arguments (`--add`, `--team`)'))
+    // The three headers, as the script prints them, quoted by /prepare, /ready and /run
+    const r = newRepo('settings-')
+    const env = { ...process.env, CLAUDE_CONFIG_DIR: tempDir('home-') }
+    const out = () => spawnSync('node', [join(SCRIPTS, 'settings.mjs'), 'check'], { cwd: r.d, encoding: 'utf8', env }).stdout
+    const missing = out()
+    mkdirSync(join(r.d, '.claude'), { recursive: true })
+    writeFileSync(join(r.d, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: ['Workflow(orchestre:executer-phase)'] } }))
+    const incomplete = out()
+    spawnSync('node', [join(SCRIPTS, 'settings.mjs'), 'apply'], { cwd: r.d, encoding: 'utf8', env })
+    const complete = out()
+    for (const [h, o] of [['settings missing', missing], ['settings incomplete', incomplete], ['settings complete', complete]]) {
+      assert.ok(o.startsWith(`${h.startsWith('settings complete') ? '✓' : '✗'} ${h} for orchestre `), `${h}: ${o.split('\n')[0]}`)
+      for (const s of ['prepare', 'ready', 'run']) assert.ok(text[s].includes(`- "${h}`), `${s}: case "${h}"`)
+    }
+    // /ready and /run: "missing" stops and sends to /orchestre:install; "incomplete" is written on the spot after agreement
+    for (const [s, n] of [['ready', 2], ['run', 3]]) {
+      const p = point(text[s], n, 'Settings:')
+      assert.match(p, /- "settings missing"[^\n]*Stop[^\n]*`\/orchestre:install`/)
+      assert.match(p, /- "settings incomplete"[^\n]*question tool[^\n]*`settings\.mjs apply`[^\n]*If the user declines: stop[^\n]*`\/orchestre:install`/)
+      assert.ok(!p.includes('/orchestre:prepare'), `${s}: sends to /orchestre:prepare`)
+      assert.match(p, /Exit code 3[^\n]*`!`/)
+    }
+    // /prepare: "missing" does the sections 1 to 5 of /install; declined, the preparation goes on
+    assert.ok(text.prepare.includes('Read `${CLAUDE_PLUGIN_ROOT}/skills/install/SKILL.md` and do its sections 1 to 5, as `/orchestre:install` without `--team`'))
+    for (const n of [1, 2, 3, 4, 5]) assert.match(text.install, new RegExp(`^## ${n}\\. `, 'm'))
+    assert.match(text.prepare, /The user declines the install or the write: go on preparing the plan/)
+    for (const t of FM.install.fm['allowed-tools']) assert.ok(FM.prepare.fm['allowed-tools'].includes(t), `prepare: ${t} of /install missing from allowed-tools`)
   })
 
   test('no name of orchestre 0.11 outside the lines about detection, migration or the manual install', () => {
@@ -376,7 +411,11 @@ try {
       for (const x of ['worktrees.mjs clean <plan>', 'plan-lint.mjs <plan> --', ...(s === 'run' ? ['progress.mjs view <plan>'] : [])]) assert.ok(migration < at(x), `${s}: ${x} comes before the migration`)
       assert.ok(t.includes(`if it answers "${nothing[0]}", go on`), `${s}: answer of the preview`)
       assert.ok(t.includes('If the user declines'), `${s}: refusal of the migration`)
+      assert.ok(at('scripts/settings.mjs check`') < migration, `${s}: the settings are checked before the migration`)
     }
+    const prep = x => { const i = text.prepare.indexOf(x); assert.ok(i >= 0, `prepare: ${x}`); return i }
+    assert.ok(prep('- A git repository on its base branch') < prep('scripts/settings.mjs check`') && prep('scripts/settings.mjs check`') < prep('- Name of the plan:'), 'prepare: the install after the git check, before the name of the plan')
+    assert.ok(prep('A folder `plans/<name>/` already written for orchestre is not a plan to convert') < prep('scripts/settings.mjs check`'))
     // /run: the stopped run confirmed at the migration also holds for worktrees.mjs; /ready: the confirmation at the start holds
     assert.ok(text.run.includes('run it again with `--write --run-stopped`, and that answer also holds for `worktrees.mjs clean` at point 6'))
     assert.ok(text.run.includes('If the user said at the migration (point 4) that the run is stopped, run it with `--run-stopped` straight away.'))

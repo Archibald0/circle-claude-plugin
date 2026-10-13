@@ -71,7 +71,7 @@ try {
     assert.deepEqual(c.j.writes[0].set, { 'worktree.baseRef': 'head' })
     assert.equal(existsSync(local(r)), false, 'check writes nothing')
     const text = run(r, ['check']).out
-    assert.match(text, /^✗ settings incomplete for orchestre \d+\.\d+\.\d+: \.claude\/settings\.local\.json, \d+ to add or change, 0 to remove\n/)
+    assert.match(text, /^✗ settings missing for orchestre \d+\.\d+\.\d+: \.claude\/settings\.local\.json, \d+ to add or change, 0 to remove\n/)
     assert.match(text, /^\+ allow Workflow\(orchestre:run-phase\)$/m)
     assert.match(text, /^\+ deny Read\(!\.env\.example\), right after Read\(\.\/\.env\.\*\)$/m)
     const a = json(r, ['apply'])
@@ -96,7 +96,7 @@ try {
     assert.equal(statSync(local(r)).mtime.getFullYear(), 2000)
   })
 
-  test('a local file created here: excluded from git by .git/info/exclude, once; an ignored one is left alone', () => {
+  test('a local file written here, neither ignored nor tracked: excluded from git by .git/info/exclude, once; an ignored one is left alone', () => {
     const r = newRepo()
     const a = run(r, ['apply'])
     assert.match(a.out, /^ℹ \.git\/info\/exclude: \.claude\/settings\.local\.json added/m)
@@ -110,6 +110,17 @@ try {
     assert.equal(a2.j.excluded, null)
     assert.equal(readFileSync(join(r2.d, '.git', 'info', 'exclude'), 'utf8'), before)
     assert.equal(a2.j.files[0].ignored_by_git, true)
+    // A file that exists, written by hand, neither ignored nor tracked: excluded when the script writes it, not when complete
+    const r3 = newRepo()
+    write(local(r3), { permissions: { allow: ['Bash(make *)'] } })
+    assert.equal(json(r3, ['check']).j.files[0].ignored_by_git, false)
+    assert.equal(json(r3, ['apply']).j.excluded, '.git/info/exclude')
+    assert.equal(git(r3.d, 'status', '--porcelain'), '')
+    const r4 = newRepo()
+    write(local(r4), { ...TEMPLATE, permissions: { allow: [...TEMPLATE.permissions.allow, ...OWN], deny: TEMPLATE.permissions.deny } })
+    const a4 = json(r4, ['apply'])
+    assert.deepEqual([a4.j.written, a4.j.excluded], [[], null], 'complete: no write, no exclusion')
+    assert.match(git(r4.d, 'status', '--porcelain'), /\.claude\//)
   })
 
   test('complete, with keys and rules of the user: nothing written, the file kept byte for byte', () => {
@@ -168,7 +179,9 @@ try {
     ])
     for (const x of ['Workflow(orchestre:run-phase)', 'Bash(git for-each-ref *)', ...OWN]) assert.equal(rule(c.j, x).status, 'missing', x)
     assert.equal(rule(c.j, 'worktree.baseRef').status, 'ok')
-    assert.match(run(r, ['check']).out, /^− allow Workflow\(orchestre:executer-phase\) \(orchestre 0\.11 and earlier\)$/m)
+    const t = run(r, ['check']).out
+    assert.match(t, /^✗ settings incomplete for orchestre \d+\.\d+\.\d+: \.claude\/settings\.local\.json, \d+ to add or change, 4 to remove\n/)
+    assert.match(t, /^− allow Workflow\(orchestre:executer-phase\) \(orchestre 0\.11 and earlier\)$/m)
     const a = run(r, ['apply'])
     assert.equal(a.code, 0)
     assert.match(a.out, /^✓ settings written for orchestre \d+\.\d+\.\d+: \.claude\/settings\.local\.json \(\d+ added or changed, 4 removed\)$/m)
@@ -337,6 +350,9 @@ try {
     const c = json(r, ['check'])
     assert.equal(c.j.files[0].tracked, true)
     assert.match(c.j.warnings.join('\n'), /tracked by git/)
+    const before = readFileSync(join(r.d, '.git', 'info', 'exclude'), 'utf8')
+    assert.equal(json(r, ['apply']).j.excluded, null, 'a tracked file is not excluded')
+    assert.equal(readFileSync(join(r.d, '.git', 'info', 'exclude'), 'utf8'), before)
   })
 
   test('plugin root with a space, reached through a symbolic link: the rules name the root as the command typed it', () => {
