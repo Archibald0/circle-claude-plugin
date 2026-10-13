@@ -1,3 +1,15 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/readme-banner-dark.gif">
+    <img src="brand/readme-banner-light.gif" width="552" height="128" alt="orchestre logo: a pixel-art music stand whose staff fills up with notes, next to the name orchestre">
+  </picture>
+</p>
+
+<p align="center">
+  <strong>Write the plan. orchestre plays it through.</strong><br>
+  A plugin for Claude Code.
+</p>
+
 # Circle — Claude Code plugins
 
 Private marketplace of [Claude Code](https://code.claude.com/docs/en/plugins) plugins. It holds one plugin:
