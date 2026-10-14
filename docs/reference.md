@@ -292,7 +292,7 @@ brand/                               logo, banner and social preview
 ### Publish a version
 
 1. Raise `version` in `plugins/orchestre/.claude-plugin/plugin.json`: without that, nobody gets the update.
-2. Add the entry to `CHANGELOG.md`.
+2. Add the entry to `CHANGELOG.md`, and update the version of the `orchestre` badge at the top of `README.md`.
 3. `npm test && npm run validate`.
 4. Commit and push to `main`.
 5. On each machine: `/plugin marketplace update circle`.
