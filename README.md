@@ -26,15 +26,13 @@
 
 A long dev plan does not fit in one Claude Code session: the context fills up, and someone has to track what is done, what failed and what is left. orchestre splits the work into a plan of phases and tasks, and runs it with a team of agents. Each task is done on its own branch, in its own worktree when tasks run side by side, then verified, evaluated and merged into an integration branch, until that branch is ready for a pull request. You step in only when a decision is yours.
 
-**Follow a long run without watching it.** A banner above the prompt shows the phase, the progress and the task in progress. `/progress` opens a pane: what waits for you comes first, one key per action, then the run, the tasks as timelines and the log. A notification comes only when a task needs you or a run stops, and when you come back after a break, one says what changed.
+**Follow a long run without watching it.** A banner above the prompt shows the phase, the progress and the task in progress. `/progress` opens a pane: what waits for you comes first, one key per action, then the run, the tasks as timelines and the log. A notification comes only when a task needs you or a run stops, and when you come back after a break, one says what changed. To see it without a run: `/progress demo`.
 
-<!-- TODO(screenshot): take brand/screenshots/progress-panel.png on a real run (the /progress pane, with a "Your turn" card), then uncomment this block.
 <p align="center">
-  <img src="brand/screenshots/progress-panel.png" width="720" alt="The /progress pane during a run: a Your turn card with numbered actions, then the run, the tasks as timelines and the log">
+  <img src="brand/screenshots/progress-panel.png" width="793" alt="The /progress pane at the end of the demo: the reviews to do before the pull request, each with its key, then the finished run, the tasks as timelines and the log">
   <br>
-  <em>The /progress pane during a run: what waits for you comes first, one key per action.</em>
+  <em>The <code>/progress</code> pane, last frame of <code>/progress demo</code>: what waits for you comes first, one key per action.</em>
 </p>
--->
 
 ## Use
 

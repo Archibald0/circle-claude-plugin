@@ -274,7 +274,7 @@ tests/
 ├── toy-repo.sh                      toy repository for a real try
 └── demo-progress.mjs                the scenario of /progress demo played by the real progress.mjs (tests)
 docs/                                reference, configuration, upgrading
-brand/                               logo, banner and social preview
+brand/                               logo, banner, social preview and README screenshot
 ```
 
 ### Develop
