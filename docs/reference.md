@@ -274,7 +274,8 @@ tests/
 ├── toy-repo.sh                      toy repository for a real try
 └── demo-progress.mjs                the scenario of /progress demo played by the real progress.mjs (tests)
 docs/                                reference, configuration, upgrading
-brand/                               logo, banner, social preview and README screenshot
+brand/                               README banner and screenshot, social preview of the repository
+.github/workflows/release.yml        tag and GitHub Release of each version
 ```
 
 ### Develop
@@ -292,7 +293,9 @@ brand/                               logo, banner, social preview and README scr
 ### Publish a version
 
 1. Raise `version` in `plugins/orchestre/.claude-plugin/plugin.json`: without that, nobody gets the update.
-2. Add the entry to `CHANGELOG.md`, and update the version of the `orchestre` badge at the top of `README.md`.
+2. Add the entry to `CHANGELOG.md`, under a heading `## <version> — <date>: <title>`, and update the version of the `orchestre` badge at the top of `README.md`.
 3. `npm test && npm run validate`.
-4. Commit and push to `main`.
+4. Commit and push to `main`. The Release workflow (`.github/workflows/release.yml`) then runs `npm test`, tags the commit `orchestre--v<version>` and opens the GitHub Release, with the `CHANGELOG.md` section of the version as notes. It fails, without a tag, when `CHANGELOG.md` has no section for the version or a test fails: fix and push again, the tag goes on the fixed commit.
 5. On each machine: `/plugin marketplace update circle`.
+
+Tags follow the convention of Claude Code, `<plugin>--v<version>`, so that a plugin which depends on orchestre with a version range can resolve it. To stay on one version, add the marketplace at its tag: `/plugin marketplace add FabienDayuse/circle-claude-plugin#orchestre--v0.13.0`. To open the Release of an older tag: *Actions* > *Release* > *Run workflow*, with the version.

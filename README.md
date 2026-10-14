@@ -177,4 +177,4 @@ Details: [`docs/upgrading.md`](docs/upgrading.md).
 <!-- TODO(license): choose the license with Dayuse, add a LICENSE file, then replace the line below. -->
 License: not chosen yet.
 
-orchestre is an independent project, not affiliated with or endorsed by Anthropic. Logo and visual identity: [`brand/`](brand/).
+orchestre is an independent project, not affiliated with or endorsed by Anthropic.

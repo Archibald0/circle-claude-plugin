@@ -1,0 +1,102 @@
+# Tags each published version of orchestre and opens its GitHub Release.
+#
+# On each push to main: reads the version in plugins/orchestre/.claude-plugin/plugin.json.
+# - No tag orchestre--v<version> yet: runs npm test, then tags the pushed commit (annotated tag).
+# - No GitHub Release for that tag yet: opens it, with the CHANGELOG.md section of the version as notes.
+# The run fails, without a tag, when CHANGELOG.md has no "## <version> " section or a test fails.
+#
+# By hand (Actions > Release > Run workflow), with a version: opens the Release of an existing tag.
+# Tags follow the convention of Claude Code, <plugin>--v<version> (claude plugin tag).
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version of an existing tag, to open its Release (e.g. 0.12.0)
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INPUT_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Version, tag and Release
+        id: state
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            version="$INPUT_VERSION"
+          else
+            version=$(node -p "require('./plugins/orchestre/.claude-plugin/plugin.json').version")
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Version not in the form X.Y.Z: $version"; exit 1
+          fi
+          tag="orchestre--v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then tagged=true; else tagged=false; fi
+          if gh release view "$tag" >/dev/null 2>&1; then released=true; else released=false; fi
+          if [ -n "$INPUT_VERSION" ] && [ "$tagged" = false ]; then
+            echo "::error::No tag $tag: tags are created by a push to main"; exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "tagged=$tagged"
+            echo "released=$released"
+          } >> "$GITHUB_OUTPUT"
+          echo "$tag: tag $tagged, Release $released"
+
+      - name: Notes from CHANGELOG.md
+        if: steps.state.outputs.tagged == 'false' || steps.state.outputs.released == 'false'
+        env:
+          VERSION: ${{ steps.state.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            index($0, "## " v " ") == 1 { found = 1; print "orchestre " substr($0, 4) > "title.txt"; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
+          if [ ! -s title.txt ]; then
+            echo "::error::CHANGELOG.md has no section \"## $VERSION \""; exit 1
+          fi
+          cat title.txt
+
+      - name: Tests
+        if: steps.state.outputs.tagged == 'false'
+        run: npm test
+
+      - name: Tag
+        if: steps.state.outputs.tagged == 'false'
+        env:
+          TAG: ${{ steps.state.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -F title.txt "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+
+      - name: Release
+        if: steps.state.outputs.released == 'false'
+        env:
+          TAG: ${{ steps.state.outputs.tag }}
+        run: gh release create "$TAG" --verify-tag --title "$(cat title.txt)" --notes-file notes.md
