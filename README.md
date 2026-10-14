@@ -20,38 +20,23 @@ A long dev plan does not fit in one Claude Code session: the context fills up, a
 </p>
 -->
 
-## How it works
+## Use
 
-1. **Prepare.** `/orchestre:prepare <existing plan or goal>` explores the repository, splits the work into phases and tasks, asks you every open decision (you can defer some) and gives each task a model. It installs orchestre in the repository first if needed.
-2. **Check.** `/orchestre:ready plans/<name>`, the day before: settings, prerequisites, a dry run of the safe verification commands, then a verdict phase by phase.
-3. **Run.** `/orchestre:run plans/<name>`, in a new session: one workflow run per phase. Each task goes through work, verification, evaluation, fixes if needed, and a merge into `plan/<name>`. You pick the mode: stop at each phase, stop on a major deviation, or autonomous.
-4. **Review the pull request.** The integration branch is ready. The final summary lists the auto-decisions and the files to review; `p` in `/progress` drafts the pull request text in the prompt. Pushing, merging into `main` and deploying stay with you.
-
-## Quick start
-
-**Requirements**
-
-- Claude Code 2.1.287 or later, with dynamic workflows: paid plans; on Pro, the *Dynamic workflows* line of `/config`. The commands need 2.1.271; the progress display needs 2.1.287.
-- `git` and Node.js 18 or later.
-- Read access to this GitHub repository, private for now: see [Access to the repository](docs/reference.md#access-to-the-repository).
-
-**Install**, once per machine, in a Claude Code session. This repository is the plugin marketplace `circle`; orchestre is its only plugin.
+Once orchestre is [installed](#install), at the root of your repository, on its base branch, with no uncommitted change:
 
 ```
-/plugin marketplace add FabienDayuse/circle-claude-plugin
-/plugin install orchestre@circle
-/reload-plugins
+/orchestre:prepare <goal or existing plan>   # write the plan: phases, tasks, decisions
+/orchestre:ready plans/<name>                # the day before: settings, prerequisites, dry run
+/orchestre:run plans/<name>                  # in a new session: one run per phase, up to the PR
+/orchestre:status                            # where the plan stands, even during a run
+/progress                                    # the live pane: what waits for you
 ```
 
-**A first plan**, at the root of your repository, on its base branch, with no uncommitted change:
+- `/orchestre:prepare` installs orchestre in the repository first if needed. It gives each task a model, and asks every open decision; you can defer some.
+- `/orchestre:run` asks the mode: stop at each phase (advised for a first plan), stop on a major deviation, or autonomous.
+- At the end, `plan/<name>` is ready for a pull request. The summary lists the auto-decisions and the files to review, and `p` in `/progress` drafts the PR text. Pushing, merging into `main` and deploying stay with you.
 
-```
-/orchestre:prepare add the CSV export of the bookings
-/orchestre:ready plans/<name>
-/orchestre:run plans/<name>
-```
-
-`<name>` is the plan name you confirm during the preparation. Run the last command in a new session, in the mode "stop at each phase". To try orchestre on a toy repository first: [First try](docs/reference.md#first-try).
+Every option and key: [Reference](#reference).
 
 ## Why orchestre
 
@@ -61,6 +46,24 @@ A long dev plan does not fit in one Claude Code session: the context fills up, a
 - **Scripts for the state, agents for the work.** Node scripts without dependencies validate the plan (`plan-lint.mjs`), write the progress (`progress.mjs`) and the settings (`settings.mjs`), and clean up the worktrees. The agents write the code and make the judgment calls.
 - **A human only when needed.** Real data, secrets, production and deployment stay yours. A file the agents may not touch becomes a review to do before the pull request, without stopping the run.
 - **Resume and follow.** An interrupted run is never continued: the next `/orchestre:run` starts a new run from the plan and git, and skips the merged tasks. During a run, a banner above the prompt and the `/progress` pane show where things stand and what waits for you.
+
+## Install
+
+**Requirements**
+
+- Claude Code 2.1.287 or later, with dynamic workflows: paid plans; on Pro, the *Dynamic workflows* line of `/config`. The commands need 2.1.271; the progress display needs 2.1.287.
+- `git` and Node.js 18 or later.
+- Read access to this GitHub repository, private for now: see [Access to the repository](docs/reference.md#access-to-the-repository).
+
+This repository is the plugin marketplace `circle`; orchestre is its only plugin. Once per machine, in a Claude Code session:
+
+```
+/plugin marketplace add FabienDayuse/circle-claude-plugin
+/plugin install orchestre@circle
+/reload-plugins
+```
+
+To try orchestre on a toy repository first: [First try](docs/reference.md#first-try).
 
 ## Reference
 
