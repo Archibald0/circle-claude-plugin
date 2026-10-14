@@ -692,38 +692,90 @@ function modelCell(t, n) {
   return [...l, { t: ' '.repeat(Math.max(0, rest) + 2) }]
 }
 
+// The task lines on a fixed grid (0.13.1): every line puts each thing in the same column, two spaces apart. A task:
+// glyph and id, title, timeline of the last run, duration, model, what it does. A phase: glyph and name in the room of
+// the glyph and id of a task, then its count, its squares and its duration in columns of their own, the same for every
+// phase, then its retries.
+const GAP = 2
+// The duration of a task: "1:02:03" at most
+const TIME_WIDTH = 7
+// The least room of the title, the timeline and what the task does. The room left goes first to what the task does, up
+// to 24 cells ("fix attempt 2 (worktree)"), then to the title up to 24, to the timeline up to 26, to the title again up
+// to 40, and what remains to what the task does
+const MIN_TITLE = 10, MIN_TIMELINE = 8, MIN_WHAT = 16
+/** @param {number} n @returns {Piece} */
+const spaces = n => ({ t: ' '.repeat(Math.max(0, n)) })
+/** A title in its column: without the code marks of markdown, cut with "…" right after the last character kept, padded to n cells. @param {string} s @param {number} n */
+export function titleCell(s, n) {
+  const c = [...String(s).replace(/`/g, '').replace(/\s+/g, ' ').trim()]
+  return column(c.length > n ? c.slice(0, n - 1).join('').trimEnd() + '…' : c.join(''), n)
+}
+
+/**
+ * The columns of the task lines in `columns` cells: where each one starts (`at`) and its width. The model column is 0
+ * when no model is known, or when it leaves the title, the timeline and what the task does less than their least room.
+ * @param {Snapshot} inst @param {number} columns
+ */
+export function taskGrid(inst, columns) {
+  const tasks = inst.tasks.filter(t => t.status !== 'cancelled')
+  const id = Math.min(8, Math.max(3, ...tasks.map(t => [...t.id].length)))
+  // "◉ Phase 12" takes the room of "  ◐ T012": the glyph, a space, the id
+  const lead = Math.max(4 + id, 8 + Math.max(1, ...tasks.map(t => String(t.phase).length))) + GAP
+  let model = Math.min(MODEL_WIDTH, Math.max(0, ...inst.tasks.map(t => width(modelOf(t)))))
+  const fixed = () => lead + GAP + GAP + TIME_WIDTH + GAP + (model ? model + GAP : 0)
+  if (model && columns - fixed() < MIN_TITLE + MIN_TIMELINE + MIN_WHAT) model = 0
+  let rest = Math.max(0, columns - fixed() - MIN_TITLE - MIN_TIMELINE - MIN_WHAT)
+  /** @param {number} v @param {number} to */
+  const grow = (v, to) => { const k = Math.max(0, Math.min(rest, to - v)); rest -= k; return v + k }
+  const need = Math.max(MIN_TITLE, ...tasks.map(t => [...titleCell(t.title, 999).trimEnd()].length))
+  let what = grow(MIN_WHAT, 24)
+  let title = grow(MIN_TITLE, Math.min(need, 24))
+  const timeline = grow(MIN_TIMELINE, 26)
+  title = grow(title, Math.min(need, 40))
+  what += rest
+  const at = { title: lead, timeline: lead + title + GAP, time: lead + title + GAP + timeline + GAP }
+  const atModel = at.time + TIME_WIDTH + GAP
+  return { id, lead, title, timeline, model, what, at: { ...at, model: atModel, what: atModel + (model ? model + GAP : 0) } }
+}
+
 /**
  * The tasks: one line per phase (one square per task), then, under the phases where something happens, one line per task
- * with its timeline over the time of the last run, its duration and what it does. A task closed in an earlier run keeps a
- * short line; the tasks to do of the current phase are capped at 6.
+ * with its timeline over the time of the last run, its duration, its model and what it does, on the grid of taskGrid. A
+ * task closed in an earlier run keeps a short line; the tasks to do of the current phase are capped at 6.
  * @param {Snapshot} inst @param {number} now @param {number} columns @param {boolean} [animated] @returns {Line[]}
  */
 export function taskLines(inst, now, columns, animated = false) {
   const s = summarize(inst, now), live = !!s.run, f = runWindow(inst, now)
   const cur = live ? runPhase(inst) : s.current?.number ?? null
   const classOf = classifier(inst, now)
-  // Model column (0.11.0): as wide as the longest known model, taken from the timeline then from the title, so that what
-  // the task does keeps its room (30 cells when the width allows it, 20 at least); absent if no model is known, or if it
-  // does not fit. The timeline gets its 26 cells back as soon as there is room
-  const MW0 = Math.min(MODEL_WIDTH, Math.max(0, ...inst.tasks.map(t => width(modelOf(t)))))
-  const MW = MW0 && columns >= 60 + MW0 + 2 ? MW0 : 0
-  const MC = MW ? MW + 2 : 0
-  const titleWidth = Math.max(10, Math.min(22, columns - 60 - MC)), W = Math.max(8, Math.min(26, columns - titleWidth - 42 - (MC ? MC + 10 : 0)))
-  const QW = Math.max(10, columns - titleWidth - W - 22 - MC)
+  const G = taskGrid(inst, columns)
   const touched = /** @param {TaskView} t */ t => !!f && ((t.start != null && t.start >= f.start) || (t.end != null && t.end >= f.start) || (live && !!t.step))
   const justMerged = /** @param {TaskView} t */ t => isMerged(t) && t.end != null && now - t.end < NEWS_MS / 2
+  /** The glyph and the id, up to the title. @param {TaskView} t @param {Piece} g @returns {Line} */
+  const lead = (t, g) => [{ t: '  ' }, g, { t: ' ' }, { t: column(t.id, G.id), b: true }, spaces(G.lead - 4 - G.id)]
+  /** @param {string} x @returns {Piece} */
+  const time = x => ({ t: x.padStart(TIME_WIDTH) + ' '.repeat(GAP), d: true })
+  /** @param {TaskView} t @returns {Line} */
+  const model = t => (G.model ? modelCell(t, G.model) : [])
+  /** @param {PhaseView} p */
+  const tasksOf = p => inst.tasks.filter(t => t.phase === p.number && t.status !== 'cancelled')
+  // The columns of the phase lines: the count, the squares (a bar of 20 beyond 30 tasks), the duration
+  const countWidth = Math.max(0, ...s.phases.map(p => `${p.done}/${p.total}`.length))
+  const squaresWidth = Math.max(0, ...s.phases.map(p => (tasksOf(p).length <= 30 ? tasksOf(p).length : 20)))
+  const durationWidth = Math.max(0, ...s.phases.map(p => duration(p.duration).length))
   /** @type {Line[]} */
   const out = []
   let segments = false
   for (const p of s.phases) {
     const finished = p.total > 0 && p.done === p.total
     const g = finished ? { t: '●', c: 'success' } : p.attention ? { t: '⚠', c: 'warning' } : p.number === cur ? { t: '◉', c: 'claude', b: true } : p.done ? { t: '◐', c: 'suggestion' } : { t: '○', c: 'subtle' }
-    const ts = inst.tasks.filter(t => t.phase === p.number && t.status !== 'cancelled')
+    const ts = tasksOf(p)
+    const sq = ts.length <= 30 ? squares(ts, classOf) : classBar(ts, classOf, 20, now, animated)
     /** @type {Line} */
-    const l = [g, { t: ` Phase ${String(p.number).padEnd(3)}`, b: p.number === cur || finished, c: finished ? 'success' : undefined }, { t: ' ' }]
-    l.push(...(ts.length <= 30 ? squares(ts, classOf) : classBar(ts, classOf, 20, now, animated)))
-    l.push({ t: `  ${p.done}/${p.total}`, c: finished ? 'success' : undefined, b: finished }, { t: `  ${duration(p.duration)}`, d: true })
-    if (p.retries.length) l.push({ t: `   ${p.retries.slice(0, 3).map(r => `${r.id} ×${r.attempts}`).join(', ')}${p.retries.length > 3 ? '…' : ''}`, c: 'merged' })
+    const l = [g, { t: ` Phase ${p.number}`.padEnd(G.lead - 1), b: p.number === cur || finished, c: finished ? 'success' : undefined }]
+    l.push({ t: `${p.done}/${p.total}`.padStart(countWidth), c: finished ? 'success' : undefined, b: finished }, spaces(GAP), ...sq, spaces(squaresWidth - width(sq) + GAP))
+    l.push({ t: duration(p.duration).padStart(durationWidth), d: true })
+    if (p.retries.length) l.push(spaces(GAP), { t: `${p.retries.slice(0, 3).map(r => `${r.id} ×${r.attempts}`).join(', ')}${p.retries.length > 3 ? '…' : ''}`, c: 'merged' })
     out.push(l)
     const detail = ts.filter(t => touched(t) || t.status in ATTENTION)
     const todo = p.number === cur ? ts.filter(t => !isMerged(t) && !detail.includes(t)) : []
@@ -734,21 +786,26 @@ export function taskLines(inst, now, columns, animated = false) {
       const before = !segs.length && isMerged(t) ? runOf(inst, t) : null
       const elapsed = segs.length ? /** @type {[number, number, string]} */ (segs.at(-1))[1] - /** @type {[number, number, string]} */ (segs[0])[0] : t.start != null && t.end != null ? t.end - t.start : null
       /** @type {Line} */
-      const line = [{ t: '  ' }, glyph(t, live, now, animated), { t: ` ${column(t.id, 6)}`, b: true }, { t: `${column(t.title, titleWidth)} `, d: !running && !isMerged(t) }]
-      if (segs.length) line.push(...timeline(inst, t, now, W, animated))
-      else if (before) line.push({ t: `── run ${before.number} `.padEnd(W, '─').slice(0, W), c: 'subtle' })
-      else line.push({ t: '·'.repeat(W), c: 'subtle' })
-      line.push({ t: `  ${chrono(elapsed).padStart(7)}  `, d: true }, ...modelCell(t, MW))
+      const line = [...lead(t, glyph(t, live, now, animated)), { t: titleCell(t.title, G.title), d: !running && !isMerged(t) }, spaces(GAP)]
+      if (segs.length) line.push(...timeline(inst, t, now, G.timeline, animated))
+      else if (before) line.push({ t: `── run ${before.number} `.padEnd(G.timeline, '─').slice(0, G.timeline), c: 'subtle' })
+      else line.push({ t: '·'.repeat(G.timeline), c: 'subtle' })
+      line.push(spaces(GAP), time(chrono(elapsed)), ...model(t))
       if (justMerged(t)) line.push({ t: ' merged ', c: 'inverseText', f: 'success', b: true })
-      else line.push(...whatColored(t, live, ruled(inst, t), QW))
+      else line.push(...whatColored(t, live, ruled(inst, t), G.what))
       out.push(line)
     }
-    // The planned model, in the same column as the detailed lines (in place of the duration, empty)
-    for (const t of todo.slice(0, 6)) out.push([{ t: '  ' }, glyph(t, live), { t: ` ${column(t.id, 6)}${column(t.title, titleWidth)} `, d: true }, { t: '·'.repeat(W), c: 'subtle' }, ...(MW ? [{ t: ' '.repeat(11) }, ...modelCell(t, MW)] : [{ t: '  ' }]), { t: cut(what(t, live), MW ? QW : Math.max(10, columns - titleWidth - W - 14)), d: true }])
-    if (todo.length > 6) out.push([{ t: `    ○ ${todo.length - 6} more to do`, d: true }])
+    // The planned model, in the same column as the detailed lines; the duration column empty
+    for (const t of todo.slice(0, 6)) out.push([...lead(t, glyph(t, live)), { t: titleCell(t.title, G.title), d: true }, spaces(GAP), { t: '·'.repeat(G.timeline), c: 'subtle' }, spaces(GAP), time(''), ...model(t), { t: cut(what(t, live), G.what), d: true }])
+    if (todo.length > 6) out.push([{ t: '  ' }, { t: '○', d: true }, spaces(G.lead - 3), { t: `${todo.length - 6} more to do`, d: true }])
   }
   if (!out.length) return [[{ t: 'No task in progress.json.', d: true }]]
-  if (segments) out.push([{ t: ' '.repeat(10 + titleWidth) }, ...joinParts(STEP_ORDER.slice(0, 5).map(e => [{ t: '━', c: STEP_COLOR[e] }, { t: ` ${SHORT_STEP[e]}`, d: true }]), ' ')])
+  if (segments) {
+    // The legend of the steps under the timeline; closer together, then further left, when the width lacks room
+    const legend = /** @param {string} sep */ sep => joinParts(STEP_ORDER.slice(0, 5).map(e => [{ t: '━', c: STEP_COLOR[e] }, { t: ` ${SHORT_STEP[e]}`, d: true }]), sep)
+    const l = G.at.timeline + width(legend('  ')) <= columns ? legend('  ') : legend(' ')
+    out.push([spaces(Math.min(G.at.timeline, columns - width(l))), ...l])
+  }
   return out
 }
 

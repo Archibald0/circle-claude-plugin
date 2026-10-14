@@ -90,8 +90,8 @@ try {
     assert.match(M.plainText(M.banner(A, tA, 44)), /◐ 2 {2}⏱/, 'short labels')
     assert.equal(M.suffix(A, tA), ' · T01 work · 2 tasks in progress…')
     const t = text(M.taskLines(A, tA, 100))
-    assert.match(t, /^◉ Phase 1 +■■ {2}0\/2/m); assert.match(t, /◐ T01 +Task T01 .*work \(worktree\)/); assert.match(t, /◐ T02 .*verification/)
-    assert.match(t, /^○ Phase 2 +■■ {2}0\/2/m); assert.doesNotMatch(t, /T03/, 'next phase folded')
+    assert.match(t, /^◉ Phase 1 {2}0\/2 {2}■■ /m); assert.match(t, /◐ T01 +Task T01 .*work \(worktree\)/); assert.match(t, /◐ T02 .*verification/)
+    assert.match(t, /^○ Phase 2 {2}0\/2 {2}■■ /m); assert.doesNotMatch(t, /T03/, 'next phase folded')
     // The timeline: the work of T01 in lavender, the verification of T02 in purple, over the time of the run
     const line = id => M.taskLines(A, tA, 100).find(l => l.some(m => m.t.trim() === id))
     assert.ok(line('T01').some(m => /━/.test(m.t) && m.c === 'suggestion')); assert.ok(line('T02').some(m => /━/.test(m.t) && m.c === 'merged'))
@@ -172,7 +172,7 @@ try {
     const l = M.taskLines(G, tA, 100)
     assert.equal(l.filter(x => /Phase/.test(M.plainText(x))).length, 10)
     assert.ok(l.length <= 10 + 6 + 1 + 2 + 5, `${l.length} lines`)
-    assert.match(text(l), /○ \d+ more to do/)
+    assert.match(text(l), /^ {2}○ +\d+ more to do$/m)
     assert.equal(M.summarize(G, tA).current.number, 4)
   })
 
@@ -377,14 +377,14 @@ try {
     const noModel = { ...I, tasks: I.tasks.map(x => ({ ...x, model: null, modelUsed: null })) }
     for (const id of ['T01', 'T02', 'T03']) assert.doesNotMatch(M.plainText(line(noModel, id)), /sonnet|opus|→/)
     const timelineOf = l => l.filter(m => /^[━╸·]+$/.test(m.t)).reduce((n, m) => n + [...m.t].length, 0)
-    assert.equal(timelineOf(line(noModel, 'T01')), 26); assert.equal(timelineOf(line(I, 'T01')), 11, 'at 100 columns, the model column is taken from the timeline')
+    assert.equal(timelineOf(line(noModel, 'T01')), 26); assert.equal(timelineOf(line(I, 'T01')), 21, 'at 100 columns, the model column is taken from the timeline')
     assert.equal(timelineOf(line(I, 'T01', 160)), 26, 'at 160 columns, the timeline keeps its width')
-    // The column makes no line longer than the width; below 75 columns (60 and its width), it goes away
-    for (const w of [140, 120, 100, 80, 75, 74, 60, 50]) {
+    // The column makes no line longer than the width; below 73 columns (the grid's least room and its width), it goes away
+    for (const w of [140, 120, 100, 80, 73, 72, 60, 50]) {
       const withModel = M.taskLines(I, t4, w), withoutModel = M.taskLines(noModel, t4, w)
       withModel.forEach((l, i) => assert.ok(M.width(l) <= Math.max(w, M.width(withoutModel[i])), `${w}: ${M.width(l)} "${M.plainText(l)}"`))
     }
-    assert.match(M.plainText(line(I, 'T02', 75)), /sonnet → opus/); assert.doesNotMatch(M.plainText(line(I, 'T02', 74)), /sonnet|opus/)
+    assert.match(M.plainText(line(I, 'T02', 73)), /sonnet → opus/); assert.doesNotMatch(M.plainText(line(I, 'T02', 72)), /sonnet|opus/)
     assert.deepEqual(M.taskLines(I, t4, 60).map(M.plainText), M.taskLines(noModel, t4, 60).map(M.plainText), 'too narrow: as without a model')
     assert.equal(M.plainText(line(I, 'T02')).length - M.plainText(line(I, 'T02')).indexOf('fix attempt'), M.plainText(line(noModel, 'T02')).length - M.plainText(line(noModel, 'T02')).indexOf('fix attempt'))
     // The log: the model change, its glyph; /progress text shows it too
@@ -443,6 +443,49 @@ try {
     assert.match(T02(160), /verification attempt 2 \(worktree\)$/)
     assert.match(T02(100), /verification attempt 2$/)
     assert.match(T02(80), /verification attempt 2$/); assert.match(T02(76), / verification$/)
+  })
+
+  testCase('task lines on one grid (0.13.1): each column at the same place on every line, the phases aligned among themselves', () => {
+    const T = Date.parse('2026-10-09T10:00:00Z')
+    const cells = l => [...l.map(m => m.t).join('')]
+    const isTask = l => /^ {2}\S \S/.test(M.plainText(l)), isPhase = l => /^\S Phase /.test(M.plainText(l))
+    for (const k of [4, 7, 9, 16]) {
+      const I = D.demoSnapshot(k, T), t = D.frameInstant(k, T) + 500
+      // T03 waits for T02 (a task to do with something to say); the same plan without any model; then with 9 more tasks
+      // in phase 2, whose count takes more room ("0/11")
+      const W = { ...I, tasks: I.tasks.map(x => (x.id === 'T03' && x.status === 'todo' && !x.step ? { ...x, waiting: ['T02'] } : x)) }
+      const T05 = /** @type {any} */ (I.tasks.find(x => x.id === 'T05'))
+      const more = { ...W, tasks: [...W.tasks, ...Array.from({ length: 9 }, (_, i) => ({ ...T05, id: `T1${i}`, title: `Extra task ${i}` }))] }
+      for (const X of [W, { ...W, tasks: W.tasks.map(x => ({ ...x, model: null, modelUsed: null })) }, more]) for (const w of [160, 118, 100, 80, 60]) {
+        const G = M.taskGrid(X, w), ls = M.taskLines(X, t, w), at = `frame ${k}, ${w} columns`
+        const tasks = ls.filter(isTask)
+        assert.ok(tasks.length, at)
+        for (const l of tasks) {
+          const c = cells(l), id = c.slice(4).join('').split(' ')[0], task = X.tasks.find(x => x.id === id), s = c.join('')
+          assert.equal(c.slice(G.at.title - 2, G.at.title + 1).join('').slice(0, 2), '  ', `${at}: title of ${id}, "${s}"`)
+          assert.notEqual(c[G.at.title], ' ', `${at}: title of ${id}, "${s}"`)
+          assert.match(c.slice(G.at.timeline - 2, G.at.timeline + 1).join(''), /^ {2}[━╸·─]$/, `${at}: timeline of ${id}, "${s}"`)
+          assert.match(c.slice(G.at.time - 2, G.at.time + 9).join(''), /^ {2} *(\d+:\d{2}(:\d{2})?|—)? {2}$/, `${at}: duration of ${id}, "${s}"`)
+          const model = M.plainText(M.modelOf(task))
+          if (G.model && model) assert.equal(c.slice(G.at.model, G.at.model + [...model].length).join(''), model, `${at}: model of ${id}, "${s}"`)
+          if (c.length > G.at.what) assert.match(c.slice(G.at.what - 2).join(''), /^ {2}( merged |\S)/, `${at}: what ${id} does, "${s}"`)
+        }
+        // The phases: count, squares and duration in the same columns; the retries after them
+        const phases = ls.filter(isPhase).map(l => cells(l.at(-1)?.c === 'merged' ? l.slice(0, -2) : l).join(''))
+        assert.equal(new Set(phases.map(x => x.length)).size, 1, `${at}: ${JSON.stringify(phases)}`)
+        assert.equal(new Set(phases.map(x => x.search(/\d+\/\d+ {2}/) + (x.match(/\d+\/\d+/)?.[0].length ?? 0))).size, 1, `${at}: counts ${JSON.stringify(phases)}`)
+        // The legend of the steps: under the timeline when it has room, never wider than the width
+        const legend = ls.find(l => /━ work/.test(M.plainText(l)))
+        if (legend) {
+          assert.ok(M.width(legend) <= w, `${at}: legend ${M.width(legend)}`)
+          if (w >= 100) assert.equal(cells(legend).indexOf('━'), G.at.timeline, `${at}: legend`)
+        }
+      }
+    }
+    // A title: without the code marks of markdown, cut with "…" right after the last word kept
+    assert.equal(M.titleCell('`Clarification` contract and schema', 22), 'Clarification contrac…')
+    assert.equal(M.titleCell('Routing: the answer to a vague request', 24), 'Routing: the answer to… ')
+    assert.equal(M.titleCell('Docs', 6), 'Docs  ')
   })
 
   testCase('formatting: durations, ages, bar, cut', () => {
