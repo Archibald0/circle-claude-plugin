@@ -528,6 +528,24 @@ export function stepsOf(inst, t, now) {
   return out
 }
 
+/**
+ * The steps of the run card within `room` cells (0.13.1): on one line with " · " between them, or with two spaces, or else
+ * over several lines with " · ", never wider than the card. A line wider than its card makes the terminal shorten each of
+ * its pieces ("…verif", "merge 2:…").
+ * @param {Line[]} items @param {number} room @returns {Line[]}
+ */
+export function stepLines(items, room) {
+  for (const sep of [' · ', '  ']) if (width(joinParts(items, sep)) <= room) return [joinParts(items, sep)]
+  /** @type {Line[][]} */
+  const rows = [[]]
+  for (const item of items) {
+    const row = /** @type {Line[]} */ (rows.at(-1))
+    if (row.length && width(joinParts([...row, item], ' · ')) > room) rows.push([item])
+    else row.push(item)
+  }
+  return rows.map(r => joinParts(r, ' · '))
+}
+
 /** The time spent in each step during the last run, all tasks included. @param {Snapshot} inst @param {number} now @returns {[string, number][]} */
 export function timePerStep(inst, now) {
   const tot = /** @type {Record<string, number>} */ ({})
@@ -643,20 +661,25 @@ export function runCard(inst, now, columns, animated) {
   // The extra attempts of the tasks started in this run (a rejection by the evaluation or the verification is worth one)
   const retries = inst.tasks.filter(t => t.start != null && r.start != null && t.start >= r.start).reduce((k, t) => k + Math.max(0, t.attempts - 1), 0)
   const autoCount = inst.log.filter(j => j.kind === 'auto-decision' && within(j)).length
+  // The time of the run; the parallelism goes first when the card lacks room (0.13.1)
+  /** @param {boolean} parallel @returns {Line} */
+  const timeLine = parallel => [{ t: 'time    ', d: true }, { t: duration(s.duration) }, ...(parallel && r.parallelism ? [{ t: ` · ${r.parallelism} in parallel`, d: true }] : []), ...(retries ? [{ t: ' · ', d: true }, { t: `${retries} more ${retries > 1 ? 'attempts' : 'attempt'}` }] : []), ...(autoCount ? [{ t: ' · ', d: true }, { t: plural(autoCount, 'auto-decision') }] : [])]
   /** @type {Line[]} */
   const lines = [
     [{ t: 'phases  ', d: true }, ...phaseTimeline(s.phases, cur, Math.max(8, Math.min(40, inner - 24))), ...(s.phases.length <= 10 ? [{ t: `   phase ${cur}/${s.maxPhase}`, d: true }] : [])],
     [{ t: 'tasks   ', d: true }, ...classBar(activeTasks, classOf, Math.max(8, Math.min(30, inner - 36)), now, animated), { t: `  ${s.done}/${s.total}`, b: true },
       ...n.flatMap((k, i) => (k ? [{ t: '   ■', c: /** @type {typeof CLASSES[number]} */ (CLASSES[i]).c }, { t: ` ${k}` }] : []))],
-    [{ t: 'time    ', d: true }, { t: duration(s.duration) }, ...(r.parallelism ? [{ t: ` · ${r.parallelism} in parallel`, d: true }] : []), ...(retries ? [{ t: ' · ', d: true }, { t: `${retries} more ${retries > 1 ? 'attempts' : 'attempt'}` }] : []), ...(autoCount ? [{ t: ' · ', d: true }, { t: plural(autoCount, 'auto-decision') }] : [])],
+    width(timeLine(true)) <= inner ? timeLine(true) : timeLine(false),
   ]
   const steps = timePerStep(inst, now)
-  if (steps.length) lines.push([{ t: 'steps   ', d: true }, ...joinParts(steps.map(([e, ms]) => [{ t: `${SHORT_STEP[e] || e} ${chrono(ms)}`, c: STEP_COLOR[e] || 'subtle' }]), ' · ')])
+  if (steps.length) lines.push(...stepLines(steps.map(([e, ms]) => [{ t: `${SHORT_STEP[e] || e} ${chrono(ms)}`, c: STEP_COLOR[e] || 'subtle' }]), inner - 8).map((l, i) => [{ t: i ? '        ' : 'steps   ', d: true }, ...l]))
   if (!runLive && r.detail) lines.push([{ t: 'detail  ', d: true }, { t: cut(r.detail, Math.max(16, inner - 10)) }])
   if (!runLive) {
+    // The resume command: without "in the prompt", then cut, when the card lacks room; the prompt keeps it whole
+    const resume = `/orchestre:run ${dir} --resume`, room = inner - 8
     lines.push(s.allMerged
       ? [{ t: 'next    ', d: true }, { t: 'PR draft in the prompt', x: { hotkey: 'p', prompt: prText(inst, now), help: 'prepare the PR' } }]
-      : [{ t: 'next    ', d: true }, { t: `/orchestre:run ${dir} --resume`, x: { hotkey: 'c', prompt: `/orchestre:run ${dir} --resume`, help: 'resume the run' } }, { t: '  in the prompt', d: true }])
+      : [{ t: 'next    ', d: true }, { t: cut(resume, room), x: { hotkey: 'c', prompt: resume, help: 'resume the run' } }, ...([...resume].length + 15 <= room ? [{ t: '  in the prompt', d: true }] : [])])
   }
   const marker = runLive ? '' : r.status === 'finished' ? '✓ ' : r.status === 'error' ? '✗ ' : '■ '
   return {
@@ -700,8 +723,8 @@ const GAP = 2
 // The duration of a task: "1:02:03" at most
 const TIME_WIDTH = 7
 // The least room of the title, the timeline and what the task does. The room left goes first to what the task does, up
-// to 24 cells ("fix attempt 2 (worktree)"), then to the title up to 24, to the timeline up to 26, to the title again up
-// to 40, and what remains to what the task does
+// to its longest text on the card and 24 cells at most ("fix attempt 2 (worktree)"), then to the title up to 24, to the
+// timeline up to 26, to the title again up to 40, and what remains to what the task does
 const MIN_TITLE = 10, MIN_TIMELINE = 8, MIN_WHAT = 16
 /** @param {number} n @returns {Piece} */
 const spaces = n => ({ t: ' '.repeat(Math.max(0, n)) })
@@ -711,12 +734,39 @@ export function titleCell(s, n) {
   return column(c.length > n ? c.slice(0, n - 1).join('').trimEnd() + '…' : c.join(''), n)
 }
 
+/** A task merged a moment ago: a badge in place of what it does. @param {TaskView} t @param {number} now */
+const justMerged = (t, now) => isMerged(t) && t.end != null && now - t.end < NEWS_MS / 2
+/**
+ * What the card shows under each phase: the detailed tasks (touched by the last run, or waiting for someone), and the
+ * tasks to do of the phase of the run, 6 at most.
+ * @param {Snapshot} inst @param {number} now
+ */
+function shownTasks(inst, now) {
+  const s = summarize(inst, now), live = !!s.run, f = runWindow(inst, now)
+  const cur = live ? runPhase(inst) : s.current?.number ?? null
+  const touched = /** @param {TaskView} t */ t => !!f && ((t.start != null && t.start >= f.start) || (t.end != null && t.end >= f.start) || (live && !!t.step))
+  const phases = s.phases.map(p => {
+    const ts = inst.tasks.filter(t => t.phase === p.number && t.status !== 'cancelled')
+    const detail = ts.filter(t => touched(t) || t.status in ATTENTION)
+    const todo = p.number === cur ? ts.filter(t => !isMerged(t) && !detail.includes(t)) : []
+    return { p, ts, detail, todo }
+  })
+  return { s, live, cur, phases }
+}
+
 /**
  * The columns of the task lines in `columns` cells: where each one starts (`at`) and its width. The model column is 0
  * when no model is known, or when it leaves the title, the timeline and what the task does less than their least room.
- * @param {Snapshot} inst @param {number} columns
+ * What the task does takes the width of its longest text on the card (0.13.1): the title gets the rest, and the columns
+ * move when that text gets longer during a run.
+ * @param {Snapshot} inst @param {number} now @param {number} columns
  */
-export function taskGrid(inst, columns) {
+export function taskGrid(inst, now, columns) {
+  const shown = shownTasks(inst, now)
+  const longest = Math.max(0, ...shown.phases.flatMap(x => [
+    ...x.detail.map(t => (justMerged(t, now) ? 8 : width(whatColored(t, shown.live, ruled(inst, t), 999)))),
+    ...x.todo.slice(0, 6).map(t => [...what(t, shown.live)].length),
+  ]))
   const tasks = inst.tasks.filter(t => t.status !== 'cancelled')
   const id = Math.min(8, Math.max(3, ...tasks.map(t => [...t.id].length)))
   // "◉ Phase 12" takes the room of "  ◐ T012": the glyph, a space, the id
@@ -728,14 +778,14 @@ export function taskGrid(inst, columns) {
   /** @param {number} v @param {number} to */
   const grow = (v, to) => { const k = Math.max(0, Math.min(rest, to - v)); rest -= k; return v + k }
   const need = Math.max(MIN_TITLE, ...tasks.map(t => [...titleCell(t.title, 999).trimEnd()].length))
-  let what = grow(MIN_WHAT, 24)
+  let doing = grow(MIN_WHAT, Math.min(24, longest))
   let title = grow(MIN_TITLE, Math.min(need, 24))
   const timeline = grow(MIN_TIMELINE, 26)
   title = grow(title, Math.min(need, 40))
-  what += rest
+  doing += rest
   const at = { title: lead, timeline: lead + title + GAP, time: lead + title + GAP + timeline + GAP }
   const atModel = at.time + TIME_WIDTH + GAP
-  return { id, lead, title, timeline, model, what, at: { ...at, model: atModel, what: atModel + (model ? model + GAP : 0) } }
+  return { id, lead, title, timeline, model, what: doing, at: { ...at, model: atModel, what: atModel + (model ? model + GAP : 0) } }
 }
 
 /**
@@ -745,31 +795,25 @@ export function taskGrid(inst, columns) {
  * @param {Snapshot} inst @param {number} now @param {number} columns @param {boolean} [animated] @returns {Line[]}
  */
 export function taskLines(inst, now, columns, animated = false) {
-  const s = summarize(inst, now), live = !!s.run, f = runWindow(inst, now)
-  const cur = live ? runPhase(inst) : s.current?.number ?? null
+  const { s, live, cur, phases } = shownTasks(inst, now)
   const classOf = classifier(inst, now)
-  const G = taskGrid(inst, columns)
-  const touched = /** @param {TaskView} t */ t => !!f && ((t.start != null && t.start >= f.start) || (t.end != null && t.end >= f.start) || (live && !!t.step))
-  const justMerged = /** @param {TaskView} t */ t => isMerged(t) && t.end != null && now - t.end < NEWS_MS / 2
+  const G = taskGrid(inst, now, columns)
   /** The glyph and the id, up to the title. @param {TaskView} t @param {Piece} g @returns {Line} */
   const lead = (t, g) => [{ t: '  ' }, g, { t: ' ' }, { t: column(t.id, G.id), b: true }, spaces(G.lead - 4 - G.id)]
   /** @param {string} x @returns {Piece} */
   const time = x => ({ t: x.padStart(TIME_WIDTH) + ' '.repeat(GAP), d: true })
   /** @param {TaskView} t @returns {Line} */
   const model = t => (G.model ? modelCell(t, G.model) : [])
-  /** @param {PhaseView} p */
-  const tasksOf = p => inst.tasks.filter(t => t.phase === p.number && t.status !== 'cancelled')
   // The columns of the phase lines: the count, the squares (a bar of 20 beyond 30 tasks), the duration
   const countWidth = Math.max(0, ...s.phases.map(p => `${p.done}/${p.total}`.length))
-  const squaresWidth = Math.max(0, ...s.phases.map(p => (tasksOf(p).length <= 30 ? tasksOf(p).length : 20)))
+  const squaresWidth = Math.max(0, ...phases.map(x => (x.ts.length <= 30 ? x.ts.length : 20)))
   const durationWidth = Math.max(0, ...s.phases.map(p => duration(p.duration).length))
   /** @type {Line[]} */
   const out = []
   let segments = false
-  for (const p of s.phases) {
+  for (const { p, ts, detail, todo } of phases) {
     const finished = p.total > 0 && p.done === p.total
     const g = finished ? { t: '●', c: 'success' } : p.attention ? { t: '⚠', c: 'warning' } : p.number === cur ? { t: '◉', c: 'claude', b: true } : p.done ? { t: '◐', c: 'suggestion' } : { t: '○', c: 'subtle' }
-    const ts = tasksOf(p)
     const sq = ts.length <= 30 ? squares(ts, classOf) : classBar(ts, classOf, 20, now, animated)
     /** @type {Line} */
     const l = [g, { t: ` Phase ${p.number}`.padEnd(G.lead - 1), b: p.number === cur || finished, c: finished ? 'success' : undefined }]
@@ -777,8 +821,6 @@ export function taskLines(inst, now, columns, animated = false) {
     l.push({ t: duration(p.duration).padStart(durationWidth), d: true })
     if (p.retries.length) l.push(spaces(GAP), { t: `${p.retries.slice(0, 3).map(r => `${r.id} ×${r.attempts}`).join(', ')}${p.retries.length > 3 ? '…' : ''}`, c: 'merged' })
     out.push(l)
-    const detail = ts.filter(t => touched(t) || t.status in ATTENTION)
-    const todo = p.number === cur ? ts.filter(t => !isMerged(t) && !detail.includes(t)) : []
     for (const t of detail) {
       const segs = stepsOf(inst, t, now)
       if (segs.length) segments = true
@@ -791,7 +833,7 @@ export function taskLines(inst, now, columns, animated = false) {
       else if (before) line.push({ t: `── run ${before.number} `.padEnd(G.timeline, '─').slice(0, G.timeline), c: 'subtle' })
       else line.push({ t: '·'.repeat(G.timeline), c: 'subtle' })
       line.push(spaces(GAP), time(chrono(elapsed)), ...model(t))
-      if (justMerged(t)) line.push({ t: ' merged ', c: 'inverseText', f: 'success', b: true })
+      if (justMerged(t, now)) line.push({ t: ' merged ', c: 'inverseText', f: 'success', b: true })
       else line.push(...whatColored(t, live, ruled(inst, t), G.what))
       out.push(line)
     }

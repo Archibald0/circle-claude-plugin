@@ -457,7 +457,7 @@ try {
       const T05 = /** @type {any} */ (I.tasks.find(x => x.id === 'T05'))
       const more = { ...W, tasks: [...W.tasks, ...Array.from({ length: 9 }, (_, i) => ({ ...T05, id: `T1${i}`, title: `Extra task ${i}` }))] }
       for (const X of [W, { ...W, tasks: W.tasks.map(x => ({ ...x, model: null, modelUsed: null })) }, more]) for (const w of [160, 118, 100, 80, 60]) {
-        const G = M.taskGrid(X, w), ls = M.taskLines(X, t, w), at = `frame ${k}, ${w} columns`
+        const G = M.taskGrid(X, t, w), ls = M.taskLines(X, t, w), at = `frame ${k}, ${w} columns`
         const tasks = ls.filter(isTask)
         assert.ok(tasks.length, at)
         for (const l of tasks) {
@@ -486,6 +486,39 @@ try {
     assert.equal(M.titleCell('`Clarification` contract and schema', 22), 'Clarification contrac…')
     assert.equal(M.titleCell('Routing: the answer to a vague request', 24), 'Routing: the answer to… ')
     assert.equal(M.titleCell('Docs', 6), 'Docs  ')
+  })
+
+  testCase('pane within its width (0.13.1): no line wider than its card, the steps closer then over two lines, the step column at its content', () => {
+    const T = Date.parse('2026-10-09T10:00:00Z')
+    // A line wider than its card makes the terminal shorten each of its pieces ("…verif", "merge 2:…")
+    for (let k = 0; k < D.FRAME_COUNT; k++) {
+      const I = D.demoSnapshot(k, T), t = D.frameInstant(k, T) + 500
+      for (const w of [160, 120, 100, 80, 70, 60]) {
+        const p = M.pane(I, t, w)
+        for (const c of p.cards) for (const l of c.lines) assert.ok(M.width(l) <= (p.borders && c.color ? w - 4 : w), `frame ${k}, ${w}, ${c.id}: ${M.width(l)} "${M.plainText(l)}"`)
+      }
+    }
+    // The steps of a run of 18 min seen at 80 columns (68 cells after "steps   "): two spaces instead of " · "; narrower, two lines
+    const items = [['work', '14:36'], ['verif', '3:00'], ['eval', '3:06'], ['fix', '1:12'], ['merge', '1:12'], ['prog', '0:24']].map(([e, d]) => [{ t: `${e} ${d}`, c: 'subtle' }])
+    assert.deepEqual(M.stepLines(items, 80).map(M.plainText), ['work 14:36 · verif 3:00 · eval 3:06 · fix 1:12 · merge 1:12 · prog 0:24'])
+    assert.deepEqual(M.stepLines(items, 68).map(M.plainText), ['work 14:36  verif 3:00  eval 3:06  fix 1:12  merge 1:12  prog 0:24'])
+    const two = M.stepLines(items, 50)
+    assert.deepEqual(two.map(M.plainText), ['work 14:36 · verif 3:00 · eval 3:06 · fix 1:12', 'merge 1:12 · prog 0:24'])
+    assert.ok(two.every(l => M.width(l) <= 50))
+    // What the task does takes the width of its longest text: "work (worktree)" leaves the room to the titles, "fix attempt 2
+    // (worktree)" takes it back
+    const I1 = D.demoSnapshot(1, T), t1 = D.frameInstant(1, T) + 500, I4 = D.demoSnapshot(4, T), t4 = D.frameInstant(4, T) + 500
+    assert.equal(M.taskGrid(I1, t1, 80).what, 16)
+    assert.equal(M.taskGrid(I4, t4, 80).what, 23)
+    assert.ok(M.taskGrid(I1, t1, 80).title > M.taskGrid(I4, t4, 80).title)
+    const waits = { ...I1, tasks: I1.tasks.map(x => (x.id === 'T03' ? { ...x, waiting: ['T01', 'T02'] } : x)) }
+    assert.equal(M.taskGrid(waits, t1, 80).what, [...'waits for T01, T02'].length, 'a task to do counts too')
+    // The resume of a long plan at 60 columns: "in the prompt" goes, then the command is cut; the prompt keeps it whole
+    const I11 = D.demoSnapshot(11, T), t11 = D.frameInstant(11, T) + 500, dir = 'plans/checkout-flow-with-saved-cards-and-wallets'
+    const next = M.runCard({ ...I11, dir }, t11, 60, false).lines.find(l => /^next/.test(M.plainText(l)))
+    assert.ok(next && M.width(next) <= 56, `${next && M.plainText(next)}`)
+    assert.equal(next.find(m => m.x)?.x?.prompt, `/orchestre:run ${dir} --resume`)
+    assert.match(M.plainText(next), /…$/)
   })
 
   testCase('formatting: durations, ages, bar, cut', () => {

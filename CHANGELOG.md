@@ -2,21 +2,25 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
-## 0.13.1 — 2026-10-14: the tasks card on one grid
+## 0.13.1 — 2026-10-15: the tasks card on one grid, the pane within its width
 
-In the `/progress` pane, the "tasks" card puts each thing in the same column on every line. Asked by Fabien on 2026-10-14 after a real run (13 tasks, 5 phases) where the counts of the phases, the titles and what the tasks do did not line up; layout A ("compact phase headers") chosen out of two compared on the same data.
+In the `/progress` pane, the "tasks" card puts each thing in the same column on every line. Asked by Fabien on 2026-10-14 after a real run (13 tasks, 5 phases) where the counts of the phases, the titles and what the tasks do did not line up; layout A ("compact phase headers") chosen out of two compared on the same data. On 2026-10-15, a second capture at 80 columns showed the run card cut ("…verif", "merge 2:…") and the titles cut at 12 cells: no line of the pane is wider than its card any more, and the titles get the room the step column does not use.
 
 - Phase lines: the count first, then the squares, then the duration, each in a column of its own, the same for every phase ("◉ Phase 2  0/4  ■■■■  2 min"), then the retries. The squares of a phase with fewer tasks no longer push its count and its duration.
 - Task lines, on one grid (`taskGrid()`, exported for the tests):
   - two spaces between columns: the "…" of a cut title no longer runs into the dots of the timeline;
   - the title takes the room left, up to 40 cells instead of 22, without the code marks of markdown (`` `GeoIntent` `` reads GeoIntent), cut right after the last word kept;
-  - the room left goes first to what the task does (up to 24 cells, "fix attempt 2 (worktree)"), then to the title (24), to the timeline (26), to the title again (40), then to what the task does;
+  - the room left goes first to what the task does, up to its longest text on the card (16 cells at least, 24 at most: "fix attempt 2 (worktree)"), then to the title (24), to the timeline (26), to the title again (40), then to what the task does. At 80 columns, with "fix attempt 2" or "waits for Q18" at most, the titles get 24 cells (12 in 0.13.0). The columns move when that text gets longer during a run;
   - the tasks to do keep an empty duration column: what they do starts in the same column as on the detailed lines. Without a known model, it started 9 cells earlier;
   - the id column takes the width of the longest id (3 cells at least), and the name of a phase the room of the glyph and the id of a task.
 - The legend of the steps starts right under the timeline; when the width lacks room, its items get closer, then it moves left, and it never goes past the width.
 - "N more to do": its glyph under those of the tasks.
+- Run card, within the card (its border and padding take 4 columns): a line wider than its card made the terminal shorten each of its pieces ("work 9:22 …verif 3:57 · … merge 2:… · prog 0:"):
+  - the steps: " · " between them, or two spaces, or else over two lines (`stepLines()`);
+  - the time: the parallelism goes first when the card lacks room;
+  - what comes next: "in the prompt" goes, then the resume command is cut; the prompt keeps it whole.
 - The model column now shows from 73 columns (75 before), on the demo plan; below, the lines are the same as without a model.
-- Tests (`tests/mod-progress.test.mjs`, 25 cases): a new case, "task lines on one grid": 4 frames of the demo, 3 plans (with models, without, with 11 tasks in a phase), 5 widths from 60 to 160; on every task line, the title, the timeline, the duration, the model and what the task does start at the columns of `taskGrid()`; the phase lines are of the same width with their counts aligned; the legend under the timeline from 100 columns and never wider than the width; `titleCell()`. Moved to the new layout: the phase lines, "more to do", the threshold of the model column, the timeline at 100 columns (21 cells, 11 before). 9 mutations of the new code, 9 detected.
+- Tests (`tests/mod-progress.test.mjs`, 26 cases): a new case, "pane within its width": no line of a card wider than the card, on every frame of the demo from 60 to 160 columns; `stepLines()` at 80, 68 and 50 cells; the step column at the width of its longest text, tasks to do included; the resume of a long plan at 60 columns. A new case, "task lines on one grid": 4 frames of the demo, 3 plans (with models, without, with 11 tasks in a phase), 5 widths from 60 to 160; on every task line, the title, the timeline, the duration, the model and what the task does start at the columns of `taskGrid()`; the phase lines are of the same width with their counts aligned; the legend under the timeline from 100 columns and never wider than the width; `titleCell()`. Moved to the new layout: the phase lines, "more to do", the threshold of the model column, the timeline at 100 columns (21 cells, 11 before). 17 mutations of the new code, 17 detected; `tsc --checkJs --strict` without error. `npm run validate` (`claude plugin test`) left to run on the Mac.
 - Left: the screenshot of the README (`brand/screenshots/progress-panel.png`) shows the 0.13.0 layout, to take again on a real run.
 
 ## 0.13.0 — 2026-10-13: the install from /orchestre:prepare, through one script
