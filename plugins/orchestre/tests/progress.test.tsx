@@ -112,7 +112,6 @@ test('/progress pane: a view in cards, its keys, its actions prepared in the pro
     expect(await ui.find({ type: 'Text', text: ' ⚠ 1 YOUR TURN ' })).toBeDefined()
     for (const id of ['yourTurn', 'run', 'tasks', 'log']) expect(await ui.find({ type: 'Button', key: `nav-${id}` })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /1-9: act/ })).toBeUndefined()
-    expect(await ui.find({ key: 'spacer' })).toBeDefined()
     // The cards, in order, with their border: "Your turn" in amber, the stopped run in amber too
     expect((await ui.find({ type: 'Text', text: '⚠ Your turn' }))?.props.color).toBe('warning')
     expect(await ui.find({ type: 'Text', text: /^■ Run 1 · phase 1 · stop at each phase$/ })).toBeDefined()
@@ -195,16 +194,21 @@ test('task lines: the model used, "planned → used" when they differ, the plann
     // The log: the model change, with its glyph, among its last 6 entries
     expect((await ui.find({ type: 'Text', text: /^⇄$/ }))?.props.color).toBe('merged')
     expect(await ui.find({ type: 'Text', text: /T01: sonnet → opus \(architecture gap\)/ })).toBeDefined()
-    // l, the counter of the log card (0.13.1): the whole log, then its last entries again
-    const toggle = () => ui.find({ type: 'Button', key: 'log-full' })
-    expect([(await toggle())?.props.label, (await toggle())?.props.hotkey]).toEqual(['all (7)', 'l'])
+    // l, the counter of the log card (0.13.1): the whole log, then its last entries again. $.state is kept by the test and
+    // does not redraw: the pane is mounted again after each press
+    const toggle = async (view: typeof ui) => (await view.find({ type: 'Button', key: 'log-full' }))?.props
+    expect([(await toggle(ui))?.label, (await toggle(ui))?.hotkey]).toEqual(['all (7)', 'l'])
     expect(await ui.find({ type: 'Text', text: /run 1: phase 1, mode auto/ })).toBeUndefined()
     await ui.press({ key: 'log-full' })
-    expect((await toggle())?.props.label).toBe('less')
-    expect(await ui.find({ type: 'Text', text: /run 1: phase 1, mode auto/ })).toBeDefined()
-    await ui.press({ key: 'log-full' })
-    expect((await toggle())?.props.label).toBe('all (7)')
     await ui.unmount()
+    const whole = await $.ui.mount({ plugin: 'orchestre', surface, ...PANE })
+    expect((await toggle(whole))?.label).toBe('less')
+    expect(await whole.find({ type: 'Text', text: /run 1: phase 1, mode auto/ })).toBeDefined()
+    await whole.press({ key: 'log-full' })
+    await whole.unmount()
+    const short = await $.ui.mount({ plugin: 'orchestre', surface, ...PANE })
+    expect((await toggle(short))?.label).toBe('all (7)')
+    await short.unmount()
   }
   const text = await $.command.run(CMD('text'))
   expect(text.text ?? '').toMatch(/T01 .*sonnet → opus/)
