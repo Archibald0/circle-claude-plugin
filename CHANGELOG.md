@@ -2,6 +2,19 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.14.0 — 2026-10-16: the detail card of "Your turn"
+
+In the `/progress` pane, the lines of "Your turn" stay cut to one line each, and their whole text can now be read before acting. Asked by Fabien on 2026-10-16 from a capture where most of the 10 lines were cut ("Q24 · The report of re-scored hotels_within_km is not produced; a human should re-score t…"); option A ("a detail card above") chosen out of five compared, then validated on a playable prototype.
+
+- 1 to 9, or a click on a line, show its item in a new detail card, right above "Your turn", with a round border in the `claude` color:
+  - its top line: "▸ Detail · 1 · Q09 · to settle" (or "to review before the PR", "auto-decision"), and the button "✕ Close" on x;
+  - the whole text, wrapped to the width of the card (`wrap()`, exported for the tests), then the blocker and the text the action prepares in the prompt, each under its label;
+  - the button of the action ("1 again → resume the run"), without a key of its own; nothing is sent.
+- A second press on the same line acts, as a single press did before, and closes the card. Another key shows its item instead. x or "✕ Close" closes it without acting. Esc still closes the pane.
+- The selected line gets ▸ in the `claude` color and its text in bold; it stays cut.
+- The card follows the item, not its place in the list: each item has a key (its group and its text, `yourTurnItems()`), so a line added above it during a run does not change what the card shows. When the item is gone (settled, merged), the card closes at the next drawing.
+- `/progress text` does not change.
+
 ## 0.13.1 — 2026-10-16: the tasks card on one grid, the pane within its width, without the bar of keys
 
 In the `/progress` pane, the "tasks" card puts each thing in the same column on every line. Asked by Fabien on 2026-10-14 after a real run (13 tasks, 5 phases) where the counts of the phases, the titles and what the tasks do did not line up; layout A ("compact phase headers") chosen out of two compared on the same data. On 2026-10-15, a second capture at 80 columns showed the run card cut ("…verif", "merge 2:…") and the titles cut at 12 cells: no line of the pane is wider than its card any more, and the titles get the room the step column does not use.

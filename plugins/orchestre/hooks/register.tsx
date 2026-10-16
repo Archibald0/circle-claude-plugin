@@ -14,7 +14,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Action, Card, Snapshot, Line, Section } from '../types'
 import { FRAME_COUNT, DEMO_FRAME_MS, DEMO_PLAN, demoEnd, demoSnapshot, frameAt } from './demo.mjs'
-import { IMPORTANT_TOAST_MS, DETAILS_GAP, DETAILS_LABEL, DETAILS_RESERVE, HIDE_GAP, HIDE_LABEL, HIDE_RESERVE, FORMAT, FORMATS, LEGACY_FORMATS, IMAGE_MS, banner, plainText, changes, cut, since, formatOf, isImportant, statusLine, normalize, news, pane, activeRun, runInProgress, runStartedSince, suffix, stateText } from './view-model.mjs'
+import { IMPORTANT_TOAST_MS, DETAILS_GAP, DETAILS_LABEL, DETAILS_RESERVE, HIDE_GAP, HIDE_LABEL, HIDE_RESERVE, CLOSE_LABEL, FORMAT, FORMATS, LEGACY_FORMATS, IMAGE_MS, banner, plainText, changes, cut, since, formatOf, isImportant, statusLine, normalize, news, pane, activeRun, runInProgress, runStartedSince, suffix, stateText } from './view-model.mjs'
 
 const PANE_ID = 'orchestre'
 // The sound played when something waits for you, with /progress sound (afplay on macOS; nothing on a Linux or Windows terminal)
@@ -29,6 +29,7 @@ const snapshot = atom({ plugin: 'orchestre', key: 'snapshot' } as const, null)
 const followedPlan = atom({ plugin: 'orchestre', key: 'plan' } as const, null)
 const lastRead = atom({ plugin: 'orchestre', key: 'lastRead' } as const, 0)
 const fullLog = atom({ plugin: 'orchestre', key: 'fullLog' } as const, false)
+const selected = atom({ plugin: 'orchestre', key: 'selected' } as const, null)
 const hidden = atom({ plugin: 'orchestre', key: 'hidden' } as const, null)
 const alert = atom({ plugin: 'orchestre', key: 'alert' } as const, null)
 const autoOpened = atom({ plugin: 'orchestre', key: 'autoOpened' } as const, false)
@@ -386,7 +387,7 @@ export const register: Register = on => {
   })
 
   // The pane: a view in cards, under the header and a blank line (0.13.1: no more keys that scroll to a card; ↑ ↓ and
-  // Page Up/Down scroll the pane). The lines of "Your turn" have the keys 1 to 9, what comes next after a finished run c or
+  // Page Up/Down scroll the pane). The lines of "Your turn" have the keys 1 to 9 (0.14.0: first the detail card, x closes it), what comes next after a finished run c or
   // p, the log card l for the whole log. ← and → stay with Claude Code.
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
@@ -394,7 +395,10 @@ export const register: Register = on => {
     if (!inst) return <Text dimColor wrap="wrap">{`Nothing ${NOTHING_TO_FOLLOW}`}</Text>
     const now = await $.clock.now()
     const full = await read($, fullLog)
-    const p = pane(inst, now, e.props.bodyColumns, { animated: true, fullLog: full, since: previousVisit })
+    const chosen = await read($, selected)
+    const p = pane(inst, now, e.props.bodyColumns, { animated: true, fullLog: full, since: previousVisit, selected: chosen })
+    // The selected item is gone (settled, merged): its detail card closes
+    if (chosen && !p.selection) void update($, selected, () => null).catch(() => undefined)
     return (
       <Box flexDirection="column">
         {p.header.map((l, i) => (i < 2 ? <Box key={`header-${i}`} flexDirection="row" justifyContent="center">{draw($, e, l, `header-${i}-l`)}</Box> : draw($, e, l, `header-${i}`)))}
@@ -411,11 +415,14 @@ function card($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']
   const { Box, Button } = $.ui.resolve(e)
   const frame = borders && c.color ? { borderStyle: 'round', borderColor: c.color, paddingX: 1 } : {}
   const logToggle = c.id === 'log' && /^l: /.test(c.meta[0]?.t ?? '')
+  const close = c.id === 'detail'
   return (
     <Box key={`card-${c.id}`} flexDirection="column" marginTop={1} {...frame}>
       <Box key={`card-${c.id}-top`} flexDirection="row" justifyContent="space-between">
         {draw($, e, c.title, `card-${c.id}-title`)}
-        {logToggle
+        {close
+          ? <Button key="detail-close" label={CLOSE_LABEL} hotkey="x" plain dimColor onPress={() => update($, selected, () => null)} />
+          : logToggle
           ? <Button key="log-full" label={(c.meta[0]?.t ?? '').replace(/^l: /, '')} hotkey="l" plain dimColor onPress={() => toggleLog($)} />
           : c.meta.length ? draw($, e, c.meta, `card-${c.id}-meta`) : null}
       </Box>
@@ -455,6 +462,19 @@ async function openFromBanner($: EngineInterface, target: Section | null): Promi
   if (inst && !(await openPane($, inst, target))) $.ui.toast('The pane does not open here: /progress text gives the same state.')
 }
 
+// A line of "Your turn" (1 to 9, or a click): a first press shows it in the detail card, a second press on the same line
+// acts. The button of the detail card acts. Acting closes the detail card.
+async function press($: EngineInterface, action: Action): Promise<void> {
+  if (action.mode === 'select' && action.key && (await read($, selected)) !== action.key) {
+    const key = action.key
+    await update($, selected, () => key)
+    scrollTo($, 'detail')
+    return
+  }
+  if (action.key) await update($, selected, () => null)
+  await act($, action)
+}
+
 // An action of the pane: its text goes into the prompt, after what is already typed there, and nothing is sent. During
 // the demo, nothing goes into the prompt: a notification says what the key would do.
 async function act($: EngineInterface, action: Action): Promise<void> {
@@ -478,7 +498,7 @@ function draw($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']
         // A mention of the banner leads to a card: a button, an amber badge on hover. An action of the pane: a button with
         // a key (1 to 9, c, p) that prepares its text in the prompt.
         if (target) return <Button key={`goto-${m.k ?? target}`} label={m.t} plain hover={{ scope: `orchestre-${m.k ?? target}`, color: 'inverseText', backgroundColor: 'warning', bold: true }} onPress={() => openFromBanner($, target)} />
-        if (action) return <Button key={`action-${action.hotkey ?? `${itemKey}-${i}`}`} label={m.t} plain {...(action.hotkey ? { hotkey: action.hotkey } : {})} onPress={() => act($, action)} />
+        if (action) return <Button key={action.key && action.mode !== 'select' ? 'detail-act' : `action-${action.hotkey ?? `${itemKey}-${i}`}`} label={m.t} plain {...(action.hotkey ? { hotkey: action.hotkey } : {})} onPress={() => press($, action)} />
         return <Text key={`${itemKey}-${i}`} color={m.c} backgroundColor={m.f} bold={m.b} dimColor={m.d} wrap="truncate">{m.t}</Text>
       })}
     </Box>

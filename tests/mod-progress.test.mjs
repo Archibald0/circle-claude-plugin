@@ -521,6 +521,64 @@ try {
     assert.match(M.plainText(next), /…$/)
   })
 
+  testCase('detail card (0.14.0): the whole text of the selected item, within its width, above "Your turn"; gone with the item', () => {
+    const long = 'The report of re-scored hotels_within_km (geo-poi, geo-class, qa14707, both builds) shows the score drop on geo-class only; confirm it is the expected effect of the rule change and not a regression of the fixtures'
+    const L = { ...B, reviews: [...B.reviews, { task: 'T03', phase: 2, text: long, at: null }] }
+    const items = M.yourTurnItems(L, tA).items
+    assert.equal(new Set(items.map(it => it.key)).size, items.length, 'one key per item')
+    assert.deepEqual(M.yourTurnItems(L, tA).items.map(it => it.key), items.map(it => it.key), 'the same keys from one drawing to the next')
+    const k = items.find(it => it.text.includes('re-scored')).key, rank = items.findIndex(it => it.key === k) + 1
+    // Nothing selected: no detail card, the lines as before, each with a select action
+    assert.equal(M.detailCard(L, tA, 100, null), null)
+    assert.deepEqual(M.pane(L, tA, 100).cards.map(c => c.id), ['yourTurn', 'run', 'tasks', 'log'])
+    assert.ok(M.yourTurnCard(L, tA, 100).lines.flat().filter(m => m.x).every(m => m.x.mode === 'select' && m.x.key))
+    for (const columns of [80, 120]) {
+      const p = M.pane(L, tA, columns, { selected: k })
+      assert.deepEqual(p.cards.map(c => c.id), ['detail', 'yourTurn', 'run', 'tasks', 'log'], 'the detail card right above "Your turn"')
+      assert.equal(p.selection, k)
+      const d = p.cards[0]
+      assert.equal(d.color, 'claude')
+      assert.equal(M.plainText(d.title), `▸ Detail · ${rank} · T03 · to review before the PR`)
+      assert.equal(M.plainText(d.meta), M.CLOSE_LABEL)
+      assert.ok(M.width(d.title) + M.width(d.meta) + 1 <= columns - 4, 'title and Close on one line')
+      for (const l of d.lines) assert.ok(M.width(l) <= columns - 4, `${columns} columns: ${M.plainText(l)}`)
+      // The whole text, word for word, over several lines; then the prompt; then the action, without a key of its own
+      const body = d.lines.slice(0, d.lines.findIndex(l => /^prompt /.test(M.plainText(l)))).map(M.plainText).join(' ')
+      assert.equal(body, `T03 · ${long}`)
+      assert.ok(d.lines.length > 3)
+      const act = d.lines.flat().filter(m => m.x)
+      assert.equal(act.length, 1)
+      assert.deepEqual([act[0].t, act[0].x.hotkey, act[0].x.mode, act[0].x.key], [`${rank} again → review`, null, undefined, k])
+      assert.equal(act[0].x.prompt, `Review with me, before the PR (review of T03): ${long}`)
+      // The selected line: ▸ and bold, still cut
+      const line = p.cards[1].lines.find(l => l.some(m => m.x?.key === k))
+      assert.deepEqual([line[0].t, line[0].c, line[2].b], ['▸', 'claude', true])
+      assert.match(line[2].t, /…$/)
+    }
+    // A blocker: its own field, wrapped under its label
+    const blocked = M.detailCard(B, tA, 60, M.yourTurnItems(B, tA).items[0].key)
+    assert.match(M.plainText(blocked.lines.find(l => /^blocker/.test(M.plainText(l)))), /^blocker {2}secret missing for the tests$/)
+    assert.match(M.plainText(blocked.title), /^▸ Detail · 1 · T02 · to settle$/)
+    // The item is gone (review settled): no more detail card, no more selection
+    const gone = M.pane(B, tA, 100, { selected: k })
+    assert.deepEqual([gone.cards[0].id, gone.selection], ['yourTurn', null])
+    // Beyond 9: no key, the action of the detail card says only what it does
+    const many = { ...B, reviews: Array.from({ length: 10 }, (_, i) => ({ task: 'T01', phase: 1, text: `f${i}`, at: null })) }
+    const tenth = M.yourTurnItems(many, tA).items[10]
+    assert.equal(M.detailCard(many, tA, 100, tenth.key).lines.flat().find(m => m.x).t, '→ review')
+    // The same review twice: two keys
+    const twice = { ...B, reviews: [B.reviews[0], B.reviews[0]] }
+    assert.deepEqual(M.yourTurnItems(twice, tA).items.filter(it => it.group === 'review').map(it => it.key.replace(/^review\|.*?(#\d)?$/, '$1')), ['', '#2'])
+  })
+
+  testCase('wrap: words over lines of n characters at most, a word too long cut', () => {
+    assert.deepEqual(M.wrap('aa bb cc', 5), ['aa bb', 'cc'])
+    assert.deepEqual(M.wrap('  aa   bb  ', 10), ['aa bb'])
+    assert.deepEqual(M.wrap('abcdefgh ij', 3), ['abc', 'def', 'gh', 'ij'])
+    assert.deepEqual(M.wrap('é·ü ab', 4), ['é·ü', 'ab'])
+    assert.deepEqual(M.wrap('', 4), [''])
+  })
+
   testCase('formatting: durations, ages, bar, cut', () => {
     assert.deepEqual([M.duration(45000), M.duration(18 * 60000), M.duration(72 * 60000), M.duration(null)], ['45 s', '18 min', '1 h 12', '—'])
     assert.deepEqual([M.chrono(42000), M.chrono(725000), M.chrono(3723000), M.chrono(null)], ['0:42', '12:05', '1:02:03', '—'])

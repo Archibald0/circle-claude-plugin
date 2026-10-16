@@ -100,6 +100,7 @@ const STOPPED = doc([task('T01', 1, { status: 'merged', attempts: 2 }), task('T0
 
 test('/progress pane: a view in cards, its keys, its actions prepared in the prompt', async ($, on) => {
   const clock = mock.clock(on, { now: T0 })
+  state(on)
   const w = world(on)
   w.file.text = STOPPED
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
@@ -125,11 +126,50 @@ test('/progress pane: a view in cards, its keys, its actions prepared in the pro
     expect((await action('3'))?.props.label).toBe('T01 · Threshold: A (cap at 30 s)')
     expect([(await action('c'))?.props.label, (await action('c'))?.props.hotkey]).toEqual(['/orchestre:run plans/demo --resume', 'c'])
     expect(await action('p')).toBeUndefined()
-    await ui.press({ key: 'action-1' })
-    await ui.press({ key: 'action-2' })
     // An empty log: nothing for l to show
     expect(await ui.find({ type: 'Button', key: 'log-full' })).toBeUndefined()
+    expect(await ui.find({ key: 'card-detail' })).toBeUndefined()
+    // 1 to 9 (0.14.0): a first press shows the detail card above "Your turn", with its border and ✕ Close on x; a second
+    // press on the same line acts and closes it. $.state is kept by the test and does not redraw: the pane is mounted again
+    // after each press
+    const filledBefore = w.filled.length
+    await ui.press({ key: 'action-1' })
     await ui.unmount()
+    const pane = () => $.ui.mount({ plugin: 'orchestre', surface, ...PANE })
+    const one = await pane()
+    expect(w.filled.length).toBe(filledBefore)
+    expect([(await one.find({ key: 'card-detail' }))?.props.borderStyle, (await one.find({ key: 'card-detail' }))?.props.borderColor]).toEqual(['round', 'claude'])
+    expect(await one.find({ type: 'Text', text: '▸ Detail' })).toBeDefined()
+    expect(await one.find({ type: 'Text', text: '▸' })).toBeDefined()
+    const close = await one.find({ type: 'Button', key: 'detail-close' })
+    expect([close?.props.label, close?.props.hotkey]).toEqual(['✕ Close', 'x'])
+    expect((await one.find({ type: 'Button', key: 'detail-act' }))?.props.label).toBe('1 again → resume the run')
+    await one.press({ key: 'action-1' })
+    await one.unmount()
+    // Acted: the prompt is filled, the detail card closed. Then 2 shows its detail, its button acts
+    const two = await pane()
+    expect(await two.find({ key: 'card-detail' })).toBeUndefined()
+    await two.press({ key: 'action-2' })
+    await two.unmount()
+    const twoDetail = await pane()
+    expect(await twoDetail.find({ type: 'Text', text: /\.env\.example: add MR_MAX/ })).toBeDefined()
+    await twoDetail.press({ key: 'detail-act' })
+    await twoDetail.unmount()
+    // 3, then 2: the detail card follows; x closes it without acting
+    const three = await pane()
+    await three.press({ key: 'action-3' })
+    await three.unmount()
+    const switched = await pane()
+    expect((await switched.find({ type: 'Button', key: 'detail-act' }))?.props.label).toBe('3 again → go over')
+    await switched.press({ key: 'action-2' })
+    await switched.unmount()
+    const closing = await pane()
+    expect((await closing.find({ type: 'Button', key: 'detail-act' }))?.props.label).toBe('2 again → review')
+    await closing.press({ key: 'detail-close' })
+    await closing.unmount()
+    const closed = await pane()
+    expect(await closed.find({ key: 'card-detail' })).toBeUndefined()
+    await closed.unmount()
   }
   expect(w.filled).toEqual([
     'append:/orchestre:run plans/demo --resume', 'append:Review with me, before the PR (review of T01): .env.example: add MR_MAX',

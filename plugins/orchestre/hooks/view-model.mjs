@@ -10,6 +10,7 @@
 /** @typedef {import('../types/index.d.ts').Piece} Piece */
 /** @typedef {import('../types/index.d.ts').Line} Line */
 /** @typedef {import('../types/index.d.ts').Card} Card */
+/** @typedef {import('../types/index.d.ts').YourTurnItem} YourTurnItem */
 
 export const FORMAT = 'orchestre-progress/3'
 // The formats this mod reads: /3 only (0.12.0). The French formats of 0.11 and earlier (suivi.json) are converted by
@@ -596,15 +597,16 @@ function phaseTimeline(phases, cur, w) {
 }
 
 /**
- * What waits for you, one line per thing, each with its action: the tasks that need a human, blocked or failed, the
+ * What waits for you, one item per thing, each with its action: the tasks that need a human, blocked or failed, the
  * issues to settle, the open prerequisites, plan-lint in error, then the reviews and the auto-decisions to check before
- * the PR. The first 9 have a key (1 to 9). null if there is nothing.
- * @param {Snapshot} inst @param {number} now @param {number} columns
- * @returns {(Card & { urgent: number }) | null}
+ * the PR. Each item has a key that stays the same while the item is there (0.14.0: the detail card follows it, not its
+ * place in the list, which changes during a run).
+ * @param {Snapshot} inst @param {number} now
+ * @returns {{ items: YourTurnItem[], urgent: number }}
  */
-export function yourTurnCard(inst, now, columns) {
+export function yourTurnItems(inst, now) {
   const s = summarize(inst, now), dir = dirOf(inst), resume = `/orchestre:run ${dir} --resume`
-  /** @type {{ g: Piece, text: string, detail?: string, prompt: string, help: string }[]} */
+  /** @type {YourTurnItem[]} */
   const items = []
   const seen = new Set()
   for (const t of s.attention) {
@@ -612,23 +614,43 @@ export function yourTurnCard(inst, now, columns) {
     if (p) seen.add(p)
     const reason = /** @type {Record<string, string>} */ (ATTENTION)[t.status]
     items.push(p || t.status === 'needs-human'
-      ? { g: { t: '⚑', c: 'warning', b: true }, text: `${t.id} · ${p ? p.title : reason}${p?.human ? ' (human)' : ''}`, detail: t.blocker[0], prompt: resume, help: 'resume the run' }
-      : { g: { t: '✗', c: 'error', b: true }, text: `${t.id} · ${reason}`, detail: t.blocker[0], prompt: `Explain the blocker of ${t.id}${t.blocker[0] ? ` (${t.blocker[0]})` : ''} and propose a way forward.`, help: 'ask the pilot' })
+      ? { key: '', group: 'settle', task: t.id, g: { t: '⚑', c: 'warning', b: true }, text: `${t.id} · ${p ? p.title : reason}${p?.human ? ' (human)' : ''}`, detail: t.blocker[0], prompt: resume, help: 'resume the run' }
+      : { key: '', group: 'settle', task: t.id, g: { t: '✗', c: 'error', b: true }, text: `${t.id} · ${reason}`, detail: t.blocker[0], prompt: `Explain the blocker of ${t.id}${t.blocker[0] ? ` (${t.blocker[0]})` : ''} and propose a way forward.`, help: 'ask the pilot' })
   }
-  for (const p of inst.issues) if (!seen.has(p)) items.push({ g: { t: '?', c: 'warning', b: true }, text: `${p.task} · ${p.title}${p.human ? ' (human)' : ''}`, prompt: resume, help: 'settle when resuming' })
-  for (const p of inst.prerequisites) items.push({ g: { t: '◇', c: 'warning', b: true }, text: `${p.id} (${p.type}) open${p.blocks.length ? `, blocks ${p.blocks.slice(0, 4).join(', ')}` : ''}`, prompt: `/orchestre:ready ${dir}`, help: 'settle the prerequisites' })
-  if (!inst.lint.ok) items.push({ g: { t: '✗', c: 'error', b: true }, text: `plan-lint: ${plural(inst.lint.errors, 'error')} at the last progress update`, prompt: `Show me the plan-lint errors on ${dir} and propose a fix.`, help: 'ask the pilot' })
+  for (const p of inst.issues) if (!seen.has(p)) items.push({ key: '', group: 'settle', task: p.task, g: { t: '?', c: 'warning', b: true }, text: `${p.task} · ${p.title}${p.human ? ' (human)' : ''}`, prompt: resume, help: 'settle when resuming' })
+  for (const p of inst.prerequisites) items.push({ key: '', group: 'settle', task: p.id, g: { t: '◇', c: 'warning', b: true }, text: `${p.id} (${p.type}) open${p.blocks.length ? `, blocks ${p.blocks.slice(0, 4).join(', ')}` : ''}`, prompt: `/orchestre:ready ${dir}`, help: 'settle the prerequisites' })
+  if (!inst.lint.ok) items.push({ key: '', group: 'settle', task: 'plan-lint', g: { t: '✗', c: 'error', b: true }, text: `plan-lint: ${plural(inst.lint.errors, 'error')} at the last progress update`, prompt: `Show me the plan-lint errors on ${dir} and propose a fix.`, help: 'ask the pilot' })
   const urgent = items.length
-  for (const r of inst.reviews) items.push({ g: { t: '⚑', c: 'warning' }, text: `${r.task ?? 'source plan'} · ${r.text}`, prompt: `Review with me, before the PR (review of ${r.task ?? 'source plan'}): ${r.text}`, help: 'review' })
-  for (const d of inst.decisions) items.push({ g: { t: '⇒', c: 'merged' }, text: `${d.task} · ${d.title}: ${d.option}${d.description ? ` (${d.description})` : ''}`, prompt: `Go over the auto-decision for ${d.task} with me: "${d.title}", option ${d.option}${d.description ? ` (${d.description})` : ''}.`, help: 'go over' })
+  for (const r of inst.reviews) items.push({ key: '', group: 'review', task: r.task ?? 'source plan', g: { t: '⚑', c: 'warning' }, text: `${r.task ?? 'source plan'} · ${r.text}`, prompt: `Review with me, before the PR (review of ${r.task ?? 'source plan'}): ${r.text}`, help: 'review' })
+  for (const d of inst.decisions) items.push({ key: '', group: 'decision', task: d.task, g: { t: '⇒', c: 'merged' }, text: `${d.task} · ${d.title}: ${d.option}${d.description ? ` (${d.description})` : ''}`, prompt: `Go over the auto-decision for ${d.task} with me: "${d.title}", option ${d.option}${d.description ? ` (${d.description})` : ''}.`, help: 'go over' })
+  // The key: the group and the text; the same text twice gets its rank
+  /** @type {Map<string, number>} */
+  const counts = new Map()
+  for (const it of items) {
+    const base = `${it.group}|${it.text}`, k = counts.get(base) ?? 0
+    counts.set(base, k + 1)
+    it.key = k ? `${base}#${k + 1}` : base
+  }
+  return { items, urgent }
+}
+
+/**
+ * The "Your turn" card: one line per item, cut to the width. The first 9 have a key (1 to 9): a first press shows the
+ * item in the detail card, a second press on the same line acts (0.14.0). The selected line has ▸ and its text in bold.
+ * null if there is nothing.
+ * @param {Snapshot} inst @param {number} now @param {number} columns @param {string | null} [selected]
+ * @returns {(Card & { urgent: number }) | null}
+ */
+export function yourTurnCard(inst, now, columns, selected = null) {
+  const { items, urgent } = yourTurnItems(inst, now)
   if (!items.length) return null
   const inner = columns - 4
   /** @type {Line[]} */
   const lines = []
   items.forEach((it, i) => {
-    const hotkey = i < 9 ? String(i + 1) : null
+    const hotkey = i < 9 ? String(i + 1) : null, on = it.key === selected
     const help = `  → ${it.help}`
-    lines.push([it.g, { t: ' ' }, { t: cut(it.text, Math.max(16, inner - help.length - 6)), x: { hotkey, prompt: it.prompt, help: it.help } }, { t: help, d: true }])
+    lines.push([on ? { t: '▸', c: 'claude', b: true } : it.g, { t: ' ' }, { t: cut(it.text, Math.max(16, inner - help.length - 6)), ...(on ? { b: true } : {}), x: { hotkey, prompt: it.prompt, help: it.help, key: it.key, mode: 'select' } }, { t: help, d: true }])
     if (it.detail) lines.push([{ t: `     ${cut(it.detail, Math.max(16, inner - 6))}`, d: true }])
   })
   const count = [
@@ -642,6 +664,64 @@ export function yourTurnCard(inst, now, columns) {
     meta: [{ t: count, d: true }],
     lines,
   }
+}
+
+// The button that closes the detail card (key x), on its top line
+export const CLOSE_LABEL = '✕ Close'
+const GROUPS = /** @type {Record<YourTurnItem['group'], string>} */ ({ settle: 'to settle', review: 'to review before the PR', decision: 'auto-decision' })
+// The room of the labels of the detail card ("blocker  ", "prompt   ")
+const FIELD = 9
+
+/**
+ * The detail card (0.14.0), above "Your turn": the whole text of the selected item, wrapped to the width of the card, its
+ * blocker, the text its action prepares in the prompt, and the button of the action. null if nothing is selected or if
+ * the item is gone (settled, merged).
+ * @param {Snapshot} inst @param {number} now @param {number} columns @param {string | null} selected @returns {Card | null}
+ */
+export function detailCard(inst, now, columns, selected) {
+  if (!selected) return null
+  const { items } = yourTurnItems(inst, now)
+  const i = items.findIndex(it => it.key === selected)
+  if (i < 0) return null
+  const it = items[i], hotkey = i < 9 ? String(i + 1) : null
+  // Border and padding take 4 columns, as for the other cards
+  const inner = Math.max(24, columns - 4)
+  /** @type {Line[]} */
+  const lines = wrap(it.text, inner).map(t => [{ t }])
+  /** @param {string} label @param {string} value @param {boolean} dim @returns {Line[]} */
+  const field = (label, value, dim) => wrap(value, inner - FIELD).map((t, j) => [{ t: (j ? '' : label).padEnd(FIELD), d: true }, { t, ...(dim ? { d: true } : {}) }])
+  if (it.detail) lines.push(...field('blocker', it.detail, false))
+  lines.push(...field('prompt', it.prompt, true))
+  lines.push([{ t: `${hotkey ? `${hotkey} again ` : ''}→ ${it.help}`, x: { hotkey: null, prompt: it.prompt, help: it.help, key: it.key } }, { t: '  nothing is sent', d: true }])
+  return {
+    id: 'detail', color: 'claude',
+    title: [{ t: '▸ Detail', c: 'claude', b: true }, { t: ' · ', d: true }, { t: `${hotkey ? `${hotkey} · ` : ''}${cut(it.task, 20)}`, b: true }, { t: ` · ${GROUPS[it.group]}`, d: true }],
+    meta: [{ t: CLOSE_LABEL }],
+    lines,
+  }
+}
+
+/** The words of s over lines of n visible characters at most; a word longer than n is cut. @param {string} s @param {number} n @returns {string[]} */
+export function wrap(s, n) {
+  const w = Math.max(1, n)
+  /** @type {string[]} */
+  const out = []
+  let cur = ''
+  for (const word0 of String(s).replace(/\s+/g, ' ').trim().split(' ')) {
+    let word = [...word0]
+    while (word.length > w) {
+      if (cur) { out.push(cur); cur = '' }
+      out.push(word.slice(0, w).join(''))
+      word = word.slice(w)
+    }
+    const piece = word.join('')
+    if (!piece) continue
+    if (!cur) cur = piece
+    else if ([...cur].length + 1 + word.length <= w) cur += ` ${piece}`
+    else { out.push(cur); cur = piece }
+  }
+  if (cur) out.push(cur)
+  return out.length ? out : ['']
 }
 
 /**
@@ -902,12 +982,14 @@ export function since(inst, t0, now) {
  * The whole pane: a header (overall state, legend, legend of the demo, what changed since the last visit), then the
  * cards. Below BORDER_COLUMNS columns, the cards lose their border.
  * @param {Snapshot} inst @param {number} now @param {number} columns
- * @param {{ animated?: boolean, fullLog?: boolean, since?: number | null }} [options]
- * @returns {{ header: Line[], cards: Card[], borders: boolean }}
+ * @param {{ animated?: boolean, fullLog?: boolean, since?: number | null, selected?: string | null }} [options]
+ * @returns {{ header: Line[], cards: Card[], borders: boolean, selection: string | null }}
  */
-export function pane(inst, now, columns, { animated = false, fullLog = false, since: t0 = null } = {}) {
+export function pane(inst, now, columns, { animated = false, fullLog = false, since: t0 = null, selected = null } = {}) {
   const s = summarize(inst, now), r = inst.run
-  const yourTurn = yourTurnCard(inst, now, columns)
+  const yourTurn = yourTurnCard(inst, now, columns, selected)
+  // The detail card of the selected item of "Your turn", right above it (0.14.0)
+  const detail = detailCard(inst, now, columns, selected)
   /** @type {Piece} */
   const state = !r ? { t: 'NO RUN', d: true }
     : s.allMerged && r.status !== 'in-progress' ? { t: 'PLAN FINISHED', c: 'success', b: true }
@@ -928,11 +1010,13 @@ export function pane(inst, now, columns, { animated = false, fullLog = false, si
   if (away) header.push(away)
   /** @type {Card[]} */
   const cards = []
+  if (detail) cards.push(detail)
   if (yourTurn) cards.push(yourTurn)
   cards.push(runCard(inst, now, columns, animated))
   cards.push({ id: 'tasks', color: null, title: [{ t: 'tasks', b: true }, { t: ` · ${s.inProgress.length} in progress · ${s.total} in total`, d: true }], meta: [], lines: taskLines(inst, now, columns, animated) })
   cards.push(logCard(inst, now, columns, fullLog))
-  return { header, cards, borders: columns >= BORDER_COLUMNS }
+  // selection: the selected item, if still there; register.tsx forgets it otherwise
+  return { header, cards, borders: columns >= BORDER_COLUMNS, selection: detail ? selected : null }
 }
 
 /** The status line when the banner is hidden and something is left to do: "orchestre ✓ 5/5 · ⚑ 3". @param {Snapshot} inst @param {number} now */

@@ -73,10 +73,14 @@ export type Piece = { t: string; c?: string; b?: boolean; d?: boolean; f?: strin
 export type Line = Piece[]
 
 // An action of the pane: a text prepared in the prompt, never sent; its key (1 to 9, c, p), its help
-export type Action = { hotkey: string | null; prompt: string; help: string }
+export type Action = { hotkey: string | null; prompt: string; help: string; key?: string; mode?: 'select' }
+// key: the item of "Your turn" it comes from; mode select: a first press shows the detail card, a second one acts (0.14.0)
+
+// An item of "Your turn": its key stays the same while it is there, its group says where it comes from
+export type YourTurnItem = { key: string; group: 'settle' | 'review' | 'decision'; task: string; g: Piece; text: string; detail?: string; prompt: string; help: string }
 
 // The cards of the pane, in order; the banner opens the pane at one of them
-export type Section = 'yourTurn' | 'run' | 'tasks' | 'log'
+export type Section = 'detail' | 'yourTurn' | 'run' | 'tasks' | 'log'
 
 // A card: title and counter on the top line, border in the theme color (null: no border)
 export type Card = { id: Section; color: string | null; title: Line; meta: Line; lines: Line[] }
@@ -92,6 +96,8 @@ declare module 'claude-code' {
       lastRead: number
       // The whole log in the pane (key l) rather than its last entries
       fullLog: boolean
+      // The key of the item of "Your turn" shown in the detail card, null: no detail card (0.14.0)
+      selected: string | null
       // Number of the run whose end banner was hidden
       hidden: number | null
       // Unknown format or plan of 0.11 already reported, to say it only once

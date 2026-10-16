@@ -1,7 +1,7 @@
 {
   "name": "orchestre",
   "displayName": "Orchestre",
-  "version": "0.13.1",
+  "version": "0.14.0",
   "description": "Runs a dev plan split into tasks (plans/<name>), phase by phase, with subagents: work on the model chosen for each task when the plan is prepared, verification, evaluation, fixes, merge and progress. Sets up the settings of the repository when a plan is prepared. Includes a progress mod in the pilot session: banner above the prompt, spinner, /progress (opened at the first run of the session) and /progress demo.",
   "author": { "name": "Fabien Dauvergne" },
   "repository": "https://github.com/FabienDayuse/circle-claude-plugin",
