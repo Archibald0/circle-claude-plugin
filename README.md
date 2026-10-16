@@ -141,11 +141,11 @@ To try orchestre on a toy repository first: [First try](docs/reference.md#first-
 <details>
 <summary><strong>Keys of the <code>/progress</code> pane</strong></summary>
 
-An action key only prepares a text in the prompt: nothing is sent without you.
+An action key only prepares a text in the prompt: nothing is sent without you. <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Page Up</kbd> and <kbd>Page Down</kbd> scroll the pane.
 
 | Key | Action |
 | :- | :- |
-| <kbd>y</kbd> <kbd>r</kbd> <kbd>t</kbd> <kbd>l</kbd> | Scroll to "Your turn" (when shown), the run, the tasks or the log. `l` also switches between the short and the whole log. |
+| <kbd>l</kbd> | Switch the log card between its last entries and the whole log (its counter, "l: all (24)"). |
 | <kbd>1</kbd> to <kbd>9</kbd> | Prepare the action of a line of "Your turn": resume the run, review a file, go over an auto-decision… |
 | <kbd>c</kbd> | Prepare `/orchestre:run plans/<name> --resume`, after a run that ended before the plan is finished. |
 | <kbd>p</kbd> | Prepare the pull request draft, once the plan is finished. |

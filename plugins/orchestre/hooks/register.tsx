@@ -385,52 +385,49 @@ export const register: Register = on => {
     return s ? next({ ...e, props: { ...e.props, suffix: s } }) : next(e)
   })
 
-  // The pane: a view in cards. y, r, t and l scroll to a card (l also shows the whole log); ← and → stay with Claude Code.
-  // The lines of "Your turn" have the keys 1 to 9, what comes next after a finished run c or p.
+  // The pane: a view in cards, under the header and a blank line (0.13.1: no more keys that scroll to a card; ↑ ↓ and
+  // Page Up/Down scroll the pane). The lines of "Your turn" have the keys 1 to 9, what comes next after a finished run c or
+  // p, the log card l for the whole log. ← and → stay with Claude Code.
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const { Box, Text } = $.ui.resolve(e)
     const inst = await read($, snapshot)
     if (!inst) return <Text dimColor wrap="wrap">{`Nothing ${NOTHING_TO_FOLLOW}`}</Text>
     const now = await $.clock.now()
     const full = await read($, fullLog)
     const p = pane(inst, now, e.props.bodyColumns, { animated: true, fullLog: full, since: previousVisit })
-    const yourTurnShown = p.cards.some(c => c.id === 'yourTurn')
-    const nav: [Section, string, string][] = [...(yourTurnShown ? [['yourTurn', 'your turn', 'y'] as [Section, string, string]] : []), ['run', 'run', 'r'], ['tasks', 'tasks', 't'], ['log', full ? 'log (less)' : 'log', 'l']]
     return (
       <Box flexDirection="column">
         {p.header.map((l, i) => (i < 2 ? <Box key={`header-${i}`} flexDirection="row" justifyContent="center">{draw($, e, l, `header-${i}-l`)}</Box> : draw($, e, l, `header-${i}`)))}
-        <Box key="nav" flexDirection="row" marginTop={1}>
-          {nav.flatMap(([id, label, hotkey], i) => [
-            ...(i ? [<Text key={`nav-between-${id}`}>{'  '}</Text>] : []),
-            <Button key={`nav-${id}`} label={label} hotkey={hotkey} plain {...(i === 0 ? { autoFocus: true as const } : {})} onPress={() => goTo($, id)} />,
-          ])}
-          <Text key="nav-help" dimColor wrap="truncate">{'   · 1-9: act · Esc: close'}</Text>
-        </Box>
+        <Text key="spacer"> </Text>
         {p.cards.map(c => card($, e, c, p.borders))}
       </Box>
     )
   })
 }
 
-// A card: border in its color (except below 60 columns, or without a color), title on the left, counter on the right
+// A card: border in its color (except below 60 columns, or without a color), title on the left, counter on the right.
+// The counter of the log card ("l: all (24)", "l: less") is a button on l, when there is something to show or to hide.
 function card($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], c: Card, borders: boolean) {
-  const { Box } = $.ui.resolve(e)
+  const { Box, Button } = $.ui.resolve(e)
   const frame = borders && c.color ? { borderStyle: 'round', borderColor: c.color, paddingX: 1 } : {}
+  const logToggle = c.id === 'log' && /^l: /.test(c.meta[0]?.t ?? '')
   return (
     <Box key={`card-${c.id}`} flexDirection="column" marginTop={1} {...frame}>
       <Box key={`card-${c.id}-top`} flexDirection="row" justifyContent="space-between">
         {draw($, e, c.title, `card-${c.id}-title`)}
-        {c.meta.length ? draw($, e, c.meta, `card-${c.id}-meta`) : null}
+        {logToggle
+          ? <Button key="log-full" label={(c.meta[0]?.t ?? '').replace(/^l: /, '')} hotkey="l" plain dimColor onPress={() => toggleLog($)} />
+          : c.meta.length ? draw($, e, c.meta, `card-${c.id}-meta`) : null}
       </Box>
       {c.lines.map((l, i) => draw($, e, l, `card-${c.id}-${i}`))}
     </Box>
   )
 }
 
-// Scrolls to a card; l also shows the whole log, or goes back to its last entries
-async function goTo($: EngineInterface, id: Section): Promise<void> {
-  if (id === 'log') await update($, fullLog, v => !v)
-  scrollTo($, id)
+// l in the log card: the whole log, or back to its last entries; the pane scrolls to the card
+async function toggleLog($: EngineInterface): Promise<void> {
+  await update($, fullLog, v => !v)
+  scrollTo($, 'log')
 }
 // Right after the opening, the card may not be drawn yet: a second attempt a little later
 function scrollTo($: EngineInterface, id: Section): void {

@@ -9,6 +9,7 @@ Update the plugin between two runs, never during one: `/plugin marketplace updat
 1. Update the plugin. In each repository, the next `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run` finds the rules of 0.12 (the path of the scripts contains the version) and offers to replace them, in one agreement. `/orchestre:install` does it too.
 2. `autoContinueAtUsageLimit`, which 0.12 and earlier wrote into `.claude/settings.local.json`: the settings reference of Claude Code gives it the scope "User or managed", so it most likely has no effect there; it is on by default. The plugin no longer writes it, and leaves the old line in place.
 3. The `/progress` pane opens by itself at the first run started in the session.
+4. 0.13.1: in the pane, `y`, `r` and `t` no longer scroll to a card, and the line of keys at the top is gone (↑ ↓, Page Up and Page Down scroll the pane). `l` stays, in the log card, for the whole log.
 
 ## From 0.11 to 0.12
 

@@ -108,13 +108,11 @@ test('/progress pane: a view in cards, its keys, its actions prepared in the pro
   expect(w.opened).toEqual(['orchestre (Esc closes)'])
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'orchestre', surface, ...PANE })
-    // At the top, the overall state; then the keys that scroll, the focus on the first one
+    // At the top, the overall state; then a blank line, without the keys that scrolled to a card nor their help (0.13.1)
     expect(await ui.find({ type: 'Text', text: ' ⚠ 1 YOUR TURN ' })).toBeDefined()
-    const nav = (id: string) => ui.find({ type: 'Button', key: `nav-${id}` })
-    for (const [id, hotkey] of [['yourTurn', 'y'], ['run', 'r'], ['tasks', 't'], ['log', 'l']] as const) expect((await nav(id))?.props.hotkey).toBe(hotkey)
-    expect((await nav('yourTurn'))?.props.label).toBe('your turn')
-    expect((await nav('yourTurn'))?.props.autoFocus).toBe(true)
-    expect(await ui.find({ type: 'Text', text: /· 1-9: act · Esc: close$/ })).toBeDefined()
+    for (const id of ['yourTurn', 'run', 'tasks', 'log']) expect(await ui.find({ type: 'Button', key: `nav-${id}` })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /1-9: act/ })).toBeUndefined()
+    expect(await ui.find({ key: 'spacer' })).toBeDefined()
     // The cards, in order, with their border: "Your turn" in amber, the stopped run in amber too
     expect((await ui.find({ type: 'Text', text: '⚠ Your turn' }))?.props.color).toBe('warning')
     expect(await ui.find({ type: 'Text', text: /^■ Run 1 · phase 1 · stop at each phase$/ })).toBeDefined()
@@ -130,11 +128,8 @@ test('/progress pane: a view in cards, its keys, its actions prepared in the pro
     expect(await action('p')).toBeUndefined()
     await ui.press({ key: 'action-1' })
     await ui.press({ key: 'action-2' })
-    // l: the whole log, and the pane scrolls to it
-    await ui.press({ key: 'nav-log' })
-    expect((await nav('log'))?.props.label).toBe('log (less)')
-    await ui.press({ key: 'nav-log' })
-    expect((await nav('log'))?.props.label).toBe('log')
+    // An empty log: nothing for l to show
+    expect(await ui.find({ type: 'Button', key: 'log-full' })).toBeUndefined()
     await ui.unmount()
   }
   expect(w.filled).toEqual([
@@ -169,6 +164,9 @@ const MODELS = doc([
   task('T03', 1, { model: 'haiku', model_used: null }),
 ], {
   log: [
+    { at: '2026-10-08T11:30:00+02:00', kind: 'run', task: null, text: 'run 1: phase 1, mode auto, 2 in parallel' },
+    { at: '2026-10-08T11:30:10+02:00', kind: 'pilot', task: null, text: 'settings checked' },
+    { at: '2026-10-08T11:30:20+02:00', kind: 'pilot', task: null, text: 'plan committed on plan/demo' },
     { at: '2026-10-08T11:31:00+02:00', kind: 'task', task: 'T01', text: 'T01 starts (worktree)' },
     { at: '2026-10-08T11:40:00+02:00', kind: 'rejection', task: 'T01', text: 'T01: attempt 1 rejected (evaluation): 1 gap(s)' },
     { at: '2026-10-08T11:40:00+02:00', kind: 'model', task: 'T01', text: 'T01: sonnet → opus (architecture gap)' },
@@ -194,11 +192,18 @@ test('task lines: the model used, "planned → used" when they differ, the plann
     expect((await ui.find({ type: 'Text', text: /^sonnet$/ }))?.props.color).toBe('subtle')
     expect((await ui.find({ type: 'Text', text: /^haiku$/ }))?.props.dimColor).toBe(true)
     expect((await ui.find({ type: 'Text', text: 'fix' }))?.props.color).toBe('warning')
-    // The log: the model change, with its glyph
-    await ui.press({ key: 'nav-log' })
+    // The log: the model change, with its glyph, among its last 6 entries
     expect((await ui.find({ type: 'Text', text: /^⇄$/ }))?.props.color).toBe('merged')
     expect(await ui.find({ type: 'Text', text: /T01: sonnet → opus \(architecture gap\)/ })).toBeDefined()
-    await ui.press({ key: 'nav-log' })
+    // l, the counter of the log card (0.13.1): the whole log, then its last entries again
+    const toggle = () => ui.find({ type: 'Button', key: 'log-full' })
+    expect([(await toggle())?.props.label, (await toggle())?.props.hotkey]).toEqual(['all (7)', 'l'])
+    expect(await ui.find({ type: 'Text', text: /run 1: phase 1, mode auto/ })).toBeUndefined()
+    await ui.press({ key: 'log-full' })
+    expect((await toggle())?.props.label).toBe('less')
+    expect(await ui.find({ type: 'Text', text: /run 1: phase 1, mode auto/ })).toBeDefined()
+    await ui.press({ key: 'log-full' })
+    expect((await toggle())?.props.label).toBe('all (7)')
     await ui.unmount()
   }
   const text = await $.command.run(CMD('text'))

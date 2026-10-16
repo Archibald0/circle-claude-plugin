@@ -464,9 +464,9 @@ export function suffix(inst, now) {
 }
 
 // ─── The pane: a view in cards ────────────────────────────────────────────────────────────────────────────────────
-// In order: what waits for you (if anything), the run, the tasks as timelines, the log. In the pane, y, r, t and l scroll
-// to a card; 1 to 9 act on the lines of "Your turn", c and p on what comes next after a finished run. An action only
-// prepares a text in the prompt: nothing is sent without the person.
+// In order: what waits for you (if anything), the run, the tasks as timelines, the log. In the pane, 1 to 9 act on the
+// lines of "Your turn", c and p on what comes next after a finished run, l switches the log card between its last entries
+// and the whole log. An action only prepares a text in the prompt: nothing is sent without the person.
 
 const MODES = /** @type {Record<string, string>} */ ({ auto: 'autonomous', deviation: 'stop on deviation', phase: 'stop at each phase' })
 const SHORT_STEP = /** @type {Record<string, string>} */ ({ worker: 'work', verification: 'verif', evaluation: 'eval', fix: 'fix', merge: 'merge', replanning: 'replan', progress: 'prog' })

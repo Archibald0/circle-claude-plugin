@@ -2,7 +2,7 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
-## 0.13.1 — 2026-10-15: the tasks card on one grid, the pane within its width
+## 0.13.1 — 2026-10-16: the tasks card on one grid, the pane within its width, without the bar of keys
 
 In the `/progress` pane, the "tasks" card puts each thing in the same column on every line. Asked by Fabien on 2026-10-14 after a real run (13 tasks, 5 phases) where the counts of the phases, the titles and what the tasks do did not line up; layout A ("compact phase headers") chosen out of two compared on the same data. On 2026-10-15, a second capture at 80 columns showed the run card cut ("…verif", "merge 2:…") and the titles cut at 12 cells: no line of the pane is wider than its card any more, and the titles get the room the step column does not use.
 
@@ -20,6 +20,8 @@ In the `/progress` pane, the "tasks" card puts each thing in the same column on 
   - the time: the parallelism goes first when the card lacks room;
   - what comes next: "in the prompt" goes, then the resume command is cut; the prompt keeps it whole.
 - The model column now shows from 73 columns (75 before), on the demo plan; below, the lines are the same as without a model.
+- Pane: the line of keys under the header (`y`, `r`, `t`, `l`, then "1-9: act · Esc: close") is gone, decided by Fabien on 2026-10-16; a blank line keeps its room. ↑ ↓, Page Up and Page Down scroll the pane, and the banner still opens it at a card. `l` stays, as the counter of the log card ("l: all (24)", "l: less"): a button, shown when there is something to show or to hide. No control has the focus at the opening any more (the first key of the bar had it). README, `docs/reference.md` and `docs/upgrading.md` follow.
+- Tests (`plugins/orchestre/tests/progress.test.tsx`, under the engine): no key of the bar nor its help, the blank line; the log button absent on an empty log, then "all (7)", "less" and back on a log of 7 entries, with the oldest entry shown only in the whole log. Not run in Cowork: `npm run validate` on the Mac.
 - Tests (`tests/mod-progress.test.mjs`, 26 cases): a new case, "pane within its width": no line of a card wider than the card, on every frame of the demo from 60 to 160 columns; `stepLines()` at 80, 68 and 50 cells; the step column at the width of its longest text, tasks to do included; the resume of a long plan at 60 columns. A new case, "task lines on one grid": 4 frames of the demo, 3 plans (with models, without, with 11 tasks in a phase), 5 widths from 60 to 160; on every task line, the title, the timeline, the duration, the model and what the task does start at the columns of `taskGrid()`; the phase lines are of the same width with their counts aligned; the legend under the timeline from 100 columns and never wider than the width; `titleCell()`. Moved to the new layout: the phase lines, "more to do", the threshold of the model column, the timeline at 100 columns (21 cells, 11 before). 17 mutations of the new code, 17 detected; `tsc --checkJs --strict` without error. `npm run validate` (`claude plugin test`) left to run on the Mac.
 - Left: the screenshot of the README (`brand/screenshots/progress-panel.png`) shows the 0.13.0 layout, to take again on a real run.
 

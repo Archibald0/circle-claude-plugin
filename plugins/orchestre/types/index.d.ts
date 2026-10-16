@@ -75,7 +75,7 @@ export type Line = Piece[]
 // An action of the pane: a text prepared in the prompt, never sent; its key (1 to 9, c, p), its help
 export type Action = { hotkey: string | null; prompt: string; help: string }
 
-// The cards of the pane, in order; y, r, t and l scroll to them
+// The cards of the pane, in order; the banner opens the pane at one of them
 export type Section = 'yourTurn' | 'run' | 'tasks' | 'log'
 
 // A card: title and counter on the top line, border in the theme color (null: no border)
