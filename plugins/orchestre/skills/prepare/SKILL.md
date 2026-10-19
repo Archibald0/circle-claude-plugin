@@ -57,7 +57,7 @@ Sum up in one page at most: that summary seeds DISCOVERY.md.
 
 Read the source plan in full. Keep its splitting, its vocabulary and its decisions: you convert it into this format, you do not rewrite it. If the plan's `language` differs from the source plan's, translate its free text and keep its terms.
 
-- A source task gives one orchestre task. Split it only if it exceeds half a context; merge a micro-task with its neighbor. Each change of splitting goes into the summary.
+- A source task gives one orchestre task. Split it only if it exceeds half a context; merge it with its neighbor when no reason of "Own task only for a reason" (`format.md`) keeps it apart. Each change of splitting goes into the summary.
 - `phase` and `depends_on` come from the order and the links of the source plan. What it does not say, take from the exploration: `owned_files`, `resources`, `verification` (real commands, checked at step 1), `definition_of_done` (criteria demonstrable by the diff or by a command), `model` and `model_reason` (see below), `effort` according to the difficulty.
 - Model: a `haiku`, `sonnet` or `opus` given by the source plan is kept, with its reason. Otherwise (absent, `fable` or other), choose it with the criteria below and say so in the summary. A task the source plan put on `fable` will be offered checked at the fable question (2d).
 - The text of the source task goes into "Implementation notes", its exclusions into "Out of scope".
@@ -67,6 +67,8 @@ Read the source plan in full. Keep its splitting, its vocabulary and its decisio
 ## 2b. New plan
 
 Split along the rules of `format.md`, model of each task included (criteria below). A question that changes the splitting itself is asked before splitting, along the rule of step 3.
+
+Each task needs one of the reasons of "Own task only for a reason" (parallel, contract, risk, size). Before writing, go over each pair of tasks of one phase where one depends on the other and both own the same files: merge them, unless a reason keeps them apart.
 
 ## 2c. Model of each task
 
@@ -87,6 +89,10 @@ Once the models are chosen, ask with the question tool: "Use fable for this plan
 
 On "No": `"fable": false` in `orchestre.config.json`, and no task on `fable`. On "Yes": `"fable": true`, then offer the tasks you put on `opus` (global review included), with multiple-choice questions of 4 tasks at most, with the title and the reason of each. Those the user checks move to `fable`, with the reason "fable at the user's request, instead of opus: <reason for opus>", in the plan's language. The others stay on `opus`. Never put `fable` in `escalation`.
 
+## 2e. Evaluation on a real model or real data
+
+For a conversion as for a new plan: if the goal, the source plan or the exploration plans an evaluation the agents do not run themselves (a live run on the production model, a benchmark on real data), reserve a task "fixes after the evaluation" in the phase that follows it. It owns the modules the evaluation targets and cites a `manual` prerequisite for the evaluation. Its findings are written into it as criteria of done, by the pilot between two runs, instead of new tasks.
+
 ## 3. Have everything settled, then list what must be ready
 
 Nothing that can be known before the run must be discovered during it.
@@ -106,9 +112,9 @@ Write `plans/<name>/`: the tasks in `tasks/`, each with `model` and `model_reaso
 ## 5. Validate
 
 1. `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-lint.mjs plans/<name>`: fix until "valid plan".
-2. Critical review by a skeptical subagent: missing dependencies, tasks too big or too small, vague or undemonstrable done criteria, parallel batches that step on each other (files or resources), forgotten resources, model without a reason or against the criteria, verification that would touch real data or a shared database, free text not in the plan's language, and above all what an agent will not be able to do alone without PREREQUISITES.md saying so (access, secret, decision, service). Fix, then run plan-lint again.
+2. Critical review by a skeptical subagent: missing dependencies, a task over half a context, a task without a reason of "Own task only for a reason" (merge it with the task that causes it), vague or undemonstrable done criteria, parallel batches that step on each other (files or resources), forgotten resources, model without a reason or against the criteria, verification that would touch real data or a shared database, free text not in the plan's language, and above all what an agent will not be able to do alone without PREREQUISITES.md saying so (access, secret, decision, service). Fix, then run plan-lint again.
 3. With the user's agreement: create the branch `plan/<name>` from the base branch and commit only `plans/<name>/`, with the message `plan(<name>): initial plan`. Run plan-lint again with `--integration plan/<name>` (and `--base <branch>` if the base is not `main`).
 
 ## 6. Summary
 
-Give the table of PROGRESS.md, then the reason for each task's model (one line per task), the `fable` setting and the `language` of the plan, then the estimate line and the "Ready to run" block of plan-lint. List next the open prerequisites, that is what remains to do before launching, with the first phase each one blocks. Add the reviews to plan before the PR. For a conversion, add the correspondence table (task or section of the source plan → orchestre task) and what was split, merged or added (global review included). Next: `/orchestre:install` if the settings were declined at step 0, `/orchestre:ready plans/<name>` the day before the launch, then, in a new session, `/orchestre:run plans/<name>`, with a first run in "stop at each phase" mode.
+Give the table of PROGRESS.md and the number of tasks, then one line per task: why it stands alone (parallel, contract, risk or size, in a few words) and why this model, the `fable` setting and the `language` of the plan, then the estimate line and the "Ready to run" block of plan-lint. List next the open prerequisites, that is what remains to do before launching, with the first phase each one blocks. Add the reviews to plan before the PR. For a conversion, add the correspondence table (task or section of the source plan → orchestre task) and what was split, merged or added (global review included). Next: `/orchestre:install` if the settings were declined at step 0, `/orchestre:ready plans/<name>` the day before the launch, then, in a new session, `/orchestre:run plans/<name>`, with a first run in "stop at each phase" mode.

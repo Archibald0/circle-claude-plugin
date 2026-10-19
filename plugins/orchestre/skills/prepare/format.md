@@ -22,8 +22,16 @@ A plan written by orchestre 0.11 or earlier (French format: `taches/`, `SUIVI.md
 
 ## Splitting rules
 
-- Phase = stage of the work (for example: model and rights, interfaces, acceptance). A phase only starts when every task of the previous phases is merged or cancelled.
-- Vertical slices, each under 50 % of a context. No micro-tasks: each task costs a worker, a verification, an evaluation, a merge and a progress update.
+- Phase = an increment of the work that can be checked end to end (for example: the contract, then the feature that uses it, then the removal of the old path). A layer of the code (data model, interfaces) is a phase of its own only when a later phase depends on it as a contract. A phase only starts when every task of the previous phases is merged or cancelled.
+- Vertical slices, each under 50 % of a context, and each worth a pull request a developer would review on its own: each task costs a worker, a verification, an evaluation, a merge and a progress update.
+- Own task only for a reason: a piece of work becomes a task of its own only for at least one of these reasons; otherwise it goes into the task that causes it.
+  - parallel: it owns no file in common with at least one other task of its phase, and depends on none of them;
+  - contract: other tasks depend on it and must start from its merged version;
+  - risk: security, data, a migration or a removal that deserves an evaluation of its own;
+  - size: together with its neighbor, it would exceed half a context.
+
+  Always goes into the task that causes it: the documentation, configuration and tests of a change; the removal of the mechanism the change replaces, when it fits; a follow-up finding on the same files; a fix of the same module found at the same time. Neither a different model for part of the work nor a list of root causes is a reason: root causes become criteria of one task. This rule holds for `/orchestre:prepare`, for the replanner and for the tasks the pilot writes during a run.
+- Documentation and configuration follow their change, in the same task. A separate documentation task only for a cross-cutting document that no task owns.
 - The order of execution only comes from `phase`, `depends_on` and `resources`: two tasks of the same phase, without a dependency between them nor a shared resource, can run at the same time, each in a worktree if the parallelism chosen at launch allows it. They must then own no file in common. Declare resources (database, port, service) as narrowly as possible: two tasks that share one run one after the other. `parallel_batch` and the Batch column of PROGRESS.md are indicative: nothing reads them.
 - Each criterion of the definition of done is demonstrated by the diff or by a `verification` command run in the context of the task. The first `verification` command also serves as the post-merge check: put the most representative one there.
 - Each `verification` command is a simple command: no `cd`, `export` or assignment in front, no chaining (`&&`, `;`, `|`), no code evaluated inline (`node -e`, `python -c`…). An agent isolated in a worktree would see a compound command refused by Claude Code's isolation guard; plan-lint reports it. A verification that needs several steps becomes a script of the project, owned by the task or by a tooling task.
@@ -31,7 +39,7 @@ A plan written by orchestre 0.11 or earlier (French format: `taches/`, `SUIVI.md
 - A test does not write into a shared database such as the development database: it uses a dedicated test database, which the test script recreates.
 - A last task of global review, on opus, read-only. It also checks that comments, DECISIONS and procedures tell the truth.
 - Ids: capital letters then digits, a suffix of letters allowed (T01, T02, T02B). Tasks added during a run take a suffix.
-- One model per task, with its reason: see "Model of each task".
+- One model per task, with its reason: see "Model of each task". A task takes the model of its most demanding part.
 - Token estimate per task: 0.5 × max_turns × targeted context size, plus 30 % for the verification and the evaluation. On the pilot, the actual figure was 3 to 8 times higher: an order of magnitude, not a budget.
 
 ## Model of each task

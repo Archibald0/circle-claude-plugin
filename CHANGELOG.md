@@ -2,6 +2,19 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.15.0 — 2026-10-19: fewer tasks, each for a reason
+
+A plan no longer grows one task per finding. Asked by Fabien on 2026-10-19 after the plan `qa14707` (orchestre 0.14): 13 tasks prepared, 29 merged. The 16 added during the run came one per finding, from the replanner (7) and from the pilot after the rulings of a live evaluation (9); 9 of them owned `geocode_tool.py` and ran one after the other, each with a full cycle of worker, verification, evaluation, merge and progress.
+
+- `format.md`, splitting rules:
+  - a task of its own only for a reason: parallel work, a contract other tasks start from, a risk worth its own evaluation, or a size over half a context together with its neighbor. Documentation, configuration and tests of a change, the removal of what it replaces, a follow-up finding on the same files go into the task that causes them. Neither a different model nor a list of root causes is a reason;
+  - a phase is an increment checked end to end, no longer a layer of the code, unless a later phase depends on that layer as a contract;
+  - a task is worth a pull request a developer would review on its own, and takes the model of its most demanding part.
+- `/orchestre:prepare`: a new plan merges two chained tasks of one phase that own the same files unless a reason keeps them apart; a conversion merges a source task with its neighbor on the same rule. New step 2e: an evaluation the agents do not run (production model, real data) gets a reserved task "fixes after the evaluation", which its findings amend. The skeptical review asks each task for its reason, and the summary gives the number of tasks and, per task, why it stands alone.
+- Replanner (agent and workflow instructions): before adding a task, amend a task not yet started that owns the files concerned, then one added task for all the findings of an answer on the same files; a separate task only for a reason of the splitting rule. At equal safety, fewer tasks counts as less costly.
+- `/orchestre:run`: the tasks the pilot writes between two runs (after a ruling or a live evaluation) follow the same order. When two of them would share files, the pilot asks "Group these <N> findings?" ("One task per module", recommended, or "One task per finding", each with its number of tasks), runs plan-lint, then commits the task files alone: `plan(<n>): add <ids>`.
+- No format changes: plans of 0.12 to 0.14 run as they are.
+
 ## 0.14.0 — 2026-10-16: the detail card of "Your turn"
 
 In the `/progress` pane, the lines of "Your turn" stay cut to one line each, and their whole text can now be read before acting. Asked by Fabien on 2026-10-16 from a capture where most of the 10 lines were cut ("Q24 · The report of re-scored hotels_within_km is not produced; a human should re-score t…"); option A ("a detail card above") chosen out of five compared, then validated on a playable prototype.
