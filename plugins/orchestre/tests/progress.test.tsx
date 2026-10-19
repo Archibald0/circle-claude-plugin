@@ -144,6 +144,7 @@ test('/progress pane: a view in cards, its keys, its actions prepared in the pro
     const close = await one.find({ type: 'Button', key: 'detail-close' })
     expect([close?.props.label, close?.props.hotkey]).toEqual(['✕ Close', 'x'])
     expect((await one.find({ type: 'Button', key: 'detail-act' }))?.props.label).toBe('1 again → resume the run')
+    expect(await one.find({ type: 'Button', key: 'detail-d' })).toBeUndefined()
     await one.press({ key: 'action-1' })
     await one.unmount()
     // Acted: the prompt is filled, the detail card closed. Then 2 shows its detail, its button acts
@@ -153,6 +154,9 @@ test('/progress pane: a view in cards, its keys, its actions prepared in the pro
     await two.unmount()
     const twoDetail = await pane()
     expect(await twoDetail.find({ type: 'Text', text: /\.env\.example: add MR_MAX/ })).toBeDefined()
+    // A review (0.15.1): d prepares /orchestre:done; the item to settle (1) had none
+    const done = await twoDetail.find({ type: 'Button', key: 'detail-d' })
+    expect([done?.props.label, done?.props.hotkey]).toEqual(['d → mark done', 'd'])
     await twoDetail.press({ key: 'detail-act' })
     await twoDetail.unmount()
     // 3, then 2: the detail card follows; x closes it without acting

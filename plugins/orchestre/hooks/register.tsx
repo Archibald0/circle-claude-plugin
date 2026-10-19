@@ -388,7 +388,7 @@ export const register: Register = on => {
 
   // The pane: a view in cards, under the header and a blank line (0.13.1: no more keys that scroll to a card; ↑ ↓ and
   // Page Up/Down scroll the pane). The lines of "Your turn" have the keys 1 to 9 (0.14.0: first the detail card, x closes it), what comes next after a finished run c or
-  // p, the log card l for the whole log. ← and → stay with Claude Code.
+  // p, the log card l for the whole log; d in the detail card marks a review or an auto-decision done (0.15.1). ← and → stay with Claude Code.
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     const inst = await read($, snapshot)
@@ -498,7 +498,7 @@ function draw($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']
         // A mention of the banner leads to a card: a button, an amber badge on hover. An action of the pane: a button with
         // a key (1 to 9, c, p) that prepares its text in the prompt.
         if (target) return <Button key={`goto-${m.k ?? target}`} label={m.t} plain hover={{ scope: `orchestre-${m.k ?? target}`, color: 'inverseText', backgroundColor: 'warning', bold: true }} onPress={() => openFromBanner($, target)} />
-        if (action) return <Button key={action.key && action.mode !== 'select' ? 'detail-act' : `action-${action.hotkey ?? `${itemKey}-${i}`}`} label={m.t} plain {...(action.hotkey ? { hotkey: action.hotkey } : {})} onPress={() => press($, action)} />
+        if (action) return <Button key={action.key && action.mode !== 'select' ? (action.hotkey ? `detail-${action.hotkey}` : 'detail-act') : `action-${action.hotkey ?? `${itemKey}-${i}`}`} label={m.t} plain {...(action.hotkey ? { hotkey: action.hotkey } : {})} onPress={() => press($, action)} />
         return <Text key={`${itemKey}-${i}`} color={m.c} backgroundColor={m.f} bold={m.b} dimColor={m.d} wrap="truncate">{m.t}</Text>
       })}
     </Box>

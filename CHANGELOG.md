@@ -2,6 +2,16 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.15.1 — 2026-10-19: reviews and auto-decisions that leave "Your turn"
+
+In the `/progress` pane, the reviews before the PR and the auto-decisions stayed in "Your turn" for the whole plan, even once dealt with: `progress.json` only added them, and nothing could mark them done. Reported by Fabien on 2026-10-16 ("items stay even when they have been dealt with").
+
+- `progress.mjs ack { kind: "review" | "decision", task, text }`: marks a review (by its text) or an auto-decision (by its title) done. The text is matched exactly, otherwise on a unique start; `task` null (or `-`) for the source plan. The item stays in `progress.json` with its `done` date (new optional field of the schema), so that neither HANDOFF.md (read again at each run start) nor a close brings it back. A second call changes nothing; an item not found, or a start shared by several, is refused (code 1, nothing written). Logged as a pilot action.
+- New command `/orchestre:done <plan-dir> review|decision <task|-> <text>`, which runs `ack` and copies its line.
+- In the detail card of a review or an auto-decision, a second action: "d → mark done", which prepares `/orchestre:done …` in the prompt; nothing is sent. An item to settle has none: it leaves the list with the run, as before.
+- The pane, `/orchestre:status` and `progress.mjs status` no longer count the items done. The two status commands count the open reviews of `progress.json` when it exists (HANDOFF.md otherwise): a review noted only by a close is now counted, as in the pane.
+- The notification of a new review compares the reviews by task and text, no longer by the length of the list, which a review done shortens.
+- Not in this version: an issue settled in the pilot session outside a run still waits for the next run, and a prerequisite marked done waits for the next write of `progress.mjs`.
 ## 0.15.0 — 2026-10-19: fewer tasks, each for a reason
 
 A plan no longer grows one task per finding. Asked by Fabien on 2026-10-19 after the plan `qa14707` (orchestre 0.14): 13 tasks prepared, 29 merged. The 16 added during the run came one per finding, from the replanner (7) and from the pilot after the rulings of a live evaluation (9); 9 of them owned `geocode_tool.py` and ran one after the other, each with a full cycle of worker, verification, evaluation, merge and progress.

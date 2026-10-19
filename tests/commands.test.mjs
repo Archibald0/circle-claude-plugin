@@ -18,7 +18,7 @@ const PLUGIN = join(ROOT, 'plugins', 'orchestre')
 const SCRIPTS = join(PLUGIN, 'scripts')
 const read = p => readFileSync(p, 'utf8')
 const sorted = xs => [...new Set(xs)].sort()
-const SKILLS = ['install', 'prepare', 'ready', 'run', 'status']
+const SKILLS = ['install', 'prepare', 'ready', 'run', 'status', 'done']
 const text = Object.fromEntries(SKILLS.map(s => [s, read(join(PLUGIN, 'skills', s, 'SKILL.md'))]))
 const FORMAT = read(join(PLUGIN, 'skills', 'prepare', 'format.md'))
 const WF = read(join(PLUGIN, 'workflows', 'run-phase.js'))
@@ -80,10 +80,10 @@ let n = 0
 const test = (name, fn) => { fn(); n++; console.log('ok ·', name) }
 
 try {
-  test('five commands in English: folders, names, descriptions, arguments, model invocation', () => {
+  test('six commands in English: folders, names, descriptions, arguments, model invocation', () => {
     const dirs = readdirSync(join(PLUGIN, 'skills')).filter(d => statSync(join(PLUGIN, 'skills', d)).isDirectory())
     assert.deepEqual(sorted(dirs), sorted(SKILLS))
-    const hints = { install: '[--team]', prepare: '<existing plan (file or folder) | goal of the plan>', ready: '<plan-dir> [--no-dry-run]', run: '<plan-dir> [--resume]', status: '[<plan-dir>]' }
+    const hints = { install: '[--team]', prepare: '<existing plan (file or folder) | goal of the plan>', ready: '<plan-dir> [--no-dry-run]', run: '<plan-dir> [--resume]', status: '[<plan-dir>]', done: '<plan-dir> review|decision <task|-> <text>' }
     for (const s of SKILLS) {
       const { fm, body } = FM[s]
       assert.equal(fm.name, s, `${s}: name`)

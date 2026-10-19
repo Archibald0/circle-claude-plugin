@@ -19,6 +19,9 @@
 //   run-end    the workflow's return value (status, detail, stop_issue, open_issues, tasks…);
 //              closes, from the summary, the tasks left without a close (workflow exception) and then regenerates PROGRESS.md
 //   pilot      { task, status: "merged" | "cancelled", reason? }      pilot's manual action; regenerates PROGRESS.md
+//   ack        { kind: "review" | "decision", task, text }      a review before the PR or an auto-decision marked done
+//              (0.15.1, /orchestre:done): its "done" date is set, it leaves "Your turn"; task null for the source plan;
+//              text: the review's text, or the decision's title
 //   view [--stdout]        regenerates PROGRESS.md (or prints it without writing anything); statuses reread from PROGRESS.md
 //                          and git, as run-start
 //   status                 progress as compact Markdown, like /orchestre:status; read-only, always code 0
@@ -183,13 +186,14 @@ export const SCHEMA = {
       inconsistency: { type: 'string' },
       options: arrayOf(object(['id', 'description'], { id: { type: 'string', minLength: 1 }, description: { type: 'string' }, impact: { type: 'string' }, recommended: { type: 'boolean' } })),
     }),
-    autoDecision: object(['run', 'task', 'title', 'option', 'description'], { run: INT1, task: ref('taskId'), title: { type: 'string' }, option: { type: 'string' }, description: { type: 'string' } }),
+    autoDecision: object(['run', 'task', 'title', 'option', 'description'], { run: INT1, task: ref('taskId'), title: { type: 'string' }, option: { type: 'string' }, description: { type: 'string' }, done: ref('date') }),
     review: object(['task', 'phase', 'text', 'run', 'at'], {
       task: { oneOf: [ref('taskId'), { type: 'null' }] },
       phase: { type: ['integer', 'null'], minimum: 1 },
       text: { type: 'string', minLength: 1 },
       run: { type: ['integer', 'null'], minimum: 1 },
       at: ref('dateOrNull'),
+      done: ref('date'),
     }),
     prerequisite: object(['id', 'type', 'status', 'text', 'blocks'], { id: ref('taskId'), type: { type: 'string' }, status: { type: 'string' }, text: { type: 'string' }, blocks: ref('ids') }),
     event: object(['at', 'kind', 'task', 'text'], {
@@ -833,6 +837,30 @@ function pilot(doc, E, { J, at }) {
   return { view: true, message: `${t.id} ${E.status}; PROGRESS.md regenerated, to commit` }
 }
 
+// A review or an auto-decision marked done by the pilot (0.15.1): kept, with its date, so that neither HANDOFF.md
+// (mergeReviews) nor a close brings it back. Matched on the exact text, otherwise on a unique start of the text.
+const squash = x => String(x ?? '').replace(/\s+/g, ' ').trim()
+function ack(doc, E, { J, at }) {
+  if (!['review', 'decision'].includes(E.kind)) refuse(`ack: kind "${E.kind}" not allowed (review or decision)`)
+  const text = squash(E.text)
+  if (!text) refuse('ack: text expected (the text of the review, or the title of the decision)')
+  const task = E.task == null || E.task === '' || E.task === '-' || E.task === 'source plan' ? null : String(E.task)
+  if (task != null && !RE_ID.test(task)) refuse(`ack: task "${task}" is not a task id`)
+  const items = E.kind === 'review' ? doc.reviews : doc.auto_decisions
+  const label = x => squash(E.kind === 'review' ? x.text : x.title)
+  const same = items.filter(x => (x.task ?? null) === task)
+  let found = same.filter(x => label(x) === text)
+  if (!found.length) found = same.filter(x => label(x).startsWith(text.replace(/…$/, '')))
+  const what = `${E.kind === 'review' ? 'review' : 'auto-decision'} of ${task ?? 'the source plan'}`
+  if (!found.length) refuse(`ack: no ${what} "${clip(text, 60)}" in progress.json`)
+  const open = found.filter(x => !x.done)
+  if (!open.length) return { message: `${what} already done` }
+  if (new Set(open.map(label)).size > 1) refuse(`ack: ${open.length} ${E.kind === 'review' ? 'reviews' : 'auto-decisions'} of ${task ?? 'the source plan'} start with "${clip(text, 60)}": give the whole text`)
+  for (const x of open) x.done = at
+  J('pilot', task, `${what} done by the pilot: ${clip(label(open[0]), 80)}`)
+  return { message: `${what} done; it leaves "Your turn"` }
+}
+
 // ─── Read: plan status, as status.mjs, with the current step when a run is going ───────────────────────────────
 const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`
 const bar = (r, n) => { const k = Math.floor(r * n); return '█'.repeat(k) + '░'.repeat(n - k) }
@@ -893,7 +921,8 @@ function status(arg) {
   for (const [st, what] of Object.entries(ATTENTION)) for (const t of active.filter(x => x.status === st && !inStep(x))) yourTurn.push(`${t.id} ${what}`)
   const counts = parseHandoff(handoff).counts
   const count = type => Object.values(counts).reduce((n, c) => n + (c[type] ? c[type].minor + c[type].major : 0), 0)
-  const reviews = count('review'), tickets = count('ticket')
+  // The reviews still open in the progress file (those marked done no longer wait, 0.15.1), otherwise those of HANDOFF.md
+  const reviews = doc ? doc.reviews.filter(r => !r.done).length : count('review'), tickets = count('ticket')
   if (reviews) yourTurn.push(`${plural(reviews, 'review')} before the PR`)
   if (tickets) yourTurn.push(`${plural(tickets, 'ticket')} after the PR`)
   if (!L.ok) yourTurn.push(`plan-lint: ${plural((L.errors || []).length, 'error')}`)
@@ -934,8 +963,8 @@ function input(json) {
   return E
 }
 
-const WRITES = { 'run-start': runStart, step, close, ruling, 'run-end': runEnd, pilot }
-const USAGE = 'usage: progress.mjs <run-start|step|close|ruling|run-end|pilot|view|status|validate> [<plan-dir>] [--stdout] [--file <progress.json>] [--json <object>]; for writes, JSON in --json or on standard input'
+const WRITES = { 'run-start': runStart, step, close, ruling, 'run-end': runEnd, pilot, ack }
+const USAGE = 'usage: progress.mjs <run-start|step|close|ruling|run-end|pilot|ack|view|status|validate> [<plan-dir>] [--stdout] [--file <progress.json>] [--json <object>]; for writes, JSON in --json or on standard input'
 
 function main() {
   const argv = process.argv.slice(2), cmd = argv[0]

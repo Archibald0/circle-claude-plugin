@@ -77,7 +77,8 @@ export type Action = { hotkey: string | null; prompt: string; help: string; key?
 // key: the item of "Your turn" it comes from; mode select: a first press shows the detail card, a second one acts (0.14.0)
 
 // An item of "Your turn": its key stays the same while it is there, its group says where it comes from
-export type YourTurnItem = { key: string; group: 'settle' | 'review' | 'decision'; task: string; g: Piece; text: string; detail?: string; prompt: string; help: string }
+// ack: the /orchestre:done that marks a review or an auto-decision done, key d of the detail card (0.15.1)
+export type YourTurnItem = { key: string; group: 'settle' | 'review' | 'decision'; task: string; g: Piece; text: string; detail?: string; prompt: string; help: string; ack?: string }
 
 // The cards of the pane, in order; the banner opens the pane at one of them
 export type Section = 'detail' | 'yourTurn' | 'run' | 'tasks' | 'log'

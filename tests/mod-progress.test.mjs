@@ -547,9 +547,10 @@ try {
       assert.equal(body, `T03 · ${long}`)
       assert.ok(d.lines.length > 3)
       const act = d.lines.flat().filter(m => m.x)
-      assert.equal(act.length, 1)
+      assert.equal(act.length, 2, 'the action, then d (0.15.1)')
       assert.deepEqual([act[0].t, act[0].x.hotkey, act[0].x.mode, act[0].x.key], [`${rank} again → review`, null, undefined, k])
       assert.equal(act[0].x.prompt, `Review with me, before the PR (review of T03): ${long}`)
+      assert.deepEqual([act[1].t, act[1].x.hotkey, act[1].x.key, act[1].x.prompt], ['d → mark done', 'd', k, `/orchestre:done plans/demo review T03 ${long}`])
       // The selected line: ▸ and bold, still cut
       const line = p.cards[1].lines.find(l => l.some(m => m.x?.key === k))
       assert.deepEqual([line[0].t, line[0].c, line[2].b], ['▸', 'claude', true])
@@ -569,6 +570,28 @@ try {
     // The same review twice: two keys
     const twice = { ...B, reviews: [B.reviews[0], B.reviews[0]] }
     assert.deepEqual(M.yourTurnItems(twice, tA).items.filter(it => it.group === 'review').map(it => it.key.replace(/^review\|.*?(#\d)?$/, '$1')), ['', '#2'])
+  })
+
+  testCase('mark done (0.15.1): d on a review or an auto-decision, the items done leave "Your turn", the notifications by key', () => {
+    const items = M.yourTurnItems(B, tA).items
+    const review = items.find(it => it.group === 'review'), decision = items.find(it => it.group === 'decision'), settle = items.find(it => it.group === 'settle')
+    assert.equal(review.ack, `/orchestre:done plans/demo review ${review.task} ${B.reviews.find(r => r.task === review.task).text}`)
+    assert.equal(decision.ack, `/orchestre:done plans/demo decision ${decision.task} ${B.decisions[0].title}`)
+    assert.equal(settle.ack, undefined)
+    // No d on an item to settle: it leaves the list with the run
+    assert.equal(M.detailCard(B, tA, 100, settle.key).lines.flat().filter(m => m.x?.hotkey === M.DONE_KEY).length, 0)
+    // The source plan: "-"
+    const source = { ...B, reviews: [{ task: null, phase: null, text: 'README: relire', at: null }] }
+    assert.equal(M.yourTurnItems(source, tA).items.find(it => it.group === 'review').ack, '/orchestre:done plans/demo review - README: relire')
+    // done in progress.json: neither in the snapshot nor in the list
+    const raw = rawFile()
+    const marked = { ...raw, reviews: raw.reviews.map((r, i) => (i ? r : { ...r, done: '2026-10-18T10:00:00+02:00' })), auto_decisions: raw.auto_decisions.map(d => ({ ...d, done: '2026-10-18T10:00:00+02:00' })) }
+    const before = M.normalize(raw), after = M.normalize(marked)
+    assert.deepEqual([after.reviews.length, after.decisions.length], [before.reviews.length - 1, 0])
+    // A review done and a new one in the same read: the new one is notified
+    const next = { ...after, reviews: [...after.reviews, { task: 'T01', phase: 1, text: 'new one', at: null }] }
+    assert.ok(M.changes(before, next).includes('⚑ T01: to review before the PR'), JSON.stringify(M.changes(before, next)))
+    assert.deepEqual(M.changes(before, after).filter(m => m.startsWith('⚑')), [])
   })
 
   testCase('wrap: words over lines of n characters at most, a word too long cut', () => {

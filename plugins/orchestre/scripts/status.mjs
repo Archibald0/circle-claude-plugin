@@ -91,7 +91,10 @@ function status() {
   for (const [st, what] of Object.entries(ATTENTION)) for (const t of active.filter(x => x.status === st)) yourTurn.push(`${t.id} ${what}`)
   const handoff = attempt(() => readFileSync(join(dir, 'HANDOFF.md'), 'utf8')) || ''
   const count = type => (handoff.match(new RegExp(`^\\s*(?:[-*]\\s*)?${type}\\s*·`, 'gim')) || []).length
-  const reviews = count('review'), tickets = count('ticket')
+  // The reviews still open in progress.json (those marked done no longer wait, 0.15.1), otherwise those of HANDOFF.md
+  const progress = attempt(() => JSON.parse(readFileSync(join(dir, 'progress.json'), 'utf8')))
+  const open = progress && Array.isArray(progress.reviews) && progress.format === 'orchestre-progress/3' ? progress.reviews.filter(r => r && !r.done).length : null
+  const reviews = open ?? count('review'), tickets = count('ticket')
   if (reviews) yourTurn.push(`${plural(reviews, 'review')} before the PR`)
   if (tickets) yourTurn.push(`${plural(tickets, 'ticket')} after the PR`)
   if (!L.ok) yourTurn.push(`plan-lint: ${plural((L.errors || []).length, 'error')}`)

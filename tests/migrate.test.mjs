@@ -306,7 +306,8 @@ review · major · .env.example : vérifier SESSION_SECRET avant la PR
     assert.equal(view.out + '\n', R.read('PROGRESS.md'), 'the table migrate writes is the one progress.mjs renders')
     const st = R.script('status.mjs', 'plans/boutique').out
     assert.match(st, /^## boutique — 1\/3 tasks · 33%\n`█{8}░{16}` phase 1 in progress · last merge T01 /)
-    assert.ok(st.includes('**Your turn**: D5 (decision) blocks T02 · 1 review before the PR'), st)
+    // The open reviews of progress.json (0.15.1): the one of HANDOFF.md and the one of the T01 close, as in /progress
+    assert.ok(st.includes('**Your turn**: D5 (decision) blocks T02 · 2 reviews before the PR'), st)
     assert.equal(R.script('worktrees.mjs', 'clean', 'plans/boutique').out, 'worktrees plans/boutique: 0 removed, 0 kept')
     // The run goes on with the 0.12 scripts
     assert.equal(R.script('progress.mjs', 'run-start', 'plans/boutique', '--json', JSON.stringify({ phase: 1, mode: 'deviation', parallelism: 2, max_fixes: 2, max_auto_decisions: 3 })).code, 0)

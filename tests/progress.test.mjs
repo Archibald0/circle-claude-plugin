@@ -425,6 +425,52 @@ async function main() {
     assert.ok(C.doc().log.some(e => e.kind === 'pilot' && e.text === 'T08: cancelled by the pilot — out of scope'))
   })
 
+  await test('ack (0.15.1): a review or an auto-decision marked done, kept with its date; not brought back by HANDOFF.md nor by a close; refusals', () => {
+    // Reviews as the scribe and HANDOFF.md leave them
+    const seeded = C.doc()
+    seeded.reviews = [{ task: 'T03', phase: 1, text: 'agents/x/.env.example: add MR_MAX', run: 2, at: null }, { task: 'T03', phase: 1, text: 'docs/DEPLOY.md: relire', run: 2, at: null }, { task: null, phase: null, text: 'README: relire', run: null, at: null }]
+    writeFileSync(join(C.d, 'progress.json'), JSON.stringify(seeded, null, 2) + '\n')
+    writeFileSync(join(C.d, 'HANDOFF.md'), '## source plan\n- review · minor · README: relire\n')
+    const view = C.read('PROGRESS.md')
+    let r = C.progress('ack', { kind: 'review', task: 'T03', text: 'agents/x/.env.example: add MR_MAX' })
+    assert.deepEqual([r.code, r.out], [0, 'progress: review of T03 done; it leaves "Your turn"'], r.err)
+    assert.equal(C.read('PROGRESS.md'), view, 'PROGRESS.md untouched')
+    // A unique start, the source plan as "-"; again: nothing changes
+    assert.equal(C.progress('ack', { kind: 'review', task: '-', text: 'README' }).code, 0)
+    assert.equal(C.progress('ack', { kind: 'review', task: null, text: 'README: relire' }).out, 'progress: review of the source plan already done')
+    // The decision, by its title
+    assert.equal(C.progress('ack', { kind: 'decision', task: 'T03', text: 'Retry threshold' }).out, 'progress: auto-decision of T03 done; it leaves "Your turn"')
+    let doc = C.doc()
+    assert.deepEqual(doc.reviews.map(x => !!x.done), [true, false, true])
+    assert.ok(doc.auto_decisions.every(x => typeof x.done === 'string'))
+    assert.ok(doc.log.some(e => e.kind === 'pilot' && e.task === 'T03' && e.text === 'review of T03 done by the pilot: agents/x/.env.example: add MR_MAX'))
+    assert.equal(C.progress('validate').code, 0)
+    // The next run reads HANDOFF.md again: the review done is not brought back; status counts the one left open
+    assert.equal(C.progress('run-start', RUN).code, 0)
+    assert.equal(C.progress('close', { task: 'T03', status: 'merged', attempts: 1, branch: 'task/T03', reviews: ['agents/x/.env.example: add MR_MAX'] }).code, 0)
+    doc = C.doc()
+    assert.deepEqual([doc.reviews.length, doc.reviews.filter(x => !x.done).map(x => x.text)], [3, ['docs/DEPLOY.md: relire']])
+    assert.ok(C.progress('status').out.includes('1 review before the PR'))
+    assert.equal(C.progress('run-end', { status: 'finished' }).code, 0)
+    // Refusals: nothing written
+    const before = C.read('progress.json')
+    for (const [E, re] of [
+      [{ kind: 'issue', task: 'T03', text: 'x' }, /kind "issue" not allowed/],
+      [{ kind: 'review', task: 'T03', text: '' }, /text expected/],
+      [{ kind: 'review', task: 'T03', text: 'nothing like it' }, /no review of T03 "nothing like it"/],
+      [{ kind: 'review', task: 'bad', text: 'x' }, /not a task id/],
+    ]) {
+      r = C.progress('ack', E)
+      assert.equal(r.code, 1, JSON.stringify(E)); assert.match(r.err, re)
+    }
+    seeded.reviews = [{ task: 'T05', phase: 1, text: 'a.env: x', run: 2, at: null }, { task: 'T05', phase: 1, text: 'a.env: y', run: 2, at: null }]
+    writeFileSync(join(C.d, 'progress.json'), JSON.stringify({ ...JSON.parse(before), reviews: seeded.reviews }, null, 2) + '\n')
+    r = C.progress('ack', { kind: 'review', task: 'T05', text: 'a.env' })
+    assert.equal(r.code, 1); assert.match(r.err, /2 reviews of T05 start with "a.env": give the whole text/)
+    writeFileSync(join(C.d, 'progress.json'), before)
+    C.git('add', '-A'); C.git('commit', '-qm', 'progress: reviews done')
+  })
+
   await test('--json: same effect as standard input, text escaped as the workflow writes it; added task without a file skipped', () => {
     const gaps = ["the option `--force` costs $5", 'quotes "double", backslash \\ and accents éèà']
     const raw = JSON.stringify({ task: 'T07', step: 'fix', rejection: { attempt: 1, by: 'evaluation', gaps } })

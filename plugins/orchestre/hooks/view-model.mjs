@@ -78,8 +78,9 @@ export function normalize(raw) {
     tasks,
     runs: runs.map(runView),
     run: lastRun ? runView(lastRun) : null,
-    reviews: (Array.isArray(raw.reviews) ? raw.reviews : []).filter(isObject).map(r => ({ task: r.task == null ? null : text(r.task), phase: Number.isInteger(r.phase) ? r.phase : null, text: text(r.text), at: date(r.at) })),
-    decisions: (Array.isArray(raw.auto_decisions) ? raw.auto_decisions : []).filter(isObject).map(d => ({ task: text(d.task), title: text(d.title), option: text(d.option), description: text(d.description) })),
+    // Reviews and auto-decisions marked done (/orchestre:done, 0.15.1) no longer wait
+    reviews: (Array.isArray(raw.reviews) ? raw.reviews : []).filter(r => isObject(r) && !r.done).map(r => ({ task: r.task == null ? null : text(r.task), phase: Number.isInteger(r.phase) ? r.phase : null, text: text(r.text), at: date(r.at) })),
+    decisions: (Array.isArray(raw.auto_decisions) ? raw.auto_decisions : []).filter(d => isObject(d) && !d.done).map(d => ({ task: text(d.task), title: text(d.title), option: text(d.option), description: text(d.description) })),
     issues: (Array.isArray(raw.issues) ? raw.issues : []).filter(p => isObject(p) && p.status !== 'settled').map(p => ({ task: text(p.task), title: text(p.title), human: p.human === true, role: text(p.role) })),
     prerequisites: (Array.isArray(raw.prerequisites) ? raw.prerequisites : []).filter(p => isObject(p) && p.status === 'open').map(p => ({ id: text(p.id), type: text(p.type), blocks: texts(p.blocks) })),
     majorCounts, tickets,
@@ -621,8 +622,10 @@ export function yourTurnItems(inst, now) {
   for (const p of inst.prerequisites) items.push({ key: '', group: 'settle', task: p.id, g: { t: '◇', c: 'warning', b: true }, text: `${p.id} (${p.type}) open${p.blocks.length ? `, blocks ${p.blocks.slice(0, 4).join(', ')}` : ''}`, prompt: `/orchestre:ready ${dir}`, help: 'settle the prerequisites' })
   if (!inst.lint.ok) items.push({ key: '', group: 'settle', task: 'plan-lint', g: { t: '✗', c: 'error', b: true }, text: `plan-lint: ${plural(inst.lint.errors, 'error')} at the last progress update`, prompt: `Show me the plan-lint errors on ${dir} and propose a fix.`, help: 'ask the pilot' })
   const urgent = items.length
-  for (const r of inst.reviews) items.push({ key: '', group: 'review', task: r.task ?? 'source plan', g: { t: '⚑', c: 'warning' }, text: `${r.task ?? 'source plan'} · ${r.text}`, prompt: `Review with me, before the PR (review of ${r.task ?? 'source plan'}): ${r.text}`, help: 'review' })
-  for (const d of inst.decisions) items.push({ key: '', group: 'decision', task: d.task, g: { t: '⇒', c: 'merged' }, text: `${d.task} · ${d.title}: ${d.option}${d.description ? ` (${d.description})` : ''}`, prompt: `Go over the auto-decision for ${d.task} with me: "${d.title}", option ${d.option}${d.description ? ` (${d.description})` : ''}.`, help: 'go over' })
+  // d in the detail card (0.15.1): /orchestre:done marks it done, and it leaves the list
+  const done = /** @param {'review' | 'decision'} kind @param {string | null} task @param {string} text */ (kind, task, text) => `/orchestre:done ${dir} ${kind} ${task ?? '-'} ${text}`
+  for (const r of inst.reviews) items.push({ key: '', group: 'review', ack: done('review', r.task, r.text), task: r.task ?? 'source plan', g: { t: '⚑', c: 'warning' }, text: `${r.task ?? 'source plan'} · ${r.text}`, prompt: `Review with me, before the PR (review of ${r.task ?? 'source plan'}): ${r.text}`, help: 'review' })
+  for (const d of inst.decisions) items.push({ key: '', group: 'decision', ack: done('decision', d.task, d.title), task: d.task, g: { t: '⇒', c: 'merged' }, text: `${d.task} · ${d.title}: ${d.option}${d.description ? ` (${d.description})` : ''}`, prompt: `Go over the auto-decision for ${d.task} with me: "${d.title}", option ${d.option}${d.description ? ` (${d.description})` : ''}.`, help: 'go over' })
   // The key: the group and the text; the same text twice gets its rank
   /** @type {Map<string, number>} */
   const counts = new Map()
@@ -666,6 +669,9 @@ export function yourTurnCard(inst, now, columns, selected = null) {
   }
 }
 
+// The action of the detail card that marks a review or an auto-decision done (0.15.1)
+export const DONE_KEY = 'd'
+const DONE_HELP = 'mark done'
 // The button that closes the detail card (key x), on its top line
 export const CLOSE_LABEL = '✕ Close'
 const GROUPS = /** @type {Record<YourTurnItem['group'], string>} */ ({ settle: 'to settle', review: 'to review before the PR', decision: 'auto-decision' })
@@ -693,6 +699,8 @@ export function detailCard(inst, now, columns, selected) {
   if (it.detail) lines.push(...field('blocker', it.detail, false))
   lines.push(...field('prompt', it.prompt, true))
   lines.push([{ t: `${hotkey ? `${hotkey} again ` : ''}→ ${it.help}`, x: { hotkey: null, prompt: it.prompt, help: it.help, key: it.key } }, { t: '  nothing is sent', d: true }])
+  // A review or an auto-decision: d prepares /orchestre:done, which marks it done (0.15.1)
+  if (it.ack) lines.push([{ t: `${DONE_KEY} → ${DONE_HELP}`, x: { hotkey: DONE_KEY, prompt: it.ack, help: DONE_HELP, key: it.key } }, { t: '  nothing is sent', d: true }])
   return {
     id: 'detail', color: 'claude',
     title: [{ t: '▸ Detail', c: 'claude', b: true }, { t: ' · ', d: true }, { t: `${hotkey ? `${hotkey} · ` : ''}${cut(it.task, 20)}`, b: true }, { t: ` · ${GROUPS[it.group]}`, d: true }],
@@ -1084,7 +1092,11 @@ export function changes(before, after) {
   for (const n of [...new Set(after.tasks.map(t => t.phase))]) if (finished(after, n) && !finished(before, n)) m.push(`Phase ${n} finished`)
   // One notification per task, whatever the number of reviews a close brings
   const newOnes = /** @type {Map<string, number>} */ (new Map())
-  for (const r of after.reviews.slice(before.reviews.length)) newOnes.set(r.task ?? 'source plan', (newOnes.get(r.task ?? 'source plan') || 0) + 1)
+  // New: not among those of the previous read, compared by task and text (a review marked done leaves the list, 0.15.1)
+  const old = /** @type {Map<string, number>} */ (new Map())
+  for (const r of before.reviews) old.set(`${r.task}\u0000${r.text}`, (old.get(`${r.task}\u0000${r.text}`) || 0) + 1)
+  const added = after.reviews.filter(r => { const k = `${r.task}\u0000${r.text}`, c = old.get(k) || 0; if (c) old.set(k, c - 1); return !c })
+  for (const r of added) newOnes.set(r.task ?? 'source plan', (newOnes.get(r.task ?? 'source plan') || 0) + 1)
   for (const [who, k] of newOnes) m.push(`⚑ ${who}: ${k > 1 ? `${k} reviews` : 'to review'} before the PR`)
   // An issue becomes the stop issue at the end of the run (the run end notes it with the role "stop"): the role is part of the key
   const itemKey = /** @param {{ task: string, title: string, role: string }} p */ p => `${p.task}\u0000${p.title}\u0000${p.role}`

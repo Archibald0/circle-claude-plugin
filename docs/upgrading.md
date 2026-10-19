@@ -8,6 +8,7 @@ Nothing to do: no format changes, plans of 0.12 to 0.14 run as they are.
 
 1. 0.14.0: in the `/progress` pane, 1 to 9 (or a click) show the whole text of a line of "Your turn" in a detail card; a second press acts.
 2. 0.15.0: fewer tasks, each for a reason. `/orchestre:prepare`, the replanner and the pilot only give a piece of work a task of its own for parallel work, a contract, a risk or its size; the pilot asks before writing several tasks on the same files.
+3. 0.15.1: a review before the PR or an auto-decision can be marked done with `/orchestre:done` (or `d` in the detail card of `/progress`); it then leaves "Your turn". The command carries its own permission (`allowed-tools`): nothing to add to the settings.
 
 ## From 0.12 to 0.13
 

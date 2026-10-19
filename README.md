@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/orchestre-0.15.0-E8743B" alt="orchestre 0.15.0">
+  <img src="https://img.shields.io/badge/orchestre-0.15.1-E8743B" alt="orchestre 0.15.1">
   <img src="https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.287-1F2340" alt="Claude Code 2.1.287 or later">
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A5%2018-1F2340" alt="Node.js 18 or later">
 </p>
@@ -131,6 +131,7 @@ To try orchestre on a toy repository first: [First try](docs/reference.md#first-
 | `/orchestre:ready plans/<name> [--no-dry-run]` | Checks that the plan can run, without running any task, and gives a verdict phase by phase. |
 | `/orchestre:run plans/<name> [--resume]` | Runs the plan, one workflow run per phase. `--resume` first recalls where the plan stands. |
 | `/orchestre:status [plans/<name>]` | Shows the progress of the plan as a table. Read-only, also during a run. |
+| `/orchestre:done plans/<name> review\|decision <task\|-> <text>` | Marks a review before the PR or an auto-decision done: it leaves "Your turn". The `d` key of the detail card of `/progress` prepares it. |
 | `/progress [plans/<name> \| auto]` | Opens the progress pane. A plan path picks the plan; `auto` follows the last one written. |
 | `/progress text` | Gives the same state as text. |
 | `/progress demo` | Plays two runs of a made-up plan in a little over a minute, without reading or writing the repository. |
