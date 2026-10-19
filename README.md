@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/orchestre-0.13.1-E8743B" alt="orchestre 0.13.1">
+  <img src="https://img.shields.io/badge/orchestre-0.15.0-E8743B" alt="orchestre 0.15.0">
   <img src="https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.287-1F2340" alt="Claude Code 2.1.287 or later">
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A5%2018-1F2340" alt="Node.js 18 or later">
 </p>

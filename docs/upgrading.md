@@ -2,6 +2,13 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.13 to 0.15
+
+Nothing to do: no format changes, plans of 0.12 to 0.14 run as they are.
+
+1. 0.14.0: in the `/progress` pane, 1 to 9 (or a click) show the whole text of a line of "Your turn" in a detail card; a second press acts.
+2. 0.15.0: fewer tasks, each for a reason. `/orchestre:prepare`, the replanner and the pilot only give a piece of work a task of its own for parallel work, a contract, a risk or its size; the pilot asks before writing several tasks on the same files.
+
 ## From 0.12 to 0.13
 
 0.13.0 checks and writes the settings through one script, `scripts/settings.mjs`, and `/orchestre:prepare` installs orchestre when it is missing.

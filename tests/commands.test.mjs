@@ -452,6 +452,22 @@ try {
     for (const s of ['run', 'ready']) assert.ok(text[s].includes('in the plan\'s language: `language` of `orchestre.config.json`, `"en"` when absent'), `${s}: language of the pilot`)
   })
 
+  test('version (0.15.0): the README badge and a CHANGELOG section follow plugin.json', () => {
+    const version = JSON.parse(read(join(PLUGIN, '.claude-plugin', 'plugin.json'))).version
+    const badges = [...read(join(ROOT, 'README.md')).matchAll(/badge\/orchestre-([0-9.]+)-/g)].map(m => m[1])
+    assert.deepEqual(badges, [version], 'one orchestre badge, at the version of plugin.json')
+    assert.ok(read(join(ROOT, 'CHANGELOG.md')).includes(`\n## ${version} `), `CHANGELOG.md: section ## ${version}`)
+  })
+
+  test('splitting rule (0.15.0): one rule in the format, cited by /prepare, /run, the replanner and the workflow', () => {
+    assert.ok(FORMAT.includes('- Own task only for a reason:'), 'format.md defines the rule')
+    for (const reason of ['parallel:', 'contract:', 'risk:', 'size:']) assert.ok(FORMAT.includes(`  - ${reason}`), `format.md: reason ${reason}`)
+    assert.ok(text.prepare.includes('"Own task only for a reason"'), '/prepare cites the rule')
+    assert.ok(text.run.includes('"Own task only for a reason"') && text.run.includes('"Group these <N> findings?"'), '/run: pilot tasks follow the rule')
+    assert.ok(read(join(PLUGIN, 'agents', 'replanner.md')).includes('before adding a task, prefer, in this order'), 'replanner: amend, group, then add')
+    assert.ok(WF.includes('Before adding a task, prefer amending a task not yet started'), 'workflow instructions of the replanner')
+  })
+
   console.log(`commands: ALL GREEN (${n} tests)`)
 } finally {
   for (const d of tmp) rmSync(d, { recursive: true, force: true })
