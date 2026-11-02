@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/orchestre-0.15.1-E8743B" alt="orchestre 0.15.1">
+  <img src="https://img.shields.io/badge/orchestre-0.16.0-E8743B" alt="orchestre 0.16.0">
   <img src="https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.287-1F2340" alt="Claude Code 2.1.287 or later">
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A5%2018-1F2340" alt="Node.js 18 or later">
 </p>
@@ -26,12 +26,12 @@
 
 A long dev plan does not fit in one Claude Code session: the context fills up, and someone has to track what is done, what failed and what is left. orchestre splits the work into a plan of phases and tasks, and runs it with a team of agents. Each task is done on its own branch, in its own worktree when tasks run side by side, then verified, evaluated and merged into an integration branch, until that branch is ready for a pull request. You step in only when a decision is yours.
 
-**Follow a long run without watching it.** A banner above the prompt shows the phase, the progress and the task in progress. `/progress` opens a pane: what waits for you comes first, one key per action, then the run, the tasks as timelines and the log. A notification comes only when a task needs you or a run stops, and when you come back after a break, one says what changed. To see it without a run: `/progress demo`.
+**Follow a long run without watching it.** A banner above the prompt shows the phase, the progress and the task in progress. `/progress` opens a pane: what waits for you comes first, each item with its buttons (review it with Claude, mark it done, move it to tickets, fix its text), then the run, the tasks as timelines and the log. A notification comes only when a task needs you or a run stops, and when you come back after a break, one says what changed. To see it without a run: `/progress demo`.
 
 <p align="center">
   <img src="brand/screenshots/progress-panel.png" width="793" alt="The /progress pane at the end of the demo: the reviews to do before the pull request, each with its key, then the finished run, the tasks as timelines and the log">
   <br>
-  <em>The <code>/progress</code> pane, last frame of <code>/progress demo</code>: what waits for you comes first, one key per action.</em>
+  <em>The <code>/progress</code> pane, last frame of <code>/progress demo</code>: what waits for you comes first.</em>
 </p>
 
 ## Use
@@ -131,7 +131,7 @@ To try orchestre on a toy repository first: [First try](docs/reference.md#first-
 | `/orchestre:ready plans/<name> [--no-dry-run]` | Checks that the plan can run, without running any task, and gives a verdict phase by phase. |
 | `/orchestre:run plans/<name> [--resume]` | Runs the plan, one workflow run per phase. `--resume` first recalls where the plan stands. |
 | `/orchestre:status [plans/<name>]` | Shows the progress of the plan as a table. Read-only, also during a run. |
-| `/orchestre:done plans/<name> review\|decision <task\|-> <text>` | Marks a review before the PR or an auto-decision done: it leaves "Your turn". The `d` key of the detail card of `/progress` prepares it. |
+| `/orchestre:done plans/<name> [ticket] [review\|decision <task\|-> <text>]` | With the plan alone, lists the reviews before the PR and the auto-decisions still open and closes them on a one-line answer (`1-6 done, 8 ticket`). With an item, marks it done, or moves it to tickets with `ticket`. The buttons of `/progress` do the same without a turn. |
 | `/progress [plans/<name> \| auto]` | Opens the progress pane. A plan path picks the plan; `auto` follows the last one written. |
 | `/progress text` | Gives the same state as text. |
 | `/progress demo` | Plays two runs of a made-up plan in a little over a minute, without reading or writing the repository. |
@@ -140,17 +140,25 @@ To try orchestre on a toy repository first: [First try](docs/reference.md#first-
 </details>
 
 <details>
-<summary><strong>Keys of the <code>/progress</code> pane</strong></summary>
+<summary><strong>Keys and buttons of the <code>/progress</code> pane</strong></summary>
 
-An action key only prepares a text in the prompt: nothing is sent without you. <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Page Up</kbd> and <kbd>Page Down</kbd> scroll the pane.
+<kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Page Up</kbd> and <kbd>Page Down</kbd> scroll the pane.
 
 | Key | Action |
 | :- | :- |
+| <kbd>1</kbd> to <kbd>9</kbd> | Show a line of "Your turn" in the detail card, with its buttons; a second press closes it. |
 | <kbd>l</kbd> | Switch the log card between its last entries and the whole log (its counter, "l: all (24)"). |
-| <kbd>1</kbd> to <kbd>9</kbd> | Prepare the action of a line of "Your turn": resume the run, review a file, go over an auto-decision… |
-| <kbd>c</kbd> | Prepare `/orchestre:run plans/<name> --resume`, after a run that ended before the plan is finished. |
-| <kbd>p</kbd> | Prepare the pull request draft, once the plan is finished. |
 | <kbd>Esc</kbd> | Close the pane. |
+
+The actions are buttons, in brackets, without a key:
+
+| Button | Where | What it does |
+| :- | :- | :- |
+| `[ Review with Claude ]`, `[ Go over with Claude ]`, `[ Resume the run ]`… | Detail card | Prepares the item's request in the prompt; nothing is sent without you. |
+| `[ ✓ Done ]`, `[ → Ticket ]`, `[ ✎ Edit text ]` | Detail card of a review or an auto-decision | Marks it done, moves it to the tickets to open after the PR, or changes its text. At once, without a turn of Claude. |
+| `[ Undo ]` | Under "Your turn" | Cancels the last of these actions. |
+| `[ Next 3 › ]` | Under "Your turn" | Shows the items beyond the 9th. |
+| `[ Resume command in the prompt ]`, `[ PR draft in the prompt ]` | Run card | Prepares what comes next after a run. |
 
 In the banner, "⤢ Details" opens the pane and, after a run, "✕ Hide" hides the banner. Both are clicked; they have no key.
 

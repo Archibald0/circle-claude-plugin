@@ -98,7 +98,7 @@ const STOPPED = doc([task('T01', 1, { status: 'merged', attempts: 2 }), task('T0
   auto_decisions: [{ run: 1, task: 'T01', title: 'Threshold', option: 'A', description: 'cap at 30 s' }],
 })
 
-test('/progress pane: a view in cards, its keys, its actions prepared in the prompt', async ($, on) => {
+test('/progress pane: a view in cards, its keys, its buttons; the actions prepared in the prompt', async ($, on) => {
   const clock = mock.clock(on, { now: T0 })
   state(on)
   const w = world(on)
@@ -119,19 +119,21 @@ test('/progress pane: a view in cards, its keys, its actions prepared in the pro
     expect((await ui.find({ key: 'card-yourTurn' }))?.props.borderStyle).toBe('round')
     expect((await ui.find({ key: 'card-run' }))?.props.borderColor).toBe('warning')
     expect((await ui.find({ key: 'card-tasks' }))?.props.borderStyle).toBeUndefined()
-    // One key per line of "Your turn"; what comes next after the run on c
+    // One key per line of "Your turn"; what comes next after the run: a button in brackets, without a key (0.16.0)
     const action = (k: string) => ui.find({ type: 'Button', key: `action-${k}` })
-    expect([(await action('1'))?.props.label, (await action('1'))?.props.hotkey]).toEqual(['T02 · Missing secret (human)', '1'])
+    expect([(await action('1'))?.props.label, (await action('1'))?.props.hotkey, (await action('1'))?.props.plain]).toEqual(['T02 · Missing secret (human)', '1', true])
     expect((await action('2'))?.props.label).toBe('T01 · .env.example: add MR_MAX')
     expect((await action('3'))?.props.label).toBe('T01 · Threshold: A (cap at 30 s)')
-    expect([(await action('c'))?.props.label, (await action('c'))?.props.hotkey]).toEqual(['/orchestre:run plans/demo --resume', 'c'])
+    const next = await action('next')
+    expect([next?.props.label, next?.props.hotkey, next?.props.plain]).toEqual(['Resume command in the prompt', undefined, undefined])
+    expect(await action('c')).toBeUndefined()
     expect(await action('p')).toBeUndefined()
     // An empty log: nothing for l to show
     expect(await ui.find({ type: 'Button', key: 'log-full' })).toBeUndefined()
     expect(await ui.find({ key: 'card-detail' })).toBeUndefined()
-    // 1 to 9 (0.14.0): a first press shows the detail card above "Your turn", with its border and ✕ Close on x; a second
-    // press on the same line acts and closes it. $.state is kept by the test and does not redraw: the pane is mounted again
-    // after each press
+    // 1 to 9: a first press shows the detail card above "Your turn", with its border and ✕ Close on x; a second press on the
+    // same line closes it, without acting (0.16.0). $.state is kept by the test and does not redraw: the pane is mounted
+    // again after each press
     const filledBefore = w.filled.length
     await ui.press({ key: 'action-1' })
     await ui.unmount()
@@ -143,41 +145,46 @@ test('/progress pane: a view in cards, its keys, its actions prepared in the pro
     expect(await one.find({ type: 'Text', text: '▸' })).toBeDefined()
     const close = await one.find({ type: 'Button', key: 'detail-close' })
     expect([close?.props.label, close?.props.hotkey]).toEqual(['✕ Close', 'x'])
-    expect((await one.find({ type: 'Button', key: 'detail-act' }))?.props.label).toBe('1 again → resume the run')
-    expect(await one.find({ type: 'Button', key: 'detail-d' })).toBeUndefined()
+    const act = await one.find({ type: 'Button', key: 'detail-act' })
+    expect([act?.props.label, act?.props.hotkey, act?.props.plain]).toEqual(['Resume the run', undefined, undefined])
+    // An item to settle: neither Done nor Ticket nor Edit text
+    for (const k of ['detail-done', 'detail-ticket', 'detail-edit']) expect(await one.find({ type: 'Button', key: k })).toBeUndefined()
     await one.press({ key: 'action-1' })
     await one.unmount()
-    // Acted: the prompt is filled, the detail card closed. Then 2 shows its detail, its button acts
+    // Closed, nothing in the prompt. Then 2 shows its detail, its first button prepares the prompt
     const two = await pane()
     expect(await two.find({ key: 'card-detail' })).toBeUndefined()
+    expect(w.filled.length).toBe(filledBefore)
     await two.press({ key: 'action-2' })
     await two.unmount()
     const twoDetail = await pane()
     expect(await twoDetail.find({ type: 'Text', text: /\.env\.example: add MR_MAX/ })).toBeDefined()
-    // A review (0.15.1): d prepares /orchestre:done; the item to settle (1) had none
-    const done = await twoDetail.find({ type: 'Button', key: 'detail-d' })
-    expect([done?.props.label, done?.props.hotkey]).toEqual(['d → mark done', 'd'])
+    // A review (0.16.0): Done, Ticket, Edit text, in brackets, without a key
+    const buttons = await Promise.all(['detail-act', 'detail-done', 'detail-ticket', 'detail-edit'].map(k => twoDetail.find({ type: 'Button', key: k })))
+    expect(buttons.map(b => [b?.props.label, b?.props.hotkey, b?.props.plain])).toEqual([['Review with Claude', undefined, undefined], ['✓ Done', undefined, undefined], ['→ Ticket', undefined, undefined], ['✎ Edit text', undefined, undefined]])
     await twoDetail.press({ key: 'detail-act' })
     await twoDetail.unmount()
     // 3, then 2: the detail card follows; x closes it without acting
     const three = await pane()
+    expect(await three.find({ key: 'card-detail' })).toBeUndefined()
     await three.press({ key: 'action-3' })
     await three.unmount()
     const switched = await pane()
-    expect((await switched.find({ type: 'Button', key: 'detail-act' }))?.props.label).toBe('3 again → go over')
+    expect((await switched.find({ type: 'Button', key: 'detail-act' }))?.props.label).toBe('Go over with Claude')
     await switched.press({ key: 'action-2' })
     await switched.unmount()
     const closing = await pane()
-    expect((await closing.find({ type: 'Button', key: 'detail-act' }))?.props.label).toBe('2 again → review')
+    expect((await closing.find({ type: 'Button', key: 'detail-act' }))?.props.label).toBe('Review with Claude')
     await closing.press({ key: 'detail-close' })
     await closing.unmount()
     const closed = await pane()
     expect(await closed.find({ key: 'card-detail' })).toBeUndefined()
+    await closed.press({ key: 'action-next' })
     await closed.unmount()
   }
   expect(w.filled).toEqual([
-    'append:/orchestre:run plans/demo --resume', 'append:Review with me, before the PR (review of T01): .env.example: add MR_MAX',
-    'append:/orchestre:run plans/demo --resume', 'append:Review with me, before the PR (review of T01): .env.example: add MR_MAX',
+    'append:Review with me, before the PR (review of T01): .env.example: add MR_MAX', 'append:/orchestre:run plans/demo --resume',
+    'append:Review with me, before the PR (review of T01): .env.example: add MR_MAX', 'append:/orchestre:run plans/demo --resume',
   ])
   // Scrolling to a card ($.ui.scroll) needs the layout of the engine, which the test kit does not have
   expect(w.toasts.filter(t => t === 'In the prompt: read it, complete it, then send it. Nothing was sent.').length).toBe(4)
@@ -185,7 +192,7 @@ test('/progress pane: a view in cards, its keys, its actions prepared in the pro
   const narrow = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE, props: { ...PANE.props, bodyColumns: 50 } })
   expect((await narrow.find({ key: 'card-run' }))?.props.borderStyle).toBeUndefined()
   await narrow.unmount()
-  // Plan finished: what comes next is the PR draft, on p
+  // Plan finished: what comes next is the PR draft, its reviews as a task list (0.16.0)
   w.file.text = doc([task('T01', 1, { status: 'merged', attempts: 2 }), task('T02', 1, { status: 'merged', attempts: 1 })], {
     runs: [run({ number: 2, status: 'finished', start: '2026-10-08T11:52:00+02:00', end: '2026-10-08T11:58:00+02:00' })],
     reviews: [{ task: 'T01', phase: 1, text: '.env.example: add MR_MAX', run: 1, at: '2026-10-08T11:40:00+02:00' }],
@@ -194,10 +201,126 @@ test('/progress pane: a view in cards, its keys, its actions prepared in the pro
   await clock.advance(2100)
   const end = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
   expect(await end.find({ type: 'Text', text: '⚑ To review before the PR' })).toBeDefined()
-  expect(await end.find({ type: 'Button', key: 'action-c' })).toBeUndefined()
-  await end.press({ key: 'action-p' })
+  expect((await end.find({ type: 'Button', key: 'action-next' }))?.props.label).toBe('PR draft in the prompt')
+  await end.press({ key: 'action-next' })
   await end.unmount()
-  expect(w.filled.at(-1) ?? '').toMatch(/^append:Plan demo: 2\/2 tasks merged, 1 run\.[\s\S]*- T01: \.env\.example: add MR_MAX/)
+  expect(w.filled.at(-1) ?? '').toMatch(/^append:Plan demo: 2\/2 tasks merged, 1 run\.[\s\S]*- \[ \] T01: \.env\.example: add MR_MAX/)
+})
+
+// 0.16.0: the buttons of a review or an auto-decision run progress.mjs, without a prompt nor a turn of Claude
+const REVIEWS = (marks: { done?: boolean; ticket?: boolean; label?: string } = {}) => doc([task('T01', 1, { status: 'merged', attempts: 1 })], {
+  runs: [run({ status: 'finished', end: '2026-10-08T11:58:00+02:00' })],
+  reviews: [{ task: 'T01', phase: 1, text: '.env.example: add MR_MAX', run: 1, at: '2026-10-08T11:40:00+02:00', ...(marks.done ? { done: '2026-10-08T12:00:00+02:00' } : {}), ...(marks.ticket ? { ticket: '2026-10-08T12:00:00+02:00' } : {}), ...(marks.label ? { label: marks.label } : {}) }],
+  auto_decisions: [{ run: 1, task: 'T01', title: 'Threshold', option: 'A', description: 'cap at 30 s' }],
+})
+function progressScript(on: On, w: ReturnType<typeof world>, node: 'path' | 'homebrew' | 'none' = 'path') {
+  const calls: string[] = []
+  on('process.run', ($, e) => {
+    const [bin, first, verb, dir] = e.argv
+    const found = node === 'path' ? bin === 'node' : node === 'homebrew' ? bin === '/opt/homebrew/bin/node' : false
+    if (first === '--version') return found ? { value: { exitCode: 0, stdout: 'v22.1.0\n', stderr: '' } } : { deny: `spawn ${bin} ENOENT` }
+    if (!found) return { deny: `spawn ${bin} ENOENT` }
+    calls.push(`${bin.replace(/.*\//, '')} ${String(first).replace(/^.*\/(scripts\/progress\.mjs)$/, '$1')} ${verb} ${dir} ${e.init?.stdin ?? ''} (cwd ${e.init?.cwd})`)
+    const E = JSON.parse(e.init?.stdin ?? '{}') as { kind: string; label?: string | null }
+    const marks = verb === 'ack' ? { done: true } : verb === 'ticket' ? { ticket: true } : verb === 'relabel' && E.label ? { label: E.label } : {}
+    if (E.kind === 'review') { w.file.text = REVIEWS(marks); w.file.mtime++ }
+    const what = `${E.kind === 'review' ? 'review' : 'auto-decision'} of T01`
+    const out = { ack: `${what} done; it leaves "Your turn"`, ticket: `${what} moved to tickets; it leaves "Your turn"`, reopen: `${what} open again; back in "Your turn"`, relabel: `${what}: text changed; HANDOFF.md keeps the original` }[String(verb)]
+    return { value: { exitCode: 0, stdout: `progress: ${out}\n`, stderr: '' } }
+  })
+  return calls
+}
+
+test('buttons of "Your turn" (0.16.0): Done, Ticket, Edit text and Undo run progress.mjs from the repository; the last action and Undo', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  state(on)
+  const w = world(on)
+  w.file.text = REVIEWS()
+  const calls = progressScript(on, w)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.command.run({ ...(CMD('') as object), presentation: { isFullscreen: true, columns: 160 } } as never)
+  const pane = () => $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
+  const pressIn = async (...keys: string[]) => { for (const key of keys) { const ui = await pane(); await ui.press({ key }); await ui.unmount() } }
+  // Done: progress.mjs ack, its object on standard input, from the root of the repository; nothing in the prompt
+  await pressIn('action-1', 'detail-done')
+  expect(calls).toEqual(['node scripts/progress.mjs ack plans/demo {"kind":"review","task":"T01","text":".env.example: add MR_MAX"} (cwd /repo)'])
+  expect(w.filled).toEqual([])
+  expect(w.toasts.at(-1)).toBe('T01 · review done')
+  let ui = await pane()
+  expect(await ui.find({ key: 'card-detail' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /\.env\.example: add MR_MAX/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'T01 · review done' })).toBeDefined()
+  expect((await ui.find({ type: 'Button', key: 'undo' }))?.props.label).toBe('Undo')
+  await ui.press({ key: 'undo' })
+  await ui.unmount()
+  // Undo: progress.mjs reopen; the review is back, no last action left
+  expect(calls.at(-1)).toBe('node scripts/progress.mjs reopen plans/demo {"kind":"review","task":"T01","text":".env.example: add MR_MAX"} (cwd /repo)')
+  expect(w.toasts.at(-1)).toBe('Undone: T01 · review is back in "Your turn".')
+  ui = await pane()
+  expect(await ui.find({ type: 'Button', key: 'undo' })).toBeUndefined()
+  expect((await ui.find({ type: 'Button', key: 'action-1' }))?.props.label).toBe('T01 · .env.example: add MR_MAX')
+  await ui.unmount()
+  // Ticket on the auto-decision: progress.mjs ticket, by its title
+  await pressIn('action-2', 'detail-ticket')
+  expect(calls.at(-1)).toBe('node scripts/progress.mjs ticket plans/demo {"kind":"decision","task":"T01","text":"Threshold"} (cwd /repo)')
+  expect(w.toasts.at(-1)).toBe('T01 · auto-decision moved to tickets')
+  // Edit text: a field with the text shown; Enter saves through progress.mjs relabel; Undo gives the original back
+  await pressIn('action-1', 'detail-edit')
+  ui = await pane()
+  expect((await ui.find({ key: 'detail-input' }))?.props.value).toBe('.env.example: add MR_MAX')
+  expect(await ui.find({ type: 'Button', key: 'detail-save' })).toBeDefined()
+  await ui.input({ key: 'detail-input', text: '.env.example: add MR_MAX (checked in GitHub)' })
+  await ui.unmount()
+  expect(calls.at(-1)).toBe('node scripts/progress.mjs relabel plans/demo {"kind":"review","task":"T01","text":".env.example: add MR_MAX","label":".env.example: add MR_MAX (checked in GitHub)"} (cwd /repo)')
+  expect(w.toasts.at(-1)).toBe('T01 · review: text changed')
+  ui = await pane()
+  expect((await ui.find({ type: 'Button', key: 'action-1' }))?.props.label).toBe('T01 · .env.example: add MR_MAX (checked in GitHub)')
+  expect(await ui.find({ key: 'detail-input' })).toBeUndefined()
+  await ui.press({ key: 'undo' })
+  await ui.unmount()
+  expect(calls.at(-1)).toBe('node scripts/progress.mjs relabel plans/demo {"kind":"review","task":"T01","text":".env.example: add MR_MAX","label":null} (cwd /repo)')
+  expect(w.toasts.at(-1)).toBe('Undone: T01 · review has its original text back.')
+  // The detail card stays open on the item after a save and its Undo; Cancel: nothing written, the field goes
+  const before = calls.length
+  await pressIn('detail-edit', 'detail-cancel')
+  expect(calls.length).toBe(before)
+  ui = await pane()
+  expect(await ui.find({ key: 'detail-input' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'detail-edit' })).toBeDefined()
+  // A second press on its line closes it
+  await ui.press({ key: 'action-1' })
+  await ui.unmount()
+  ui = await pane()
+  expect(await ui.find({ key: 'card-detail' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('buttons of "Your turn" (0.16.0): node of Homebrew when the PATH has none; no node at all: /orchestre:done in the prompt', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  state(on)
+  const w = world(on)
+  w.file.text = REVIEWS()
+  const calls = progressScript(on, w, 'homebrew')
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.command.run({ ...(CMD('') as object), presentation: { isFullscreen: true, columns: 160 } } as never)
+  const pane = () => $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
+  for (const key of ['action-1', 'detail-done']) { const ui = await pane(); await ui.press({ key }); await ui.unmount() }
+  expect(calls).toEqual(['node scripts/progress.mjs ack plans/demo {"kind":"review","task":"T01","text":".env.example: add MR_MAX"} (cwd /repo)'])
+})
+
+test('buttons of "Your turn" (0.16.0): no node found, the /orchestre:done that does the same goes into the prompt', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  state(on)
+  const w = world(on)
+  w.file.text = REVIEWS()
+  const calls = progressScript(on, w, 'none')
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.command.run({ ...(CMD('') as object), presentation: { isFullscreen: true, columns: 160 } } as never)
+  const pane = () => $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
+  for (const key of ['action-1', 'detail-ticket']) { const ui = await pane(); await ui.press({ key }); await ui.unmount() }
+  expect(calls).toEqual([])
+  expect(w.filled).toEqual(['append:/orchestre:done plans/demo ticket review T01 .env.example: add MR_MAX'])
+  expect(w.toasts.at(-1) ?? '').toMatch(/^orchestre: Claude Code did not find node to run progress\.mjs .* \/orchestre:done is in the prompt instead: send it\. \(15000 ms\)$/)
 })
 
 // 0.11.0: the model planned and the model used of each task
@@ -620,9 +743,9 @@ test('/progress demo, without a repository: a run played in memory, marked DEMO,
   // In the demo, an action of the pane says what it would do, without putting anything in the prompt
   const p = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
   expect(await p.find({ type: 'Text', text: /^frame 21\/21 · End of run 2: finished$/ })).toBeDefined()
-  expect(await p.find({ type: 'Text', text: /^→ key p: the PR draft in the prompt$/ })).toBeDefined()
+  expect(await p.find({ type: 'Text', text: /^→ \[ PR draft in the prompt \] in the run card; \[ ✓ Done \] in the detail of a review$/ })).toBeDefined()
   expect((await p.find({ type: 'Text', text: ' DEMO ' }))?.props.backgroundColor).toBe('merged')
-  await p.press({ key: 'action-p' })
+  await p.press({ key: 'action-next' })
   await p.unmount()
   expect(filled).toEqual([])
   expect(toasts.at(-1) ?? '').toMatch(/^Demo: this key would prepare in the prompt "Plan showcase-site: 5\/5 tasks merged/)

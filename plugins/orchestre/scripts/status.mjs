@@ -91,10 +91,13 @@ function status() {
   for (const [st, what] of Object.entries(ATTENTION)) for (const t of active.filter(x => x.status === st)) yourTurn.push(`${t.id} ${what}`)
   const handoff = attempt(() => readFileSync(join(dir, 'HANDOFF.md'), 'utf8')) || ''
   const count = type => (handoff.match(new RegExp(`^\\s*(?:[-*]\\s*)?${type}\\s*·`, 'gim')) || []).length
-  // The reviews still open in progress.json (those marked done no longer wait, 0.15.1), otherwise those of HANDOFF.md
+  // The reviews still open in progress.json (those marked done, 0.15.1, or moved to tickets, 0.16.0, no longer wait),
+  // otherwise those of HANDOFF.md; the tickets of HANDOFF.md, and the reviews and auto-decisions moved to tickets
   const progress = attempt(() => JSON.parse(readFileSync(join(dir, 'progress.json'), 'utf8')))
-  const open = progress && Array.isArray(progress.reviews) && progress.format === 'orchestre-progress/3' ? progress.reviews.filter(r => r && !r.done).length : null
-  const reviews = open ?? count('review'), tickets = count('ticket')
+  const v3 = !!progress && progress.format === 'orchestre-progress/3'
+  const open = v3 && Array.isArray(progress.reviews) ? progress.reviews.filter(r => r && !r.done && !r.ticket).length : null
+  const moved = v3 ? [...(Array.isArray(progress.reviews) ? progress.reviews : []), ...(Array.isArray(progress.auto_decisions) ? progress.auto_decisions : [])].filter(x => x && x.ticket && !x.done).length : 0
+  const reviews = open ?? count('review'), tickets = count('ticket') + moved
   if (reviews) yourTurn.push(`${plural(reviews, 'review')} before the PR`)
   if (tickets) yourTurn.push(`${plural(tickets, 'ticket')} after the PR`)
   if (!L.ok) yourTurn.push(`plan-lint: ${plural((L.errors || []).length, 'error')}`)

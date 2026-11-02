@@ -2,6 +2,15 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.15 to 0.16
+
+Nothing to do: `progress.json` keeps its format (`orchestre-progress/3`), with two optional fields on the reviews and the auto-decisions, `ticket` and `label`.
+
+1. In the `/progress` pane, the actions are buttons without a key. `1` to `9` only show a line of "Your turn" in the detail card; a second press closes it (it acted in 0.14 and 0.15). `d`, `c` and `p` are gone: `[ ✓ Done ]` in the detail card, `[ Resume command in the prompt ]` and `[ PR draft in the prompt ]` in the run card.
+2. On a review or an auto-decision, `[ ✓ Done ]`, `[ → Ticket ]` and `[ ✎ Edit text ]` act at once, without a turn of Claude, and `[ Undo ]` cancels the last one. The mod runs `scripts/progress.mjs` for them ([The buttons of "Your turn"](reference.md#banner-pane-notifications)).
+3. `/orchestre:done plans/<name>`, the plan alone, closes what is left in one answer; `/orchestre:done plans/<name> ticket …` moves an item to tickets.
+4. The PR draft gives the reviews and the auto-decisions as task lists, those done ticked, and names the items moved to tickets.
+
 ## From 0.13 to 0.15
 
 Nothing to do: no format changes, plans of 0.12 to 0.14 run as they are.

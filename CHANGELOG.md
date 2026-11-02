@@ -2,6 +2,29 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.16.0 — 2026-11-02: close "Your turn" with buttons, without a prompt
+
+At the end of a plan, the reviews before the PR and the auto-decisions stayed in "Your turn", even those on tasks merged long before and already reviewed in GitHub. Closing one took a key, a prompt sent and a turn of Claude, one item at a time, and items beyond the 9th had no key. Reported by Fabien on 2026-11-02 ("I would like to close a task quickly, without going through a prompt"; "no need for keys to act, clearly identifiable buttons are good"); a playable prototype compared 0.15.1 and 0.16.0 before the code.
+
+- `/progress` pane, detail card of a line of "Your turn": its actions are buttons, drawn in brackets, without a key.
+  - The first one prepares the item's request in the prompt, as before: `[ Review with Claude ]`, `[ Go over with Claude ]`, `[ Resume the run ]`, `[ Ask the pilot ]`… It replaces "1 again → …", which was unclear.
+  - On a review or an auto-decision, three buttons act at once, without a prompt nor a turn of Claude: `[ ✓ Done ]`, `[ → Ticket ]` (to open after the PR) and `[ ✎ Edit text ]` (a field, `[ Save ]`, `[ Cancel ]`; Enter saves). A line under the buttons says which ones prepare the prompt and which ones act.
+  - The mod runs `scripts/progress.mjs` for them (`$.process.run`, its object on standard input, from the root of the repository), the only writer of `progress.json`, with its lock; then reads `progress.json` again and says what was done in a notification. The node of the PATH, otherwise `/opt/homebrew/bin/node` or `/usr/local/bin/node`; none found: a notification says so, and Done and Ticket put in the prompt the `/orchestre:done` that does the same.
+- Under "Your turn": the last of these actions and `[ Undo ]` (`reopen`, or `relabel` back to the previous text); "Your turn" stays, in green ("✓ Nothing left to review"), while there is something to undo. Beyond 9 items, pages of 9: `[ Next 3 › ]`, `[ ‹ First 9 ]`, the keys 1 to 9 on each page.
+- Keys: 1 to 9 only show a line in the detail card, a second press closes it (it acted). `d`, `c` and `p` are gone: the run card has `[ Resume command in the prompt ]`, followed by the command, and `[ PR draft in the prompt ]`. The lines of "Your turn" no longer end with "→ <action>"; an edited one ends with "✎ edited".
+- `progress.mjs`:
+  - `ack` takes a list, `{ "items": [ … ] }`, in one write, all or nothing;
+  - `ticket` (same object): the item gets a `ticket` date and leaves "Your turn";
+  - `reopen`: the item done or moved to tickets is open again;
+  - `relabel { kind, task, text, label }`: the text shown; `text` stays the key that ties it to HANDOFF.md and to the closes, so neither the next run nor a close brings the original back; `label` null, empty or equal to the original removes it.
+  - Schema `orchestre-progress/3`: `ticket` and `label`, optional, on the reviews and the auto-decisions. `status` (and `/orchestre:status`) no longer counts the reviews moved to tickets among the reviews, and adds them to the tickets.
+- `/orchestre:done`: with the plan folder alone, lists what is still open, numbered (the reviews of merged tasks first), and closes it on a one-line answer, `1-6 done, 8 ticket, all decisions done` (`keep` leaves an item open); a review is named by its number or a range, `all` covers the auto-decisions only. `/orchestre:done <plan> ticket review|decision <task|-> <text>` moves one item to tickets. `/orchestre:run`, at the end of a finished plan with items still open, says how to close them.
+- PR draft: the reviews and the auto-decisions as task lists, `- [ ]` open, `- [x]` done, with the text edited if it was; the items moved to tickets under "Tickets to open after the PR", before the count of the "ticket" entries of HANDOFF.md.
+- Notifications: a review open again by Undo is not announced as a new review.
+- `/progress demo`: its legend names the buttons instead of the keys c and p.
+- Not in this version: the end banner still comes back in each new session until "✕ Hide" (to keep it hidden across sessions, and a plan closed for good, are the next step). The field of `[ ✎ Edit text ]` takes the keyboard when the pane has it; whether it gets the focus at once in the terminal and the desktop app is to check on a real plan.
+- Tests: `progress.mjs` (a list in one write, all or nothing; ticket, reopen, relabel; nothing brought back by HANDOFF.md nor a close), `status.mjs` (reviews and tickets counted), the view model (buttons, pages, field, last action, PR draft, no notification on Undo) and the mod under the engine (`$.process.run` stubbed: the commands run, Undo, the field, node of Homebrew, no node).
+
 ## 0.15.1 — 2026-10-19: reviews and auto-decisions that leave "Your turn"
 
 In the `/progress` pane, the reviews before the PR and the auto-decisions stayed in "Your turn" for the whole plan, even once dealt with: `progress.json` only added them, and nothing could mark them done. Reported by Fabien on 2026-10-16 ("items stay even when they have been dealt with").

@@ -6,15 +6,17 @@
 //   - a notification only for what asks for someone: task that needs a human, blocked or failed, run stopped or in
 //     error; with /progress sound, a sound too;
 //   - on returning after 15 min without a prompt, what changed; a status line when the end banner is hidden;
-//   - the pane opened by itself at the first run started during the session (0.13.0).
-// It never writes in the repository: its only writes are in $.state (display), $.store (the sound) and the prompt (the
-// actions of the pane prepare a text there, never sent).
+//   - the pane opened by itself at the first run started during the session (0.13.0);
+//   - in the detail card of a review or an auto-decision, the buttons Done, Ticket and Edit text, and Undo (0.16.0).
+// In the repository, it writes only through scripts/progress.mjs, the sole writer of progress.json: the buttons Done,
+// Ticket, Edit text and Undo run it ($.process.run), with the lock it takes. Its other writes are in $.state (display),
+// $.store (the sound) and the prompt (the other actions prepare a text there, never sent).
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Action, Card, Snapshot, Line, Section } from '../types'
+import type { Action, Card, ItemRef, LastAction, Snapshot, Line, Section } from '../types'
 import { FRAME_COUNT, DEMO_FRAME_MS, DEMO_PLAN, demoEnd, demoSnapshot, frameAt } from './demo.mjs'
-import { IMPORTANT_TOAST_MS, DETAILS_GAP, DETAILS_LABEL, DETAILS_RESERVE, HIDE_GAP, HIDE_LABEL, HIDE_RESERVE, CLOSE_LABEL, FORMAT, FORMATS, LEGACY_FORMATS, IMAGE_MS, banner, plainText, changes, cut, since, formatOf, isImportant, statusLine, normalize, news, pane, activeRun, runInProgress, runStartedSince, suffix, stateText } from './view-model.mjs'
+import { IMPORTANT_TOAST_MS, DETAILS_GAP, DETAILS_LABEL, DETAILS_RESERVE, HIDE_GAP, HIDE_LABEL, HIDE_RESERVE, CLOSE_LABEL, FORMAT, FORMATS, LEGACY_FORMATS, IMAGE_MS, banner, plainText, changes, cut, since, formatOf, isImportant, statusLine, normalize, news, pane, activeRun, runInProgress, runStartedSince, suffix, stateText, yourTurnItems } from './view-model.mjs'
 
 const PANE_ID = 'orchestre'
 // The sound played when something waits for you, with /progress sound (afplay on macOS; nothing on a Linux or Windows terminal)
@@ -33,6 +35,10 @@ const selected = atom({ plugin: 'orchestre', key: 'selected' } as const, null)
 const hidden = atom({ plugin: 'orchestre', key: 'hidden' } as const, null)
 const alert = atom({ plugin: 'orchestre', key: 'alert' } as const, null)
 const autoOpened = atom({ plugin: 'orchestre', key: 'autoOpened' } as const, false)
+// "Your turn" (0.16.0): its page, the text of the detail card being edited, the last action of the pane
+const page = atom({ plugin: 'orchestre', key: 'page' } as const, 0)
+const editing = atom({ plugin: 'orchestre', key: 'editing' } as const, false)
+const last = atom({ plugin: 'orchestre', key: 'last' } as const, null)
 
 // The buttons after the banner ("⤢ Details", "✕ Hide") are clicked, without a key: a digit typed alone in an empty prompt
 // would have pressed them instead of writing it. Their labels and their room are in view-model.mjs.
@@ -276,6 +282,8 @@ async function restore($: EngineInterface): Promise<void> {
   if (chosenHidden != null) await update($, hidden, () => chosenHidden)
   // The pane already opened by itself: kept in $.state too, so that a reload after /clear does not open it again
   if (autoOpenedHere) await update($, autoOpened, () => true)
+  // The last action of the pane, still undoable
+  await showLast($)
   await refresh($, true).catch(() => undefined)
   await updateStatus($)
 }
@@ -387,8 +395,10 @@ export const register: Register = on => {
   })
 
   // The pane: a view in cards, under the header and a blank line (0.13.1: no more keys that scroll to a card; ↑ ↓ and
-  // Page Up/Down scroll the pane). The lines of "Your turn" have the keys 1 to 9 (0.14.0: first the detail card, x closes it), what comes next after a finished run c or
-  // p, the log card l for the whole log; d in the detail card marks a review or an auto-decision done (0.15.1). ← and → stay with Claude Code.
+  // Page Up/Down scroll the pane). The lines of "Your turn" have the keys 1 to 9 of their page: a press shows the detail
+  // card, a second press closes it, x too (0.14.0, 0.16.0). The actions are buttons without a key (0.16.0): in the detail
+  // card, the action of the item, and for a review or an auto-decision Done, Ticket and Edit text; Undo, the other page,
+  // what comes next after a run. l shows the whole log. ← and → stay with Claude Code.
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     const inst = await read($, snapshot)
@@ -396,9 +406,11 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const full = await read($, fullLog)
     const chosen = await read($, selected)
-    const p = pane(inst, now, e.props.bodyColumns, { animated: true, fullLog: full, since: previousVisit, selected: chosen })
-    // The selected item is gone (settled, merged): its detail card closes
+    const isEditing = await read($, editing)
+    const p = pane(inst, now, e.props.bodyColumns, { animated: true, fullLog: full, since: previousVisit, selected: chosen, page: await read($, page), editing: isEditing, draft, last: await read($, last) })
+    // The selected item is gone (settled, merged): its detail card closes, and the edit with it
     if (chosen && !p.selection) void update($, selected, () => null).catch(() => undefined)
+    if (isEditing && !p.selection) void update($, editing, () => false).catch(() => undefined)
     return (
       <Box flexDirection="column">
         {p.header.map((l, i) => (i < 2 ? <Box key={`header-${i}`} flexDirection="row" justifyContent="center">{draw($, e, l, `header-${i}-l`)}</Box> : draw($, e, l, `header-${i}`)))}
@@ -463,16 +475,134 @@ async function openFromBanner($: EngineInterface, target: Section | null): Promi
 }
 
 // A line of "Your turn" (1 to 9, or a click): a first press shows it in the detail card, a second press on the same line
-// acts. The button of the detail card acts. Acting closes the detail card.
+// closes it (0.16.0; it acted in 0.14.0). The buttons (0.16.0): the action of the item prepares its prompt and closes the
+// detail card; Done, Ticket, Edit text, Save and Undo run progress.mjs; the page button shows the other page.
 async function press($: EngineInterface, action: Action): Promise<void> {
-  if (action.mode === 'select' && action.key && (await read($, selected)) !== action.key) {
+  if (action.mode === 'select' && action.key) {
     const key = action.key
+    draft = null
+    await update($, editing, () => false)
+    if ((await read($, selected)) === key) { await update($, selected, () => null); return }
     await update($, selected, () => key)
     scrollTo($, 'detail')
     return
   }
+  switch (action.op) {
+    case 'done': case 'ticket': return closeItem($, action)
+    case 'edit': draft = action.ref?.shown ?? null; await update($, editing, () => true); return
+    case 'save': return saveEdit($, draft ?? action.ref?.shown ?? '')
+    case 'cancel': draft = null; await update($, editing, () => false); return
+    case 'undo': return undoLast($)
+    case 'page': {
+      const to = action.page ?? 0
+      await update($, page, () => to)
+      await update($, selected, () => null)
+      await update($, editing, () => false)
+      scrollTo($, 'yourTurn')
+      return
+    }
+  }
   if (action.key) await update($, selected, () => null)
   await act($, action)
+}
+
+// ─── Writes through progress.mjs (0.16.0) ─────────────────────────────────────────────────────────────────────────
+// The node that runs progress.mjs: the one of the PATH, otherwise the usual places of Homebrew and of the installer (an app
+// started from the Dock does not always have the PATH of the terminal). Kept once found.
+const NODES = ['node', '/opt/homebrew/bin/node', '/usr/local/bin/node']
+let nodeBin: string | null = null
+async function findNode($: EngineInterface): Promise<string | null> {
+  if (nodeBin) return nodeBin
+  for (const bin of NODES) {
+    const r = await $.process.run([bin, '--version'], { timeoutMs: 10000 }).catch(() => null)
+    if (r && r.exitCode === 0 && /^v\d+/.test(r.stdout.trim())) { nodeBin = bin; return bin }
+  }
+  return null
+}
+
+// One write of progress.mjs on the plan followed, its object on standard input, from the root of the repository. null:
+// no node found; otherwise whether it was done, and its line (its refusal when it refuses)
+async function runProgress($: EngineInterface, verb: 'ack' | 'ticket' | 'reopen' | 'relabel', payload: object): Promise<{ ok: boolean; out: string } | null> {
+  const inst = await read($, snapshot), base = await repoRoot($)
+  if (!inst || !base) return { ok: false, out: 'no plan followed in this repository' }
+  const bin = await findNode($)
+  if (!bin) return null
+  const r = await $.process.run([bin, `${$.plugin.root}/scripts/progress.mjs`, verb, inst.dir || `plans/${inst.plan}`], { cwd: base, stdin: JSON.stringify(payload), timeoutMs: 60000 })
+    .catch((err: unknown) => ({ exitCode: 1, stdout: '', stderr: `progress.mjs did not finish (${err instanceof Error ? err.message : String(err)})` }))
+  const out = (r.exitCode === 0 ? r.stdout : r.stderr || r.stdout).trim().split('\n')[0] ?? ''
+  return { ok: r.exitCode === 0, out }
+}
+
+// What Undo cancels, the last first: kept here, so that /clear does not lose it; the plan it was done on
+type Done = { plan: string; op: 'done' | 'ticket' | 'edit'; ref: ItemRef; prev: string | null; text: string }
+let undoStack: Done[] = []
+// The text typed in the field of the detail card, so far
+let draft: string | null = null
+const NODE_MISSING = 'orchestre: Claude Code did not find node to run progress.mjs (see docs/reference.md, "The buttons of Your turn").'
+const whoOf = (ref: ItemRef) => `${ref.task ?? 'source plan'} · ${ref.kind === 'review' ? 'review' : 'auto-decision'}`
+
+async function showLast($: EngineInterface): Promise<void> {
+  const u = undoStack[undoStack.length - 1]
+  const value: LastAction | null = u ? { text: u.text, kind: u.op } : null
+  await update($, last, () => value)
+}
+
+// After a write: the detail card closes, progress.json is read again, a notification says what was done
+async function written($: EngineInterface, entry: Done | null, message: string): Promise<void> {
+  if (entry) undoStack.push(entry)
+  await showLast($)
+  await refresh($, true).catch(() => undefined)
+  $.ui.toast(message)
+}
+
+// Done or Ticket: progress.mjs ack or ticket. Without node, the /orchestre:done that does the same goes into the prompt.
+async function closeItem($: EngineInterface, action: Action): Promise<void> {
+  const inst = await read($, snapshot), ref = action.ref
+  if (!inst || !ref) return
+  if (inst.demo) { $.ui.toast(`Demo: nothing is written. In a real plan, this button would ${action.help}: ${cut(ref.shown, 60)}.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  const r = await runProgress($, action.op === 'done' ? 'ack' : 'ticket', { kind: ref.kind, task: ref.task, text: ref.text })
+  if (!r) {
+    if (action.prompt) await $.prompt.fill({ text: action.prompt, mode: 'append' }).catch(() => undefined)
+    $.ui.toast(`${NODE_MISSING}${action.prompt ? ' /orchestre:done is in the prompt instead: send it.' : ''}`, { timeoutMs: IMPORTANT_TOAST_MS })
+    return
+  }
+  if (!r.ok) { $.ui.toast(`orchestre: ${r.out.replace(/^progress: /, '')}`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  await update($, selected, () => null)
+  await update($, editing, () => false)
+  // Already closed elsewhere (/orchestre:done, another session): nothing to undo
+  if (/ already /.test(r.out)) return written($, null, r.out.replace(/^progress: /, ''))
+  const text = `${whoOf(ref)} ${action.op === 'done' ? 'done' : 'moved to tickets'}`
+  return written($, { plan: inst.plan, op: action.op === 'done' ? 'done' : 'ticket', ref, prev: null, text }, text)
+}
+
+// Save (or Enter in the field): progress.mjs relabel; the text the item had before goes to Undo
+async function saveEdit($: EngineInterface, value: string): Promise<void> {
+  const inst = await read($, snapshot), key = await read($, selected)
+  const it = inst && key ? yourTurnItems(inst, await $.clock.now()).items.find(x => x.key === key) : null
+  draft = null
+  await update($, editing, () => false)
+  const ref = it?.ref, label = value.replace(/\s+/g, ' ').trim()
+  if (!inst || !ref || !label || label === ref.shown) return
+  if (inst.demo) { $.ui.toast('Demo: nothing is written. In a real plan, the new text would replace this one in the pane and the PR draft.', { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  const r = await runProgress($, 'relabel', { kind: ref.kind, task: ref.task, text: ref.text, label })
+  if (!r) { $.ui.toast(`${NODE_MISSING} The text is unchanged.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  if (!r.ok) { $.ui.toast(`orchestre: ${r.out.replace(/^progress: /, '')}`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  const text = `${whoOf(ref)}: text changed`
+  return written($, { plan: inst.plan, op: 'edit', ref, prev: ref.edited ? ref.shown : null, text }, text)
+}
+
+// Undo: the last action of the pane cancelled, by progress.mjs reopen or relabel
+async function undoLast($: EngineInterface): Promise<void> {
+  const inst = await read($, snapshot), u = undoStack[undoStack.length - 1]
+  if (!inst || !u) return
+  // Another plan is followed now: what was done on the first one is no longer offered
+  if (u.plan !== inst.plan) { undoStack = []; await showLast($); return }
+  const payload = { kind: u.ref.kind, task: u.ref.task, text: u.ref.text }
+  const r = await runProgress($, u.op === 'edit' ? 'relabel' : 'reopen', u.op === 'edit' ? { ...payload, label: u.prev } : payload)
+  if (!r) { $.ui.toast(`${NODE_MISSING} Nothing is undone.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  if (!r.ok) { $.ui.toast(`orchestre: ${r.out.replace(/^progress: /, '')}`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  undoStack.pop()
+  return written($, null, `Undone: ${whoOf(u.ref)} ${u.op === 'edit' ? (u.prev ? 'has its previous text back' : 'has its original text back') : 'is back in "Your turn"'}.`)
 }
 
 // An action of the pane: its text goes into the prompt, after what is already typed there, and nothing is sent. During
@@ -489,16 +619,23 @@ async function act($: EngineInterface, action: Action): Promise<void> {
 
 // A line of pieces: one Text per piece, in a row
 function draw($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], line: Line, itemKey: string) {
-  const { Box, Button, Text } = $.ui.resolve(e)
+  const { Box, Button, Input, Text } = $.ui.resolve(e)
   if (!line.length) return <Text key={itemKey}> </Text>
   return (
     <Box key={itemKey} flexDirection="row">
       {line.map((m, i) => {
         const target = m.a, action = m.x
-        // A mention of the banner leads to a card: a button, an amber badge on hover. An action of the pane: a button with
-        // a key (1 to 9, c, p) that prepares its text in the prompt.
+        // A mention of the banner leads to a card: a button, an amber badge on hover. An action of the pane: a button, with
+        // a key on the lines of "Your turn" (1 to 9), in brackets without a key elsewhere (0.16.0).
         if (target) return <Button key={`goto-${m.k ?? target}`} label={m.t} plain hover={{ scope: `orchestre-${m.k ?? target}`, color: 'inverseText', backgroundColor: 'warning', bold: true }} onPress={() => openFromBanner($, target)} />
-        if (action) return <Button key={action.key && action.mode !== 'select' ? (action.hotkey ? `detail-${action.hotkey}` : 'detail-act') : `action-${action.hotkey ?? `${itemKey}-${i}`}`} label={m.t} plain {...(action.hotkey ? { hotkey: action.hotkey } : {})} onPress={() => press($, action)} />
+        // A text field in its place (0.16.0): what is typed is kept, Enter saves
+        if (m.in) return <Input key={m.in.key} value={m.in.value} submitLabel={m.in.submitLabel} autoFocus onInput={(v: string) => { draft = v }} onSubmit={(v: string) => { void saveEdit($, v) }} />
+        if (action) {
+          // A button in brackets (0.16.0), its label without them; the lines of "Your turn" stay plain, with their key
+          const label = action.bracket ? m.t.replace(/^\[ (.*) \]$/, '$1') : m.t
+          const key = action.op ? (action.op === 'undo' || action.op === 'page' ? action.op : `detail-${action.op}`) : action.mode === 'select' ? `action-${action.hotkey ?? `${itemKey}-${i}`}` : action.key ? 'detail-act' : 'action-next'
+          return <Button key={key} label={label} {...(action.bracket ? {} : { plain: true })} {...(action.hotkey ? { hotkey: action.hotkey } : {})} onPress={() => press($, action)} />
+        }
         return <Text key={`${itemKey}-${i}`} color={m.c} backgroundColor={m.f} bold={m.b} dimColor={m.d} wrap="truncate">{m.t}</Text>
       })}
     </Box>

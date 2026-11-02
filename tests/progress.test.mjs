@@ -471,6 +471,73 @@ async function main() {
     C.git('add', '-A'); C.git('commit', '-qm', 'progress: reviews done')
   })
 
+  await test('ack in a list, ticket, reopen, relabel (0.16.0): one write, all or nothing; not brought back by HANDOFF.md nor a close; status counts the tickets', () => {
+    const saved = C.read('progress.json'), handoff = C.read('HANDOFF.md')
+    const seeded = JSON.parse(saved)
+    seeded.reviews = [
+      { task: 'T03', phase: 1, text: 'a.env.example: add A', run: 2, at: null },
+      { task: 'T03', phase: 1, text: 'b.env.example: add B', run: 2, at: null },
+      { task: 'T03', phase: 1, text: 'docs/DEPLOY.md: read again', run: 2, at: null },
+      { task: null, phase: null, text: 'README: relire', run: null, at: null },
+    ]
+    seeded.auto_decisions = [{ run: 2, task: 'T03', title: 'Retry threshold', option: 'A', description: 'cap at 30 s' }]
+    writeFileSync(join(C.d, 'progress.json'), JSON.stringify(seeded, null, 2) + '\n')
+    writeFileSync(join(C.d, 'HANDOFF.md'), '## source plan\n- review · minor · README: relire\n- ticket · minor · monitoring of the retries\n')
+    // A list: one write, one log line per item
+    let r = C.progress('ack', { items: [{ kind: 'review', task: 'T03', text: 'a.env.example: add A' }, { kind: 'decision', task: 'T03', text: 'Retry threshold' }, { kind: 'review', task: 'T03', text: 'a.env.example: add A' }] })
+    assert.deepEqual([r.code, r.out], [0, 'progress: 2 done; they leave "Your turn"; 1 already closed'], r.err)
+    let doc = C.doc()
+    assert.deepEqual([doc.reviews.map(x => !!x.done), !!doc.auto_decisions[0].done], [[true, false, false, false], true])
+    // A list with one item unknown: refused whole, nothing written
+    const kept = C.read('progress.json')
+    r = C.progress('ack', { items: [{ kind: 'review', task: 'T03', text: 'b.env.example: add B' }, { kind: 'review', task: 'T03', text: 'nothing like it' }] })
+    assert.equal(r.code, 1); assert.match(r.err, /ack: no review of T03 "nothing like it"/)
+    assert.equal(C.read('progress.json'), kept, 'all or nothing')
+    for (const [E, re] of [[{ items: [] }, /"items" must be a non-empty list/], [{ items: ['x'] }, /each item is an object/]]) {
+      r = C.progress('ack', E); assert.equal(r.code, 1, JSON.stringify(E)); assert.match(r.err, re)
+    }
+    // Ticket: it leaves "Your turn"; an item already done stays done
+    r = C.progress('ticket', { kind: 'review', task: 'T03', text: 'b.env' })
+    assert.deepEqual([r.code, r.out], [0, 'progress: review of T03 moved to tickets; it leaves "Your turn"'], r.err)
+    assert.equal(C.progress('ticket', { kind: 'review', task: 'T03', text: 'a.env.example: add A' }).out, 'progress: review of T03 already done')
+    assert.equal(C.progress('ack', { kind: 'review', task: 'T03', text: 'b.env.example: add B' }).out, 'progress: review of T03 already moved to tickets')
+    doc = C.doc()
+    assert.equal(typeof doc.reviews[1].ticket, 'string'); assert.equal(doc.reviews[1].done, undefined)
+    assert.ok(doc.log.some(e => e.kind === 'pilot' && e.text === 'review of T03 moved to tickets by the pilot: b.env.example: add B'))
+    // status: one review left open, besides the source plan's; the ticket of HANDOFF.md and the one moved
+    const st = C.progress('status').out
+    assert.ok(st.includes('2 reviews before the PR'), st); assert.ok(st.includes('2 tickets after the PR'), st)
+    // Relabel: the text shown changes, the key stays; null goes back to the original
+    r = C.progress('relabel', { kind: 'review', task: 'T03', text: 'docs/DEPLOY.md: read again', label: '  docs/DEPLOY.md: read   again (done in GitHub)  ' })
+    assert.deepEqual([r.code, r.out], [0, 'progress: review of T03: text changed; HANDOFF.md keeps the original'], r.err)
+    doc = C.doc()
+    assert.deepEqual([doc.reviews[2].text, doc.reviews[2].label], ['docs/DEPLOY.md: read again', 'docs/DEPLOY.md: read again (done in GitHub)'])
+    assert.equal(C.progress('relabel', { kind: 'review', task: 'T03', text: 'docs/DEPLOY.md', label: null }).out, 'progress: review of T03: original text back')
+    assert.equal(C.doc().reviews[2].label, undefined)
+    assert.equal(C.progress('relabel', { kind: 'review', task: 'T03', text: 'docs/DEPLOY.md', label: 'x' }).code, 0)
+    assert.equal(C.progress('relabel', { kind: 'review', task: 'T03', text: 'docs/DEPLOY.md', label: 'docs/DEPLOY.md: read again' }).out, 'progress: review of T03: original text back', 'the original text: no label')
+    for (const [E, re] of [[{ items: [{ kind: 'review', task: 'T03', text: 'x' }] }, /one item at a time/], [{ kind: 'review', task: 'T03', text: 'docs/DEPLOY.md', label: 3 }, /"label" must be a text/]]) {
+      r = C.progress('relabel', E); assert.equal(r.code, 1, JSON.stringify(E)); assert.match(r.err, re)
+    }
+    // Reopen: back in "Your turn", from done or from a ticket; an item open stays open
+    r = C.progress('reopen', { items: [{ kind: 'review', task: 'T03', text: 'a.env.example: add A' }, { kind: 'review', task: 'T03', text: 'b.env.example: add B' }] })
+    assert.deepEqual([r.code, r.out], [0, 'progress: 2 open again; back in "Your turn"'], r.err)
+    assert.equal(C.progress('reopen', { kind: 'decision', task: 'T03', text: 'Retry threshold' }).out, 'progress: auto-decision of T03 open again; back in "Your turn"')
+    assert.equal(C.progress('reopen', { kind: 'decision', task: 'T03', text: 'Retry threshold' }).out, 'progress: auto-decision of T03 already open')
+    doc = C.doc()
+    assert.ok([...doc.reviews, ...doc.auto_decisions].every(x => x.done === undefined && x.ticket === undefined))
+    // Closed again, then the next run reads HANDOFF.md and a close brings the same review: nothing comes back
+    assert.equal(C.progress('ticket', { kind: 'review', task: 'T03', text: 'a.env' }).code, 0)
+    assert.equal(C.progress('relabel', { kind: 'review', task: 'T03', text: 'b.env', label: 'b: in GitHub' }).code, 0)
+    assert.equal(C.progress('run-start', RUN).code, 0)
+    assert.equal(C.progress('close', { task: 'T03', status: 'merged', attempts: 1, branch: 'task/T03', reviews: ['a.env.example: add A', 'b.env.example: add B'] }).code, 0)
+    doc = C.doc()
+    assert.equal(doc.reviews.length, 4); assert.equal(typeof doc.reviews[0].ticket, 'string'); assert.equal(doc.reviews[1].label, 'b: in GitHub')
+    assert.equal(C.progress('run-end', { status: 'finished' }).code, 0)
+    assert.equal(C.progress('validate').code, 0)
+    writeFileSync(join(C.d, 'progress.json'), saved); writeFileSync(join(C.d, 'HANDOFF.md'), handoff)
+  })
+
   await test('--json: same effect as standard input, text escaped as the workflow writes it; added task without a file skipped', () => {
     const gaps = ["the option `--force` costs $5", 'quotes "double", backslash \\ and accents éèà']
     const raw = JSON.stringify({ task: 'T07', step: 'fix', rejection: { attempt: 1, by: 'evaluation', gaps } })

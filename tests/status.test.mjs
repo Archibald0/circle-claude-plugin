@@ -55,6 +55,14 @@ try {
     assert.ok(!/T06 \(/.test(r.out), 'T06 waiting, not in progress')
     assert.ok(r.out.split('\n').length <= 16, 'compact')
   })
+  test('progress.json (0.16.0): the reviews done or moved to tickets no longer wait; the tickets moved count', () => {
+    const f = join(root, 'plans', 'demo', 'progress.json')
+    const reviews = [{ task: 'T01', text: 'a', done: '2026-11-02T10:00:00+01:00' }, { task: 'T01', text: 'b', ticket: '2026-11-02T10:00:00+01:00' }, { task: 'T02', text: 'c' }]
+    writeFileSync(f, JSON.stringify({ format: 'orchestre-progress/3', reviews, auto_decisions: [{ task: 'T02', title: 'd', ticket: '2026-11-02T10:00:00+01:00' }] }))
+    const r = status(['plans/demo'])
+    assert.ok(r.out.includes('· 1 review before the PR · 3 tickets after the PR'), r.out)
+    rmSync(f)
+  })
   test('read-only: neither status, HEAD nor branch changed; no lock left', () => {
     status(['plans/demo'])
     assert.equal([git('status', '--porcelain'), git('rev-parse', 'HEAD'), git('symbolic-ref', 'HEAD')].join('|'), before)

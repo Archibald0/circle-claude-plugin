@@ -111,9 +111,10 @@ try {
     const yourTurn = M.yourTurnCard(B, tA, 100)
     assert.equal(M.plainText(yourTurn.title), '⚠ Your turn'); assert.equal(M.plainText(yourTurn.meta), '1 to settle · 3 reviews · 1 auto-decision')
     const tt = text(yourTurn.lines)
-    assert.match(tt, /^⚑ T02 · Missing secret \(human\) {2}→ resume the run\n +secret missing for the tests$/m)
-    assert.match(tt, /^⚑ T01 · agents\/x\/\.env\.example: add MR_MAX {2}→ review$/m)
-    assert.match(tt, /^⇒ T01 · Retry threshold: A \(cap at 30 s\) {2}→ go over$/m)
+    // 0.16.0: a line only selects; what it does is a button of its detail card
+    assert.match(tt, /^⚑ T02 · Missing secret \(human\)\n +secret missing for the tests$/m)
+    assert.match(tt, /^⚑ T01 · agents\/x\/\.env\.example: add MR_MAX$/m)
+    assert.match(tt, /^⇒ T01 · Retry threshold: A \(cap at 30 s\)$/m)
     const actions = yourTurn.lines.flat().filter(m => m.x).map(m => m.x)
     assert.deepEqual(actions.map(x => x.hotkey), ['1', '2', '3', '4', '5'])
     assert.equal(actions[0].prompt, '/orchestre:run plans/demo --resume', 'an issue for a human: resume the run, which asks it')
@@ -126,16 +127,24 @@ try {
     assert.equal(M.yourTurnCard(A, tA, 100), null, 'nothing to do: no card')
     // plan-lint in error at the last write; tickets of HANDOFF.md, to open after the PR
     const linted = M.yourTurnCard({ ...A, lint: { ok: false, errors: 2 } }, tA, 100)
-    assert.match(text(linted.lines), /^✗ plan-lint: 2 errors at the last progress update {2}→ ask the pilot$/m)
+    assert.match(text(linted.lines), /^✗ plan-lint: 2 errors at the last progress update$/m)
     assert.equal(linted.lines.flat().find(m => m.x).x.prompt, 'Show me the plan-lint errors on plans/demo and propose a fix.')
     assert.match(M.prText({ ...B, tickets: 2 }, tA), /\n2 tickets to open after the PR \(HANDOFF\.md, "ticket" entries\)\.\n$/)
-    // Beyond 9 lines, no more key: the line stays a button
+    // Beyond 9 lines, pages of 9 (0.16.0): keys 1 to 9 on each, a button for the other page; a page out of range is brought back
     const many = { ...B, reviews: Array.from({ length: 10 }, (_, i) => ({ task: 'T01', phase: 1, text: `f${i}`, at: null })) }
-    assert.deepEqual(M.yourTurnCard(many, tA, 100).lines.flat().filter(m => m.x).map(m => m.x.hotkey), ['1', '2', '3', '4', '5', '6', '7', '8', '9', null, null, null])
+    const keysOf = c => c.lines.flat().filter(m => m.x?.mode === 'select').map(m => m.x.hotkey)
+    const first = M.yourTurnCard(many, tA, 100)
+    assert.deepEqual(keysOf(first), ['1', '2', '3', '4', '5', '6', '7', '8', '9'])
+    assert.match(text(first.lines), /^ {2}page 1\/2 {2}\[ Next 3 › \]$/m)
+    assert.deepEqual(first.lines.flat().filter(m => m.x?.op === 'page').map(m => [m.x.page, m.x.hotkey, m.x.bracket]), [[1, null, true]])
+    const second = M.yourTurnCard(many, tA, 100, null, { page: 1 })
+    assert.deepEqual(keysOf(second), ['1', '2', '3']); assert.match(text(second.lines), /^ {2}page 2\/2 {2}\[ ‹ First 9 \]$/m)
+    assert.deepEqual(keysOf(M.yourTurnCard(many, tA, 100, null, { page: 7 })), ['1', '2', '3'], 'page 8 of 2: the last')
+    assert.equal(M.pageOf(12, -1), 0); assert.equal(M.pageOf(0, 3), 0)
     const run = text(M.runCard(B, tA, 100, false).lines)
     assert.match(run, /^time {4}\S.* · 2 in parallel · 1 more attempt · 1 auto-decision$/m); assert.match(run, /^tasks .* 1\/4 /m); assert.doesNotMatch(run, /next/, 'run in progress: no next')
     const pr = M.prText(B, tA)
-    assert.match(pr, /- T01: agents\/x\/\.env\.example: add MR_MAX/); assert.match(pr, /- T01, Retry threshold: option A, cap at 30 s/); assert.match(pr, /Not merged yet: T02 \(waits for a human\)/)
+    assert.match(pr, /^- \[ \] T01: agents\/x\/\.env\.example: add MR_MAX$/m); assert.match(pr, /^- \[ \] T01, Retry threshold: option A, cap at 30 s$/m); assert.match(pr, /Not merged yet: T02 \(waits for a human\)/)
     const state = M.stateText(B, tA)
     assert.match(state, /^▶ demo {2}◉○/); assert.match(state, /\n⚠ Your turn {3}1 to settle/); assert.match(state, /\nlog/)
     const j = M.logCard(B, tA, 100, false)
@@ -151,13 +160,13 @@ try {
     assert.deepEqual(M.changes(B, C), ['Run 1 (phase 1): awaiting-ruling', 'Run stopped: T02, Missing secret'], 'issue become the stop issue')
     assert.match(M.plainText(M.banner(C, tA, 140)), /^■ demo {2}◉○ {2}\S+ {2}1\/4 {2}⚑ 3 to review {2}⚠ 1 your turn {2}run 1 awaiting-ruling {2}⏱ /)
     assert.equal(M.suffix(C, tA), null); assert.deepEqual(M.inProgress(C, tA), [])
-    assert.match(text(M.yourTurnCard(C, tA, 100).lines), /^⚑ T02 · Missing secret \(human\) {2}→ resume the run$/m)
+    assert.match(text(M.yourTurnCard(C, tA, 100).lines), /^⚑ T02 · Missing secret \(human\)$/m)
     // Run finished: what comes next in one key
     const rc = M.runCard(C, tA, 100, false)
     assert.equal(M.plainText(rc.title), '■ Run 1 · phase 1 · autonomous'); assert.equal(rc.color, 'warning')
     const next = rc.lines.flat().find(m => m.x)
-    assert.deepEqual([next.x.hotkey, next.x.prompt], ['c', '/orchestre:run plans/demo --resume'])
-    assert.match(text(rc.lines), /^next {4}\/orchestre:run plans\/demo --resume {2}in the prompt$/m)
+    assert.deepEqual([next.x.hotkey, next.x.prompt, next.x.bracket], [null, '/orchestre:run plans/demo --resume', true], 'a button without a key (0.16.0)')
+    assert.match(text(rc.lines), /^next {4}\[ Resume command in the prompt \] {2}\/orchestre:run plans\/demo --resume$/m)
     assert.deepEqual(M.pane(C, tA, 100).cards.map(c => c.id), ['yourTurn', 'run', 'tasks', 'log'])
     assert.match(M.plainText(M.pane(C, tA, 100).header[0]), /^ORCHESTRE · DEMO · RUN 1 AWAITING-RULING · {2}⚠ 1 YOUR TURN$/)
     assert.deepEqual([M.pane(C, tA, 100).borders, M.pane(C, tA, 50).borders], [true, false], 'no border below 60 columns')
@@ -248,8 +257,8 @@ try {
     assert.notEqual(M.phasesOf(H, tE)[1].duration, null, 'phase 2 has a duration, though run.phase is 1')
     // Plan finished: what comes next is the PR draft; the status line stays as long as there are reviews
     const next = M.runCard(H, tE, 100, false).lines.flat().find(m => m.x)
-    assert.deepEqual([next.x.hotkey, next.x.prompt], ['p', M.prText(H, tE)])
-    assert.match(text(M.runCard(H, tE, 100, false).lines), /^next {4}PR draft in the prompt$/m)
+    assert.deepEqual([next.x.hotkey, next.x.prompt], [null, M.prText(H, tE)])
+    assert.match(text(M.runCard(H, tE, 100, false).lines), /^next {4}\[ PR draft in the prompt \]$/m)
     // Phase 2 is the run's: its task to do says what it waits for
     assert.match(text(M.taskLines(G2, tE, 100)), /^ {2}○ T04 .* waits for T03$/m)
     assert.equal(M.statusLine(H, tE), 'orchestre ✓ 4/4 · ⚑ 3'); assert.equal(M.statusLine({ ...H, reviews: [] }, tE), null)
@@ -542,15 +551,18 @@ try {
       assert.equal(M.plainText(d.meta), M.CLOSE_LABEL)
       assert.ok(M.width(d.title) + M.width(d.meta) + 1 <= columns - 4, 'title and Close on one line')
       for (const l of d.lines) assert.ok(M.width(l) <= columns - 4, `${columns} columns: ${M.plainText(l)}`)
-      // The whole text, word for word, over several lines; then the prompt; then the action, without a key of its own
+      // The whole text, word for word, over several lines; then the prompt; then the buttons, without a key (0.16.0)
       const body = d.lines.slice(0, d.lines.findIndex(l => /^prompt /.test(M.plainText(l)))).map(M.plainText).join(' ')
       assert.equal(body, `T03 · ${long}`)
       assert.ok(d.lines.length > 3)
       const act = d.lines.flat().filter(m => m.x)
-      assert.equal(act.length, 2, 'the action, then d (0.15.1)')
-      assert.deepEqual([act[0].t, act[0].x.hotkey, act[0].x.mode, act[0].x.key], [`${rank} again → review`, null, undefined, k])
+      assert.deepEqual(act.map(m => [m.t, m.x.hotkey, m.x.op ?? null, m.x.bracket, m.x.key]), [
+        ['[ Review with Claude ]', null, null, true, k], ['[ ✓ Done ]', null, 'done', true, k], ['[ → Ticket ]', null, 'ticket', true, k], ['[ ✎ Edit text ]', null, 'edit', true, k],
+      ])
       assert.equal(act[0].x.prompt, `Review with me, before the PR (review of T03): ${long}`)
-      assert.deepEqual([act[1].t, act[1].x.hotkey, act[1].x.key, act[1].x.prompt], ['d → mark done', 'd', k, `/orchestre:done plans/demo review T03 ${long}`])
+      assert.equal(act[1].x.prompt, `/orchestre:done plans/demo review T03 ${long}`, 'what goes into the prompt without node')
+      assert.equal(act[2].x.prompt, `/orchestre:done plans/demo ticket review T03 ${long}`)
+      assert.deepEqual(act[1].x.ref, { kind: 'review', task: 'T03', text: long, shown: long, original: long, edited: false })
       // The selected line: ▸ and bold, still cut
       const line = p.cards[1].lines.find(l => l.some(m => m.x?.key === k))
       assert.deepEqual([line[0].t, line[0].c, line[2].b], ['▸', 'claude', true])
@@ -563,10 +575,12 @@ try {
     // The item is gone (review settled): no more detail card, no more selection
     const gone = M.pane(B, tA, 100, { selected: k })
     assert.deepEqual([gone.cards[0].id, gone.selection], ['yourTurn', null])
-    // Beyond 9: no key, the action of the detail card says only what it does
+    // Beyond 9: its rank on its own page only (0.16.0)
     const many = { ...B, reviews: Array.from({ length: 10 }, (_, i) => ({ task: 'T01', phase: 1, text: `f${i}`, at: null })) }
     const tenth = M.yourTurnItems(many, tA).items[10]
-    assert.equal(M.detailCard(many, tA, 100, tenth.key).lines.flat().find(m => m.x).t, '→ review')
+    assert.equal(M.plainText(M.detailCard(many, tA, 100, tenth.key).title), '▸ Detail · T01 · to review before the PR')
+    assert.equal(M.plainText(M.detailCard(many, tA, 100, tenth.key, { page: 1 }).title), '▸ Detail · 2 · T01 · to review before the PR')
+    assert.equal(M.detailCard(many, tA, 100, tenth.key).lines.flat().find(m => m.x).t, '[ Review with Claude ]')
     // The same review twice: two keys
     const twice = { ...B, reviews: [B.reviews[0], B.reviews[0]] }
     assert.deepEqual(M.yourTurnItems(twice, tA).items.filter(it => it.group === 'review').map(it => it.key.replace(/^review\|.*?(#\d)?$/, '$1')), ['', '#2'])
@@ -578,8 +592,9 @@ try {
     assert.equal(review.ack, `/orchestre:done plans/demo review ${review.task} ${B.reviews.find(r => r.task === review.task).text}`)
     assert.equal(decision.ack, `/orchestre:done plans/demo decision ${decision.task} ${B.decisions[0].title}`)
     assert.equal(settle.ack, undefined)
-    // No d on an item to settle: it leaves the list with the run
-    assert.equal(M.detailCard(B, tA, 100, settle.key).lines.flat().filter(m => m.x?.hotkey === M.DONE_KEY).length, 0)
+    // No Done on an item to settle: it leaves the list with the run; its one button prepares its action (0.16.0)
+    const settleButtons = M.detailCard(B, tA, 100, settle.key).lines.flat().filter(m => m.x)
+    assert.deepEqual(settleButtons.map(m => [m.t, m.x.op ?? null, m.x.prompt]), [['[ Resume the run ]', null, '/orchestre:run plans/demo --resume']])
     // The source plan: "-"
     const source = { ...B, reviews: [{ task: null, phase: null, text: 'README: relire', at: null }] }
     assert.equal(M.yourTurnItems(source, tA).items.find(it => it.group === 'review').ack, '/orchestre:done plans/demo review - README: relire')
@@ -592,6 +607,65 @@ try {
     const next = { ...after, reviews: [...after.reviews, { task: 'T01', phase: 1, text: 'new one', at: null }] }
     assert.ok(M.changes(before, next).includes('⚑ T01: to review before the PR'), JSON.stringify(M.changes(before, next)))
     assert.deepEqual(M.changes(before, after).filter(m => m.startsWith('⚑')), [])
+  })
+
+  testCase('buttons of "Your turn" (0.16.0): ticket and label read, Done, Ticket, Edit text, the field, Undo, the PR draft as task lists', () => {
+    const raw = rawFile(), at = '2026-11-02T10:00:00+01:00'
+    const R0 = raw.reviews.map(r => r.text)
+    const doc = {
+      ...raw,
+      reviews: raw.reviews.map((r, i) => (i === 0 ? { ...r, done: at } : i === 1 ? { ...r, ticket: at } : { ...r, label: `${r.text} (in GitHub)` })),
+      auto_decisions: raw.auto_decisions.map(d => ({ ...d, label: 'Retry threshold: A, kept' })),
+    }
+    const X = M.normalize(doc)
+    // Done and moved to tickets: no longer waiting, kept in "closed"; the label is the text shown, the key does not change
+    assert.deepEqual(X.reviews.map(r => [r.text, r.label]), [[R0[2], `${R0[2]} (in GitHub)`]])
+    assert.deepEqual(X.closed.map(c => [c.kind, c.task, c.text, c.as]), [['review', 'T01', R0[0], 'done'], ['review', 'T02', R0[1], 'ticket']])
+    assert.deepEqual(X.decisions.map(d => d.label), ['Retry threshold: A, kept'])
+    const items = M.yourTurnItems(X, tA).items
+    const review = items.find(it => it.group === 'review'), decision = items.find(it => it.group === 'decision')
+    assert.equal(review.text, `T02 · ${R0[2]} (in GitHub)`)
+    assert.deepEqual(review.ref, { kind: 'review', task: 'T02', text: R0[2], shown: `${R0[2]} (in GitHub)`, original: R0[2], edited: true })
+    assert.equal(review.key, M.yourTurnItems(B, tA).items.find(it => it.ref?.text === R0[2]).key, 'the same key, edited or not')
+    assert.deepEqual([decision.ref.text, decision.ref.shown, decision.ref.original, decision.toTicket], ['Retry threshold', 'Retry threshold: A, kept', 'Retry threshold: A (cap at 30 s)', '/orchestre:done plans/demo ticket decision T01 Retry threshold'])
+    assert.match(text(M.yourTurnCard(X, tA, 100).lines), new RegExp(`^⚑ T02 · ${R0[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(in GitHub\\) {2}✎ edited$`, 'm'))
+    assert.equal(M.plainText(M.yourTurnCard(X, tA, 100).meta), '1 review · 1 auto-decision · 1 moved to tickets')
+    // The detail card of an edited item: its original text under it
+    const d = M.detailCard(X, tA, 100, review.key)
+    assert.match(text(d.lines), new RegExp(`^original ${R0[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'))
+    // While the text is edited: a field with what is typed so far, Save and Cancel, the note on HANDOFF.md
+    const e = M.detailCard(X, tA, 100, review.key, { editing: true, draft: 'new text' })
+    const field = e.lines.flat().find(m => m.in)
+    assert.deepEqual(field.in, { key: 'detail-input', value: 'new text', submitLabel: 'save' })
+    assert.deepEqual(e.lines.flat().filter(m => m.x).map(m => [m.t, m.x.op]), [['[ Save ]', 'save'], ['[ Cancel ]', 'cancel']])
+    assert.match(text(e.lines), /HANDOFF\.md keeps the original text/)
+    assert.equal(M.detailCard(X, tA, 100, review.key, { editing: true }).lines.flat().find(m => m.in).in.value, `${R0[2]} (in GitHub)`, 'without a draft: the text shown')
+    // Narrow: the buttons over two lines, none wider than the card
+    const narrow = M.detailCard(X, tA, 44, review.key)
+    const rows = narrow.lines.filter(l => l.some(m => m.x))
+    assert.ok(rows.length >= 2, `${rows.length} lines of buttons`)
+    for (const l of narrow.lines) assert.ok(M.width(l) <= 40, M.plainText(l))
+    assert.deepEqual(M.buttonLines([{ t: '[ a ]' }, { t: '[ bb ]' }, { t: '[ c ]' }], 13).map(M.plainText), ['[ a ]  [ bb ]', '[ c ]'])
+    // The last action and its Undo; nothing left: the card stays, in green, for Undo
+    const last = { text: 'T01 · review done', kind: /** @type {const} */ ('done') }
+    const withLast = M.yourTurnCard(X, tA, 100, null, { last })
+    assert.match(text(withLast.lines), /^ {2}last: T01 · review done {2}\[ Undo \]$/m)
+    assert.deepEqual(withLast.lines.flat().filter(m => m.x?.op === 'undo').map(m => [m.x.hotkey, m.x.bracket]), [[null, true]])
+    const empty = { ...A, reviews: [], decisions: [] }
+    assert.equal(M.yourTurnCard(empty, tA, 100), null)
+    const only = M.yourTurnCard(empty, tA, 100, null, { last })
+    assert.deepEqual([M.plainText(only.title), only.color], ['✓ Nothing left to review', 'success'])
+    assert.deepEqual(M.pane(empty, tA, 100, { last }).cards.map(c => c.id), ['yourTurn', 'run', 'tasks', 'log'])
+    // The PR draft: task lists, done ticked, the label as text, the tickets moved named before those of HANDOFF.md
+    const pr = M.prText({ ...X, tickets: 2 }, tA)
+    assert.match(pr, new RegExp(`^- \\[ \\] T02: ${R0[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(in GitHub\\)$`, 'm'))
+    assert.match(pr, new RegExp(`^- \\[x\\] T01: ${R0[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'))
+    assert.match(pr, /^- \[ \] T01, Retry threshold: A, kept$/m)
+    assert.match(pr, new RegExp(`\\nTickets to open after the PR:\\n- T02: ${R0[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n- and 2 "ticket" entries of HANDOFF\\.md\\.\\n$`))
+    assert.doesNotMatch(pr, new RegExp(`\\[.\\] T02: ${R0[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'a ticket is not to review')
+    // A review open again by Undo is not a new review
+    const reopened = M.normalize({ ...doc, reviews: doc.reviews.map((r, i) => (i === 0 ? { ...r, done: undefined } : r)) })
+    assert.deepEqual(M.changes(X, reopened).filter(m => m.startsWith('⚑')), [])
   })
 
   testCase('wrap: words over lines of n characters at most, a word too long cut', () => {

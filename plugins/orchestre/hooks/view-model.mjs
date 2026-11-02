@@ -44,6 +44,15 @@ const date = x => { if (typeof x !== 'string') return null; const t = Date.parse
 /** @param {unknown} x @param {number} d */
 const integer = (x, d) => (Number.isInteger(x) ? /** @type {number} */ (x) : d)
 
+/** Closed by the pilot: done (0.15.1) or moved to tickets (0.16.0); null while it waits. @param {Record<string, any>} x */
+const closedAs = x => (x.done ? 'done' : x.ticket ? 'ticket' : null)
+/** The text the pilot gave it (0.16.0), or null. @param {Record<string, any>} x */
+const labelOf = x => (typeof x.label === 'string' && x.label.trim() ? x.label : null)
+/** @param {Record<string, any>} raw @returns {Record<string, any>[]} */
+const reviewsOf = raw => (Array.isArray(raw.reviews) ? raw.reviews : []).filter(isObject)
+/** @param {Record<string, any>} raw @returns {Record<string, any>[]} */
+const decisionsOf = raw => (Array.isArray(raw.auto_decisions) ? raw.auto_decisions : []).filter(isObject)
+
 /** Format declared by a progress.json, or null. @param {unknown} raw */
 export const formatOf = raw => (isObject(raw) && typeof raw.format === 'string' ? raw.format : null)
 
@@ -78,9 +87,14 @@ export function normalize(raw) {
     tasks,
     runs: runs.map(runView),
     run: lastRun ? runView(lastRun) : null,
-    // Reviews and auto-decisions marked done (/orchestre:done, 0.15.1) no longer wait
-    reviews: (Array.isArray(raw.reviews) ? raw.reviews : []).filter(r => isObject(r) && !r.done).map(r => ({ task: r.task == null ? null : text(r.task), phase: Number.isInteger(r.phase) ? r.phase : null, text: text(r.text), at: date(r.at) })),
-    decisions: (Array.isArray(raw.auto_decisions) ? raw.auto_decisions : []).filter(d => isObject(d) && !d.done).map(d => ({ task: text(d.task), title: text(d.title), option: text(d.option), description: text(d.description) })),
+    // Reviews and auto-decisions marked done (/orchestre:done, 0.15.1) or moved to tickets (0.16.0) no longer wait; their
+    // text shown is the label the pilot gave, if any (0.16.0)
+    reviews: reviewsOf(raw).filter(r => !closedAs(r)).map(r => ({ task: r.task == null ? null : text(r.task), phase: Number.isInteger(r.phase) ? r.phase : null, text: text(r.text), at: date(r.at), label: labelOf(r) })),
+    decisions: decisionsOf(raw).filter(d => !closedAs(d)).map(d => ({ task: text(d.task), title: text(d.title), option: text(d.option), description: text(d.description), label: labelOf(d) })),
+    closed: [
+      ...reviewsOf(raw).filter(closedAs).map(r => ({ kind: /** @type {const} */ ('review'), task: r.task == null ? null : text(r.task), text: text(r.text), shown: labelOf(r) ?? text(r.text), as: /** @type {'done' | 'ticket'} */ (closedAs(r)) })),
+      ...decisionsOf(raw).filter(closedAs).map(d => ({ kind: /** @type {const} */ ('decision'), task: text(d.task), text: text(d.title), shown: labelOf(d) ?? `${text(d.title)}: option ${text(d.option)}, ${text(d.description)}`, as: /** @type {'done' | 'ticket'} */ (closedAs(d)) })),
+    ],
     issues: (Array.isArray(raw.issues) ? raw.issues : []).filter(p => isObject(p) && p.status !== 'settled').map(p => ({ task: text(p.task), title: text(p.title), human: p.human === true, role: text(p.role) })),
     prerequisites: (Array.isArray(raw.prerequisites) ? raw.prerequisites : []).filter(p => isObject(p) && p.status === 'open').map(p => ({ id: text(p.id), type: text(p.type), blocks: texts(p.blocks) })),
     majorCounts, tickets,
@@ -209,7 +223,7 @@ export function cut(s, n) {
 /** Pads to n characters (after cutting). @param {string} s @param {number} n */
 export const column = (s, n) => { const c = cut(s, n); return c + ' '.repeat(Math.max(0, n - [...c].length)) }
 /** @param {number} n @param {string} word */
-const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`
+const plural = (n, word, many = `${word}s`) => `${n} ${n > 1 ? many : word}`
 /** "phase 2", or "phases 1 to 3" for a run that went through several. @param {number} from @param {number} a */
 const phasesLabel = (from, a) => (a > from ? `phases ${from} to ${a}` : `phase ${from}`)
 
@@ -466,9 +480,10 @@ export function suffix(inst, now) {
 }
 
 // ─── The pane: a view in cards ────────────────────────────────────────────────────────────────────────────────────
-// In order: what waits for you (if anything), the run, the tasks as timelines, the log. In the pane, 1 to 9 act on the
-// lines of "Your turn", c and p on what comes next after a finished run, l switches the log card between its last entries
-// and the whole log. An action only prepares a text in the prompt: nothing is sent without the person.
+// In order: what waits for you (if anything), the run, the tasks as timelines, the log. In the pane, 1 to 9 select a line
+// of "Your turn" (its detail card), l switches the log card between its last entries and the whole log. The other actions
+// are buttons without a key (0.16.0). Most prepare a text in the prompt, and nothing is sent without the person; Done,
+// Ticket, Edit text and Undo, on a review or an auto-decision, write through progress.mjs (register.tsx runs it).
 
 const MODES = /** @type {Record<string, string>} */ ({ auto: 'autonomous', deviation: 'stop on deviation', phase: 'stop at each phase' })
 const SHORT_STEP = /** @type {Record<string, string>} */ ({ worker: 'work', verification: 'verif', evaluation: 'eval', fix: 'fix', merge: 'merge', replanning: 'replan', progress: 'prog' })
@@ -601,7 +616,8 @@ function phaseTimeline(phases, cur, w) {
  * What waits for you, one item per thing, each with its action: the tasks that need a human, blocked or failed, the
  * issues to settle, the open prerequisites, plan-lint in error, then the reviews and the auto-decisions to check before
  * the PR. Each item has a key that stays the same while the item is there (0.14.0: the detail card follows it, not its
- * place in the list, which changes during a run).
+ * place in the list, which changes during a run). A review or an auto-decision has its reference for progress.mjs
+ * (0.16.0: the buttons of the detail card mark it done, move it to tickets or change its text).
  * @param {Snapshot} inst @param {number} now
  * @returns {{ items: YourTurnItem[], urgent: number }}
  */
@@ -622,91 +638,162 @@ export function yourTurnItems(inst, now) {
   for (const p of inst.prerequisites) items.push({ key: '', group: 'settle', task: p.id, g: { t: '◇', c: 'warning', b: true }, text: `${p.id} (${p.type}) open${p.blocks.length ? `, blocks ${p.blocks.slice(0, 4).join(', ')}` : ''}`, prompt: `/orchestre:ready ${dir}`, help: 'settle the prerequisites' })
   if (!inst.lint.ok) items.push({ key: '', group: 'settle', task: 'plan-lint', g: { t: '✗', c: 'error', b: true }, text: `plan-lint: ${plural(inst.lint.errors, 'error')} at the last progress update`, prompt: `Show me the plan-lint errors on ${dir} and propose a fix.`, help: 'ask the pilot' })
   const urgent = items.length
-  // d in the detail card (0.15.1): /orchestre:done marks it done, and it leaves the list
-  const done = /** @param {'review' | 'decision'} kind @param {string | null} task @param {string} text */ (kind, task, text) => `/orchestre:done ${dir} ${kind} ${task ?? '-'} ${text}`
-  for (const r of inst.reviews) items.push({ key: '', group: 'review', ack: done('review', r.task, r.text), task: r.task ?? 'source plan', g: { t: '⚑', c: 'warning' }, text: `${r.task ?? 'source plan'} · ${r.text}`, prompt: `Review with me, before the PR (review of ${r.task ?? 'source plan'}): ${r.text}`, help: 'review' })
-  for (const d of inst.decisions) items.push({ key: '', group: 'decision', ack: done('decision', d.task, d.title), task: d.task, g: { t: '⇒', c: 'merged' }, text: `${d.task} · ${d.title}: ${d.option}${d.description ? ` (${d.description})` : ''}`, prompt: `Go over the auto-decision for ${d.task} with me: "${d.title}", option ${d.option}${d.description ? ` (${d.description})` : ''}.`, help: 'go over' })
+  // /orchestre:done marks it done (0.15.1), or moves it to tickets (0.16.0): what the pane puts in the prompt when it cannot
+  // run progress.mjs itself
+  const done = /** @param {'review' | 'decision'} kind @param {string | null} task @param {string} text @param {boolean} [ticket] */ (kind, task, text, ticket = false) => `/orchestre:done ${dir} ${ticket ? 'ticket ' : ''}${kind} ${task ?? '-'} ${text}`
+  for (const r of inst.reviews) {
+    const shown = r.label ?? r.text
+    items.push({ key: '', group: 'review', ack: done('review', r.task, r.text), toTicket: done('review', r.task, r.text, true), ref: { kind: 'review', task: r.task, text: r.text, shown, original: r.text, edited: r.label != null }, task: r.task ?? 'source plan', g: { t: '⚑', c: 'warning' }, text: `${r.task ?? 'source plan'} · ${shown}`, prompt: `Review with me, before the PR (review of ${r.task ?? 'source plan'}): ${shown}`, help: 'review' })
+  }
+  for (const d of inst.decisions) {
+    const original = `${d.title}: ${d.option}${d.description ? ` (${d.description})` : ''}`, shown = d.label ?? original
+    items.push({ key: '', group: 'decision', ack: done('decision', d.task, d.title), toTicket: done('decision', d.task, d.title, true), ref: { kind: 'decision', task: d.task, text: d.title, shown, original, edited: d.label != null }, task: d.task, g: { t: '⇒', c: 'merged' }, text: `${d.task} · ${shown}`, prompt: `Go over the auto-decision for ${d.task} with me: "${d.title}", option ${d.option}${d.description ? ` (${d.description})` : ''}.`, help: 'go over' })
+  }
   // The key: the group and the text; the same text twice gets its rank
   /** @type {Map<string, number>} */
   const counts = new Map()
   for (const it of items) {
-    const base = `${it.group}|${it.text}`, k = counts.get(base) ?? 0
+    const base = `${it.group}|${it.ref ? `${it.ref.task ?? '-'}|${it.ref.text}` : it.text}`, k = counts.get(base) ?? 0
     counts.set(base, k + 1)
     it.key = k ? `${base}#${k + 1}` : base
   }
   return { items, urgent }
 }
 
+// The lines of "Your turn" by pages of 9, one key each, 1 to 9 (0.16.0); the page shown, kept within the pages there are
+export const PAGE_SIZE = 9
+/** @param {number} count @param {number} page */
+export const pageOf = (count, page) => Math.max(0, Math.min(Math.floor(page) || 0, Math.ceil(count / PAGE_SIZE) - 1))
+
 /**
- * The "Your turn" card: one line per item, cut to the width. The first 9 have a key (1 to 9): a first press shows the
- * item in the detail card, a second press on the same line acts (0.14.0). The selected line has ▸ and its text in bold.
- * null if there is nothing.
+ * The "Your turn" card: one line per item, cut to the width, 9 per page (0.16.0). The 9 of the page have a key, 1 to 9: a
+ * press shows the item in the detail card, a second press on the same line closes it (0.16.0: the actions are buttons of
+ * the detail card). The selected line has ▸ and its text in bold. Under the lines, the page and its button, then the last
+ * action of the pane and its Undo button. null if there is nothing, neither item nor last action.
  * @param {Snapshot} inst @param {number} now @param {number} columns @param {string | null} [selected]
+ * @param {{ page?: number, last?: { text: string, kind: 'done' | 'ticket' | 'edit' } | null }} [o]
  * @returns {(Card & { urgent: number }) | null}
  */
-export function yourTurnCard(inst, now, columns, selected = null) {
+export function yourTurnCard(inst, now, columns, selected = null, { page = 0, last = null } = {}) {
   const { items, urgent } = yourTurnItems(inst, now)
-  if (!items.length) return null
+  if (!items.length && !last) return null
   const inner = columns - 4
+  const p = pageOf(items.length, page), pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE))
   /** @type {Line[]} */
   const lines = []
-  items.forEach((it, i) => {
-    const hotkey = i < 9 ? String(i + 1) : null, on = it.key === selected
-    const help = `  → ${it.help}`
-    lines.push([on ? { t: '▸', c: 'claude', b: true } : it.g, { t: ' ' }, { t: cut(it.text, Math.max(16, inner - help.length - 6)), ...(on ? { b: true } : {}), x: { hotkey, prompt: it.prompt, help: it.help, key: it.key, mode: 'select' } }, { t: help, d: true }])
+  items.slice(p * PAGE_SIZE, (p + 1) * PAGE_SIZE).forEach((it, i) => {
+    const hotkey = String(i + 1), on = it.key === selected
+    const mark = it.ref?.edited ? '  ✎ edited' : ''
+    lines.push([on ? { t: '▸', c: 'claude', b: true } : it.g, { t: ' ' }, { t: cut(it.text, Math.max(16, inner - mark.length - 5)), ...(on ? { b: true } : {}), x: { hotkey, prompt: it.prompt, help: it.help, key: it.key, mode: 'select' } }, ...(mark ? [{ t: mark, d: true }] : [])])
     if (it.detail) lines.push([{ t: `     ${cut(it.detail, Math.max(16, inner - 6))}`, d: true }])
   })
+  if (pages > 1) {
+    const rest = items.length - (p + 1) * PAGE_SIZE
+    lines.push([{ t: `  page ${p + 1}/${pages}  `, d: true }, { t: bracketed(rest > 0 ? `Next ${Math.min(rest, PAGE_SIZE)} ›` : `‹ First ${PAGE_SIZE}`), x: { hotkey: null, prompt: '', help: 'other page', op: 'page', page: rest > 0 ? p + 1 : 0, bracket: true } }])
+  }
+  if (last) lines.push([{ t: '  last: ', d: true }, { t: cut(last.text, Math.max(12, inner - 20)), c: last.kind === 'done' ? 'success' : last.kind === 'ticket' ? 'suggestion' : undefined }, { t: '  ' }, { t: bracketed(UNDO_LABEL), x: { hotkey: null, prompt: '', help: 'undo', op: 'undo', bracket: true } }])
+  const tickets = (inst.closed ?? []).filter(c => c.as === 'ticket').length
   const count = [
     urgent ? `${urgent} to settle` : '',
     inst.reviews.length ? plural(inst.reviews.length, 'review') : '',
     inst.decisions.length ? plural(inst.decisions.length, 'auto-decision') : '',
+    tickets ? `${tickets} moved to tickets` : '',
   ].filter(Boolean).join(' · ')
   return {
-    id: 'yourTurn', color: 'warning', urgent,
-    title: [{ t: urgent ? '⚠ Your turn' : '⚑ To review before the PR', c: 'warning', b: true }],
+    id: 'yourTurn', color: items.length ? 'warning' : 'success', urgent,
+    title: [items.length ? { t: urgent ? '⚠ Your turn' : '⚑ To review before the PR', c: 'warning', b: true } : { t: '✓ Nothing left to review', c: 'success', b: true }],
     meta: [{ t: count, d: true }],
     lines,
   }
 }
 
-// The action of the detail card that marks a review or an auto-decision done (0.15.1)
-export const DONE_KEY = 'd'
-const DONE_HELP = 'mark done'
 // The button that closes the detail card (key x), on its top line
 export const CLOSE_LABEL = '✕ Close'
+// The buttons of the pane (0.16.0): drawn in brackets by Claude Code, "[ ✓ Done ]", without a key
+export const DONE_LABEL = '✓ Done', TICKET_LABEL = '→ Ticket', EDIT_LABEL = '✎ Edit text', SAVE_LABEL = 'Save', CANCEL_LABEL = 'Cancel', UNDO_LABEL = 'Undo'
 const GROUPS = /** @type {Record<YourTurnItem['group'], string>} */ ({ settle: 'to settle', review: 'to review before the PR', decision: 'auto-decision' })
 // The room of the labels of the detail card ("blocker  ", "prompt   ")
 const FIELD = 9
+// What the first button of the detail card says: the action of the item, with a capital
+const capital = /** @param {string} s */ s => s.charAt(0).toUpperCase() + s.slice(1)
+/** The label of a button as Claude Code draws it in the terminal: "[ label ]". @param {string} label */
+export const bracketed = label => `[ ${label} ]`
 
 /**
  * The detail card (0.14.0), above "Your turn": the whole text of the selected item, wrapped to the width of the card, its
- * blocker, the text its action prepares in the prompt, and the button of the action. null if nothing is selected or if
- * the item is gone (settled, merged).
- * @param {Snapshot} inst @param {number} now @param {number} columns @param {string | null} selected @returns {Card | null}
+ * blocker, the text its action prepares in the prompt, then its buttons (0.16.0, no key): the action of the item, which
+ * prepares the prompt; for a review or an auto-decision, Done, Ticket and Edit text, which apply at once. While the text is
+ * edited, a field and Save, Cancel. null if nothing is selected or if the item is gone (settled, merged).
+ * @param {Snapshot} inst @param {number} now @param {number} columns @param {string | null} selected
+ * @param {{ page?: number, editing?: boolean, draft?: string | null }} [o] draft: the text typed in the field so far
+ * @returns {Card | null}
  */
-export function detailCard(inst, now, columns, selected) {
+export function detailCard(inst, now, columns, selected, { page = 0, editing = false, draft = null } = {}) {
   if (!selected) return null
   const { items } = yourTurnItems(inst, now)
   const i = items.findIndex(it => it.key === selected)
   if (i < 0) return null
-  const it = items[i], hotkey = i < 9 ? String(i + 1) : null
+  const it = items[i], p = pageOf(items.length, page)
+  const hotkey = Math.floor(i / PAGE_SIZE) === p ? String(i - p * PAGE_SIZE + 1) : null
   // Border and padding take 4 columns, as for the other cards
   const inner = Math.max(24, columns - 4)
-  /** @type {Line[]} */
-  const lines = wrap(it.text, inner).map(t => [{ t }])
   /** @param {string} label @param {string} value @param {boolean} dim @returns {Line[]} */
   const field = (label, value, dim) => wrap(value, inner - FIELD).map((t, j) => [{ t: (j ? '' : label).padEnd(FIELD), d: true }, { t, ...(dim ? { d: true } : {}) }])
-  if (it.detail) lines.push(...field('blocker', it.detail, false))
-  lines.push(...field('prompt', it.prompt, true))
-  lines.push([{ t: `${hotkey ? `${hotkey} again ` : ''}→ ${it.help}`, x: { hotkey: null, prompt: it.prompt, help: it.help, key: it.key } }, { t: '  nothing is sent', d: true }])
-  // A review or an auto-decision: d prepares /orchestre:done, which marks it done (0.15.1)
-  if (it.ack) lines.push([{ t: `${DONE_KEY} → ${DONE_HELP}`, x: { hotkey: DONE_KEY, prompt: it.ack, help: DONE_HELP, key: it.key } }, { t: '  nothing is sent', d: true }])
+  /** @param {string} s @returns {Line[]} */
+  const note = s => wrap(s, inner).map(t => [{ t, d: true }])
+  /** @type {Line[]} */
+  const lines = []
+  const ref = it.ref
+  if (editing && ref) {
+    const value = draft ?? ref.shown
+    lines.push([{ t: 'Text ', d: true }, { t: cut(value, Math.max(8, inner - 13)), in: { key: 'detail-input', value, submitLabel: 'save' } }])
+    lines.push(...buttonLines([
+      { t: bracketed(SAVE_LABEL), c: 'success', x: { hotkey: null, prompt: '', help: 'save the text', key: it.key, op: 'save', ref, bracket: true } },
+      { t: bracketed(CANCEL_LABEL), x: { hotkey: null, prompt: '', help: 'cancel', key: it.key, op: 'cancel', bracket: true } },
+    ], inner))
+    lines.push(...note('HANDOFF.md keeps the original text, so the next run does not bring the item back.'))
+  } else {
+    lines.push(...wrap(it.text, inner).map(t => [{ t }]))
+    if (ref?.edited) lines.push(...field('original', ref.original, true))
+    if (it.detail) lines.push(...field('blocker', it.detail, false))
+    lines.push(...field('prompt', it.prompt, true))
+    const ask = ref ? (ref.kind === 'review' ? 'Review with Claude' : 'Go over with Claude') : capital(it.help)
+    /** @type {Line} */
+    const buttons = [{ t: bracketed(ask), c: 'claude', x: { hotkey: null, prompt: it.prompt, help: it.help, key: it.key, bracket: true } }]
+    if (ref) buttons.push(
+      { t: bracketed(DONE_LABEL), c: 'success', x: { hotkey: null, prompt: it.ack ?? '', help: 'mark done', key: it.key, op: 'done', ref, bracket: true } },
+      { t: bracketed(TICKET_LABEL), c: 'suggestion', x: { hotkey: null, prompt: it.toTicket ?? '', help: 'move to tickets', key: it.key, op: 'ticket', ref, bracket: true } },
+      { t: bracketed(EDIT_LABEL), x: { hotkey: null, prompt: '', help: 'edit the text', key: it.key, op: 'edit', ref, bracket: true } },
+    )
+    lines.push(...buttonLines(buttons, inner))
+    lines.push(...note(ref ? `${ask} puts the prompt above in the prompt box; nothing is sent. Done, Ticket and Edit text apply at once.` : `${ask} puts the prompt above in the prompt box; nothing is sent.`))
+  }
   return {
     id: 'detail', color: 'claude',
     title: [{ t: '▸ Detail', c: 'claude', b: true }, { t: ' · ', d: true }, { t: `${hotkey ? `${hotkey} · ` : ''}${cut(it.task, 20)}`, b: true }, { t: ` · ${GROUPS[it.group]}`, d: true }],
     meta: [{ t: CLOSE_LABEL }],
     lines,
   }
+}
+
+/**
+ * Buttons drawn in brackets, two spaces apart, over as many lines as the width needs (0.16.0): a piece per button, its
+ * text in brackets as Claude Code draws it (register.tsx gives the label without them).
+ * @param {Line} buttons @param {number} room @returns {Line[]}
+ */
+export function buttonLines(buttons, room) {
+  /** @type {Line[]} */
+  const lines = []
+  /** @type {Line} */
+  let l = [], used = 0
+  for (const b of buttons) {
+    const w = [...b.t].length
+    if (l.length && used + 2 + w > room) { lines.push(l); l = []; used = 0 }
+    if (l.length) { l.push({ t: '  ' }); used += 2 }
+    l.push(b); used += w
+  }
+  if (l.length) lines.push(l)
+  return lines
 }
 
 /** The words of s over lines of n visible characters at most; a word longer than n is cut. @param {string} s @param {number} n @returns {string[]} */
@@ -763,11 +850,13 @@ export function runCard(inst, now, columns, animated) {
   if (steps.length) lines.push(...stepLines(steps.map(([e, ms]) => [{ t: `${SHORT_STEP[e] || e} ${chrono(ms)}`, c: STEP_COLOR[e] || 'subtle' }]), inner - 8).map((l, i) => [{ t: i ? '        ' : 'steps   ', d: true }, ...l]))
   if (!runLive && r.detail) lines.push([{ t: 'detail  ', d: true }, { t: cut(r.detail, Math.max(16, inner - 10)) }])
   if (!runLive) {
-    // The resume command: without "in the prompt", then cut, when the card lacks room; the prompt keeps it whole
+    // A button, without a key (0.16.0); after it the resume command, dim, cut when the card lacks room: the prompt keeps it
+    // whole
     const resume = `/orchestre:run ${dir} --resume`, room = inner - 8
+    const button = bracketed(s.allMerged ? 'PR draft in the prompt' : 'Resume command in the prompt'), left = room - [...button].length - 2
     lines.push(s.allMerged
-      ? [{ t: 'next    ', d: true }, { t: 'PR draft in the prompt', x: { hotkey: 'p', prompt: prText(inst, now), help: 'prepare the PR' } }]
-      : [{ t: 'next    ', d: true }, { t: cut(resume, room), x: { hotkey: 'c', prompt: resume, help: 'resume the run' } }, ...([...resume].length + 15 <= room ? [{ t: '  in the prompt', d: true }] : [])])
+      ? [{ t: 'next    ', d: true }, { t: button, x: { hotkey: null, prompt: prText(inst, now), help: 'prepare the PR', bracket: true } }]
+      : [{ t: 'next    ', d: true }, { t: button, x: { hotkey: null, prompt: resume, help: 'resume the run', bracket: true } }, ...(left >= 12 ? [{ t: `  ${cut(resume, left)}`, d: true }] : [])])
   }
   const marker = runLive ? '' : r.status === 'finished' ? '✓ ' : r.status === 'error' ? '✗ ' : '■ '
   return {
@@ -990,14 +1079,16 @@ export function since(inst, t0, now) {
  * The whole pane: a header (overall state, legend, legend of the demo, what changed since the last visit), then the
  * cards. Below BORDER_COLUMNS columns, the cards lose their border.
  * @param {Snapshot} inst @param {number} now @param {number} columns
- * @param {{ animated?: boolean, fullLog?: boolean, since?: number | null, selected?: string | null }} [options]
+ * @param {{ animated?: boolean, fullLog?: boolean, since?: number | null, selected?: string | null, page?: number, editing?: boolean, draft?: string | null, last?: { text: string, kind: 'done' | 'ticket' | 'edit' } | null }} [options]
+ * page, editing, draft and last: the page of "Your turn", the text of the detail card being edited, what is typed in its
+ * field, the last action of the pane (0.16.0)
  * @returns {{ header: Line[], cards: Card[], borders: boolean, selection: string | null }}
  */
-export function pane(inst, now, columns, { animated = false, fullLog = false, since: t0 = null, selected = null } = {}) {
+export function pane(inst, now, columns, { animated = false, fullLog = false, since: t0 = null, selected = null, page = 0, editing = false, draft = null, last = null } = {}) {
   const s = summarize(inst, now), r = inst.run
-  const yourTurn = yourTurnCard(inst, now, columns, selected)
-  // The detail card of the selected item of "Your turn", right above it (0.14.0)
-  const detail = detailCard(inst, now, columns, selected)
+  const yourTurn = yourTurnCard(inst, now, columns, selected, { page, last })
+  // The detail card of the selected item of "Your turn", right above it (0.14.0); its text being edited (0.16.0)
+  const detail = detailCard(inst, now, columns, selected, { page, editing, draft })
   /** @type {Piece} */
   const state = !r ? { t: 'NO RUN', d: true }
     : s.allMerged && r.status !== 'in-progress' ? { t: 'PLAN FINISHED', c: 'success', b: true }
@@ -1048,22 +1139,34 @@ export function stateText(inst, now) {
   return out.join('\n')
 }
 
-/** Draft of a PR description, put in the prompt, never sent. @param {Snapshot} inst @param {number} now */
+/**
+ * Draft of a PR description, put in the prompt, never sent. The reviews and the auto-decisions as task lists (0.16.0):
+ * those done are ticked, to check in the pull request; those moved to tickets join the tickets of HANDOFF.md.
+ * @param {Snapshot} inst @param {number} now
+ */
 export function prText(inst, now) {
-  const s = summarize(inst, now)
+  const s = summarize(inst, now), closed = inst.closed ?? []
   const l = [`Plan ${inst.plan}: ${s.done}/${s.total} tasks merged, ${plural(inst.runs.length, 'run')}.`, '']
-  if (inst.reviews.length) {
+  const reviewsDone = closed.filter(c => c.kind === 'review' && c.as === 'done'), decisionsDone = closed.filter(c => c.kind === 'decision' && c.as === 'done')
+  if (inst.reviews.length || reviewsDone.length) {
     l.push('To review before merging (files and commands forbidden to the agents):')
-    for (const r of inst.reviews) l.push(`- ${r.task ?? 'source plan'}: ${r.text}`)
+    for (const r of inst.reviews) l.push(`- [ ] ${r.task ?? 'source plan'}: ${r.label ?? r.text}`)
+    for (const r of reviewsDone) l.push(`- [x] ${r.task ?? 'source plan'}: ${r.shown}`)
     l.push('')
   }
-  if (inst.decisions.length) {
+  if (inst.decisions.length || decisionsDone.length) {
     l.push('Decisions taken automatically (autonomous mode):')
-    for (const d of inst.decisions) l.push(`- ${d.task}, ${d.title}: option ${d.option}, ${d.description}`)
+    for (const d of inst.decisions) l.push(`- [ ] ${d.task}, ${d.label ?? `${d.title}: option ${d.option}, ${d.description}`}`)
+    for (const d of decisionsDone) l.push(`- [x] ${d.task}, ${d.shown}`)
     l.push('')
   }
   if (s.attention.length) l.push(`Not merged yet: ${s.attention.map(t => `${t.id} (${ATTENTION[/** @type {keyof typeof ATTENTION} */ (t.status)]})`).join(', ')}.`, '')
-  if (inst.tickets) l.push(`${plural(inst.tickets, 'ticket')} to open after the PR (HANDOFF.md, "ticket" entries).`)
+  const moved = closed.filter(c => c.as === 'ticket')
+  if (moved.length) {
+    l.push('Tickets to open after the PR:')
+    for (const c of moved) l.push(`- ${c.task ?? 'source plan'}: ${c.shown}`)
+    if (inst.tickets) l.push(`- and ${plural(inst.tickets, '"ticket" entry', '"ticket" entries')} of HANDOFF.md.`)
+  } else if (inst.tickets) l.push(`${plural(inst.tickets, 'ticket')} to open after the PR (HANDOFF.md, "ticket" entries).`)
   // One end of line at the end, whatever the last part
   return l.join('\n').replace(/\n*$/, '\n')
 }
@@ -1092,9 +1195,10 @@ export function changes(before, after) {
   for (const n of [...new Set(after.tasks.map(t => t.phase))]) if (finished(after, n) && !finished(before, n)) m.push(`Phase ${n} finished`)
   // One notification per task, whatever the number of reviews a close brings
   const newOnes = /** @type {Map<string, number>} */ (new Map())
-  // New: not among those of the previous read, compared by task and text (a review marked done leaves the list, 0.15.1)
+  // New: not among those of the previous read, compared by task and text (a review marked done leaves the list, 0.15.1),
+  // nor among those it had closed (a review open again by Undo, 0.16.0)
   const old = /** @type {Map<string, number>} */ (new Map())
-  for (const r of before.reviews) old.set(`${r.task}\u0000${r.text}`, (old.get(`${r.task}\u0000${r.text}`) || 0) + 1)
+  for (const r of [...before.reviews, ...(before.closed ?? []).filter(c => c.kind === 'review')]) old.set(`${r.task}\u0000${r.text}`, (old.get(`${r.task}\u0000${r.text}`) || 0) + 1)
   const added = after.reviews.filter(r => { const k = `${r.task}\u0000${r.text}`, c = old.get(k) || 0; if (c) old.set(k, c - 1); return !c })
   for (const r of added) newOnes.set(r.task ?? 'source plan', (newOnes.get(r.task ?? 'source plan') || 0) + 1)
   for (const [who, k] of newOnes) m.push(`⚑ ${who}: ${k > 1 ? `${k} reviews` : 'to review'} before the PR`)

@@ -178,10 +178,10 @@ const TO_TRY = /** @type {Record<number, string>} */ ({
   1: "each task's timeline fills in step by step",
   4: 'the fix turns amber in the timeline of T02, its model shows "sonnet → opus" (log: l)',
   6: '"⚑ 1 to review" can be clicked in the banner',
-  10: 'the "Your turn" card comes first; its key 1 prepares the resume in the prompt',
-  11: 'the run stops: the run card gives what comes next, key c',
+  10: 'the "Your turn" card comes first; key 1 shows the detail of its line and its buttons',
+  11: 'the run stops: the run card gives what comes next, [ Resume command in the prompt ]',
   12: 'the issue is settled: T03 no longer waits for anyone',
-  20: 'key p: the PR draft in the prompt',
+  20: '[ PR draft in the prompt ] in the run card; [ ✓ Done ] in the detail of a review',
 })
 /** The legend of frame k: "frame 11/21 · T03 waits for a human", then, on the next line, what to try. @param {number} k */
 export function legend(k) {

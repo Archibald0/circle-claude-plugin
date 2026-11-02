@@ -83,7 +83,7 @@ try {
   test('six commands in English: folders, names, descriptions, arguments, model invocation', () => {
     const dirs = readdirSync(join(PLUGIN, 'skills')).filter(d => statSync(join(PLUGIN, 'skills', d)).isDirectory())
     assert.deepEqual(sorted(dirs), sorted(SKILLS))
-    const hints = { install: '[--team]', prepare: '<existing plan (file or folder) | goal of the plan>', ready: '<plan-dir> [--no-dry-run]', run: '<plan-dir> [--resume]', status: '[<plan-dir>]', done: '<plan-dir> review|decision <task|-> <text>' }
+    const hints = { install: '[--team]', prepare: '<existing plan (file or folder) | goal of the plan>', ready: '<plan-dir> [--no-dry-run]', run: '<plan-dir> [--resume]', status: '[<plan-dir>]', done: '<plan-dir> [ticket] [review|decision <task|-> <text>]' }
     for (const s of SKILLS) {
       const { fm, body } = FM[s]
       assert.equal(fm.name, s, `${s}: name`)
