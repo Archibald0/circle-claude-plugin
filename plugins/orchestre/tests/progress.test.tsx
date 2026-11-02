@@ -208,8 +208,9 @@ test('/progress pane: a view in cards, its keys, its buttons; the actions prepar
 })
 
 // 0.16.0: the buttons of a review or an auto-decision run progress.mjs, without a prompt nor a turn of Claude
-const REVIEWS = (marks: { done?: boolean; ticket?: boolean; label?: string } = {}) => doc([task('T01', 1, { status: 'merged', attempts: 1 })], {
+const REVIEWS = (marks: { done?: boolean; ticket?: boolean; label?: string; closed?: boolean } = {}) => doc([task('T01', 1, { status: 'merged', attempts: 1 })], {
   runs: [run({ status: 'finished', end: '2026-10-08T11:58:00+02:00' })],
+  ...(marks.closed ? { closed: '2026-10-08T12:00:00+02:00' } : {}),
   reviews: [{ task: 'T01', phase: 1, text: '.env.example: add MR_MAX', run: 1, at: '2026-10-08T11:40:00+02:00', ...(marks.done ? { done: '2026-10-08T12:00:00+02:00' } : {}), ...(marks.ticket ? { ticket: '2026-10-08T12:00:00+02:00' } : {}), ...(marks.label ? { label: marks.label } : {}) }],
   auto_decisions: [{ run: 1, task: 'T01', title: 'Threshold', option: 'A', description: 'cap at 30 s' }],
 })
@@ -222,6 +223,10 @@ function progressScript(on: On, w: ReturnType<typeof world>, node: 'path' | 'hom
     if (!found) return { deny: `spawn ${bin} ENOENT` }
     calls.push(`${bin.replace(/.*\//, '')} ${String(first).replace(/^.*\/(scripts\/progress\.mjs)$/, '$1')} ${verb} ${dir} ${e.init?.stdin ?? ''} (cwd ${e.init?.cwd})`)
     const E = JSON.parse(e.init?.stdin ?? '{}') as { kind: string; label?: string | null }
+    if (verb === 'close-plan' || verb === 'reopen-plan') {
+      w.file.text = REVIEWS({ closed: verb === 'close-plan' }); w.file.mtime++
+      return { value: { exitCode: 0, stdout: verb === 'close-plan' ? 'progress: plan closed, 2 items left open (in the PR draft); /progress no longer follows it\n' : 'progress: plan open again; /progress follows it\n', stderr: '' } }
+    }
     const marks = verb === 'ack' ? { done: true } : verb === 'ticket' ? { ticket: true } : verb === 'relabel' && E.label ? { label: E.label } : {}
     if (E.kind === 'review') { w.file.text = REVIEWS(marks); w.file.mtime++ }
     const what = `${E.kind === 'review' ? 'review' : 'auto-decision'} of T01`
@@ -293,6 +298,71 @@ test('buttons of "Your turn" (0.16.0): Done, Ticket, Edit text and Undo run prog
   ui = await pane()
   expect(await ui.find({ key: 'card-detail' })).toBeUndefined()
   await ui.unmount()
+})
+
+test('[ Close the plan ] (0.16.1): the banner goes at once, the pane closes at the next prompt, the plan is no longer followed; /progress plans/<name> and Reopen', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  state(on)
+  const w = world(on)
+  w.file.text = REVIEWS()
+  const calls = progressScript(on, w)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.command.run({ ...(CMD('') as object), presentation: { isFullscreen: true, columns: 160 } } as never)
+  const band = async () => { const b = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...BAND }); const found = await b.find({ type: 'Text', text: /^demo$/ }); await b.unmount(); return found }
+  const pane = () => $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
+  expect(await band()).toBeDefined()
+  let ui = await pane()
+  const close = await ui.find({ type: 'Button', key: 'close-plan' })
+  expect([close?.props.label, close?.props.hotkey, close?.props.plain]).toEqual(['Close the plan', undefined, undefined])
+  await ui.press({ key: 'close-plan' })
+  await ui.unmount()
+  expect(calls.at(-1)).toBe('node scripts/progress.mjs close-plan plans/demo {} (cwd /repo)')
+  expect(w.toasts.at(-1)).toBe('Plan closed: nothing shows for it any more. The pane closes at your next prompt.')
+  // The banner goes at once; the pane shows the card of the closed plan, without "Your turn"
+  expect(await band()).toBeUndefined()
+  ui = await pane()
+  expect(await ui.find({ type: 'Text', text: '✓ Plan closed' })).toBeDefined()
+  expect((await ui.find({ type: 'Button', key: 'reopen-plan' }))?.props.label).toBe('Reopen')
+  expect((await ui.find({ type: 'Button', key: 'action-next-closed' }))?.props.label).toBe('PR draft in the prompt')
+  expect(await ui.find({ key: 'card-yourTurn' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'close-plan' })).toBeUndefined()
+  await ui.unmount()
+  expect(w.closed).toEqual([])
+  // The next prompt: the pane closes, nothing is followed any more
+  await $.prompt.submit({ text: 'thanks' } as never)
+  expect(w.closed).toEqual(['orchestre'])
+  expect(await band()).toBeUndefined()
+  expect(w.statuses.filter(x => x !== undefined)).toEqual([])
+  expect((await $.command.run(CMD(''))).text).toBe('orchestre: no plan in progress in this repository; plans/demo is closed. /progress plans/demo shows it.')
+  // /progress plans/demo shows it again, with Reopen; Reopen follows it again
+  expect((await $.command.run({ ...(CMD('plans/demo') as object), presentation: { isFullscreen: true, columns: 160 } } as never)).text).toBe('Progress of demo opened in the pane.')
+  expect(await band()).toBeUndefined()
+  ui = await pane()
+  await ui.press({ key: 'reopen-plan' })
+  await ui.unmount()
+  expect(calls.at(-1)).toBe('node scripts/progress.mjs reopen-plan plans/demo {} (cwd /repo)')
+  expect(w.toasts.at(-1)).toBe('Plan open again: /progress follows it.')
+  expect(await band()).toBeDefined()
+})
+
+test('a plan closed in an earlier session (0.16.1): neither banner nor pane opened; a run that starts follows it again', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 })
+  state(on)
+  const w = world(on)
+  w.file.text = REVIEWS({ closed: true })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  const b = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...BAND })
+  expect(await b.find({ type: 'Text', text: /^demo$/ })).toBeUndefined()
+  await b.unmount()
+  expect(w.opened).toEqual([])
+  // A run starts on it (progress.mjs run-start removes "closed"): followed again, and the pane opens by itself
+  w.file.text = doc([task('T01', 1, { status: 'merged', attempts: 1 }), task('T02', 1, { step: 'worker', isolated: false, start: '2026-10-08T12:00:30+02:00' })], { runs: [run({ number: 2, start: '2026-10-08T12:00:20+02:00' })] })
+  w.file.mtime++
+  await clock.advance(2100)
+  const again = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...BAND })
+  expect(await again.find({ type: 'Text', text: /^demo$/ })).toBeDefined()
+  await again.unmount()
+  expect(w.opened).toEqual(['orchestre (Esc closes)'])
 })
 
 test('buttons of "Your turn" (0.16.0): node of Homebrew when the PATH has none; no node at all: /orchestre:done in the prompt', async ($, on) => {

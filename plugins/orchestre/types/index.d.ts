@@ -61,6 +61,9 @@ export type Snapshot = {
   // Reviews and auto-decisions the pilot closed: done (0.15.1) or moved to tickets (0.16.0); text: its key (the review's
   // text, the decision's title), shown: what the PR draft says of it. Absent in a snapshot built by hand: none
   closed?: ClosedItem[]
+  // Date the pilot closed the plan ([ Close the plan ], 0.16.1); null or absent: open. A closed plan is no longer followed
+  // on its own: no banner, no status line, and the pane closes at the next prompt
+  planClosed?: number | null
   issues: { task: string; title: string; human: boolean; role: string }[]
   prerequisites: { id: string; type: string; blocks: string[] }[]
   majorCounts: Record<string, number>
@@ -89,7 +92,8 @@ export type Action = { hotkey: string | null; prompt: string; help: string; key?
 // (0.16.0; it acted in 0.14.0). op (0.16.0): what the button does instead of preparing the prompt: done, ticket (progress.mjs
 // run by the mod; prompt: the /orchestre:done it falls back to), edit, save, cancel (the text field), undo, page (to page).
 // bracket: a Button drawn in brackets, its piece text "[ label ]"
-export type ActionOp = 'done' | 'ticket' | 'edit' | 'save' | 'cancel' | 'undo' | 'page'
+// closePlan, reopenPlan (0.16.1): progress.mjs close-plan, reopen-plan
+export type ActionOp = 'done' | 'ticket' | 'edit' | 'save' | 'cancel' | 'undo' | 'page' | 'closePlan' | 'reopenPlan'
 
 // The last action of the pane, with its Undo button (0.16.0)
 export type LastAction = { text: string; kind: 'done' | 'ticket' | 'edit' }
@@ -100,7 +104,8 @@ export type LastAction = { text: string; kind: 'done' | 'ticket' | 'edit' }
 export type YourTurnItem = { key: string; group: 'settle' | 'review' | 'decision'; task: string; g: Piece; text: string; detail?: string; prompt: string; help: string; ack?: string; toTicket?: string; ref?: ItemRef }
 
 // The cards of the pane, in order; the banner opens the pane at one of them
-export type Section = 'detail' | 'yourTurn' | 'run' | 'tasks' | 'log'
+// closed: the card of a plan closed by the pilot (0.16.1)
+export type Section = 'detail' | 'yourTurn' | 'closed' | 'run' | 'tasks' | 'log'
 
 // A card: title and counter on the top line, border in the theme color (null: no border)
 export type Card = { id: Section; color: string | null; title: Line; meta: Line; lines: Line[] }

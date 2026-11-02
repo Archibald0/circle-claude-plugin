@@ -10,6 +10,7 @@ Nothing to do: `progress.json` keeps its format (`orchestre-progress/3`), with t
 2. On a review or an auto-decision, `[ ✓ Done ]`, `[ → Ticket ]` and `[ ✎ Edit text ]` act at once, without a turn of Claude, and `[ Undo ]` cancels the last one. The mod runs `scripts/progress.mjs` for them ([The buttons of "Your turn"](reference.md#banner-pane-notifications)).
 3. `/orchestre:done plans/<name>`, the plan alone, closes what is left in one answer; `/orchestre:done plans/<name> ticket …` moves an item to tickets.
 4. The PR draft gives the reviews and the auto-decisions as task lists, those done ticked, and names the items moved to tickets.
+5. 0.16.1: `[ Close the plan ]`, in the run card of a finished plan, makes it disappear from the display for good: no banner, no status line, the pane closed at the next prompt, nothing in the next sessions. `/progress plans/<name>` and `[ Reopen ]` bring it back; a run that starts opens it again. `progress.json` gets an optional `closed` date.
 
 ## From 0.13 to 0.15
 

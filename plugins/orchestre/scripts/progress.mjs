@@ -28,6 +28,10 @@
 //              again; its "done" and "ticket" dates are removed
 //   relabel    { kind, task, text, label } (0.16.0): the text shown for it ("label"); text stays the key that ties it to
 //              HANDOFF.md and to the closes, so the next run does not bring the original back; label null or "": the original
+//   close-plan {} (0.16.1, [ Close the plan ] of /progress): the plan is closed, its "closed" date set; refused while a run
+//              is in progress or a task is neither merged nor cancelled. The /progress mod no longer follows it on its own.
+//              The reviews and auto-decisions left open stay so, in the PR draft
+//   reopen-plan {} (0.16.1, [ Reopen ]): open again; a run-start opens it again too
 //   view [--stdout]        regenerates PROGRESS.md (or prints it without writing anything); statuses reread from PROGRESS.md
 //                          and git, as run-start
 //   status                 progress as compact Markdown, like /orchestre:status; read-only, always code 0
@@ -127,6 +131,7 @@ export const SCHEMA = {
     lint: object(['ok', 'errors'], { ok: { type: 'boolean' }, errors: arrayOf({ type: 'string' }) }),
     log: { type: 'array', maxItems: LOG_MAX, items: ref('event') },
     log_omitted: { type: 'integer', minimum: 0 },
+    closed: ref('date'),
   }),
   $defs: {
     date: { type: 'string', format: 'date-time' },
@@ -658,6 +663,8 @@ function write(ctx, change, { runStart = false } = {}) {
 
 // ─── Write commands ─────────────────────────────────────────────────────────────────────────────────────────
 function runStart(doc, E, { L, handoff, J, at, ctx }) {
+  // A plan closed by the pilot (0.16.1) is open again as soon as a run starts on it
+  if (doc.closed) { delete doc.closed; J('run', null, 'plan open again: a run starts') }
   for (const r of doc.runs.filter(r => r.status === 'in-progress')) { r.status = 'interrupted'; J('run', null, `run ${r.number} interrupted: left in progress, without a run end`) }
   for (const t of doc.tasks.filter(t => t.step)) { J('step', t.id, `${t.id}: step "${t.step}" interrupted with its run`); t.step = null }
   sync(doc, L, ctx, J, { statuses: true })
@@ -897,6 +904,26 @@ function closeItems(doc, E, J, at, cmd, state) {
 const ack = (doc, E, { J, at }) => closeItems(doc, E, J, at, 'ack', 'done')
 const ticket = (doc, E, { J, at }) => closeItems(doc, E, J, at, 'ticket', 'ticket')
 
+// The plan closed by the pilot (0.16.1, [ Close the plan ] of /progress): once every task is merged or cancelled and no run
+// is in progress. What is left open in "Your turn" stays open, listed in the PR draft; the mod no longer follows the plan
+function closePlan(doc, E, { J, at }) {
+  if (doc.closed) return { message: 'plan already closed' }
+  const run = doc.runs.find(r => r.status === 'in-progress')
+  if (run) refuse(`close-plan: run ${run.number} is in progress; a plan closes between two runs`)
+  const left = doc.tasks.filter(t => !DONE(t.status))
+  if (left.length) refuse(`close-plan: ${plural(left.length, 'task')} neither merged nor cancelled (${left.slice(0, 4).map(t => `${t.id} ${t.status}`).join(', ')}${left.length > 4 ? ', …' : ''}); cancel or merge ${left.length > 1 ? 'them' : 'it'} first`)
+  const open = [...doc.reviews, ...doc.auto_decisions].filter(x => !closedAs(x)).length
+  doc.closed = at
+  J('pilot', null, `plan closed by the pilot${open ? `, ${plural(open, 'item')} left open in "Your turn"` : ''}`)
+  return { message: `plan closed${open ? `, ${plural(open, 'item')} left open (in the PR draft)` : ''}; /progress no longer follows it` }
+}
+function reopenPlan(doc, E, { J }) {
+  if (!doc.closed) return { message: 'plan already open' }
+  delete doc.closed
+  J('pilot', null, 'plan open again by the pilot')
+  return { message: 'plan open again; /progress follows it' }
+}
+
 // Undo of the /progress pane (0.16.0): back in "Your turn"
 function reopen(doc, E, { J }) {
   const results = itemsOf(E, 'reopen').map(x => findItem(doc, x, 'reopen', y => !!closedAs(y)))
@@ -1000,7 +1027,7 @@ function status(arg) {
   const m = merge && merge[1].match(MERGE)
   const out = [
     `## ${name} — ${doneCount}/${plural(active.length, 'task')} · ${pct(doneCount, active.length)}%`,
-    `\`${bar(doneCount / active.length, 24)}\` ${current == null ? 'plan finished' : `phase ${current} ${started(current) ? 'in progress' : 'not started'}`}${m ? ` · last merge ${m[1] || m[2]} ${ago(Number(merge[0]))}` : ''}${run ? ` · run ${run.number} (${run.mode}) opened ${ago(Date.parse(run.start) / 1000)}` : ''}`,
+    `\`${bar(doneCount / active.length, 24)}\` ${current == null ? `plan finished${doc && doc.closed ? ', closed' : ''}` : `phase ${current} ${started(current) ? 'in progress' : 'not started'}`}${m ? ` · last merge ${m[1] || m[2]} ${ago(Number(merge[0]))}` : ''}${run ? ` · run ${run.number} (${run.mode}) opened ${ago(Date.parse(run.start) / 1000)}` : ''}`,
     '',
     '| Phase | Progress | Tasks |',
     '| :-- | :-- | :-- |',
@@ -1028,8 +1055,8 @@ function input(json) {
   return E
 }
 
-const WRITES = { 'run-start': runStart, step, close, ruling, 'run-end': runEnd, pilot, ack, ticket, reopen, relabel }
-const USAGE = 'usage: progress.mjs <run-start|step|close|ruling|run-end|pilot|ack|ticket|reopen|relabel|view|status|validate> [<plan-dir>] [--stdout] [--file <progress.json>] [--json <object>]; for writes, JSON in --json or on standard input'
+const WRITES = { 'run-start': runStart, step, close, ruling, 'run-end': runEnd, pilot, ack, ticket, reopen, relabel, 'close-plan': closePlan, 'reopen-plan': reopenPlan }
+const USAGE = 'usage: progress.mjs <run-start|step|close|ruling|run-end|pilot|ack|ticket|reopen|relabel|close-plan|reopen-plan|view|status|validate> [<plan-dir>] [--stdout] [--file <progress.json>] [--json <object>]; for writes, JSON in --json or on standard input'
 
 function main() {
   const argv = process.argv.slice(2), cmd = argv[0]

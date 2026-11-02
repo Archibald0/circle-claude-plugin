@@ -69,17 +69,40 @@ async function repoRoot($: EngineInterface): Promise<string | null> {
 }
 
 // The plan to follow: the one /progress plans/<name> chose, if it has a progress.json; otherwise the progress.json written
-// last, that of the run in progress since the workflow writes it at each transition. Nothing is read here: a list and stats.
+// last, that of the run in progress since the workflow writes it at each transition, unless the pilot closed that plan
+// (0.16.1): then the next one. A list and stats; a progress.json is read only to know whether it is closed, once per mtime.
 async function findPlan($: EngineInterface, base: string, file = 'progress.json'): Promise<string | null> {
   const chosen = await read($, followedPlan)
   if (chosen && (await $.fs.exists(`${base}/${chosen}/${file}`).catch(() => false))) return chosen
   const entries = await $.fs.list(`${base}/plans`).catch(() => [])
-  let best: { plan: string; mtime: number } | null = null
+  const found: { plan: string; mtime: number }[] = []
   for (const d of entries.filter(x => x.kind === 'dir').slice(0, 50)) {
     const st = await $.fs.stat(`${base}/plans/${d.name}/${file}`).catch(() => null)
-    if (st && (!best || st.mtimeMs > best.mtime)) best = { plan: `plans/${d.name}`, mtime: st.mtimeMs }
+    if (st) found.push({ plan: `plans/${d.name}`, mtime: st.mtimeMs })
   }
-  return best?.plan ?? null
+  found.sort((a, b) => b.mtime - a.mtime)
+  if (file !== 'progress.json') return found[0]?.plan ?? null
+  lastClosed = null
+  for (const f of found) {
+    // The plan closed in this session stays followed until the next prompt, for its card in the pane
+    if (f.plan !== holdPlan && (await isClosed($, `${base}/${f.plan}/${file}`, f.mtime))) { lastClosed ??= f.plan; continue }
+    return f.plan
+  }
+  return null
+}
+
+// Plans closed by the pilot (0.16.1): the answer kept by file and mtime; the most recent one skipped by the last search; the
+// one closed in this session, kept until the next prompt (its card, Reopen)
+const closedFiles = new Map<string, { mtime: number; closed: boolean }>()
+let lastClosed: string | null = null
+let holdPlan: string | null = null
+async function isClosed($: EngineInterface, f: string, mtime: number): Promise<boolean> {
+  const kept = closedFiles.get(f)
+  if (kept && kept.mtime === mtime) return kept.closed
+  const doc = await readJson($, f)
+  const closed = typeof doc === 'object' && doc !== null && typeof (doc as { closed?: unknown }).closed === 'string'
+  closedFiles.set(f, { mtime, closed })
+  return closed
 }
 
 // A plan of orchestre 0.11 or earlier: a suivi.json without a progress.json. The mod does not read it: it says how to migrate
@@ -130,6 +153,13 @@ async function refresh($: EngineInterface, force: boolean): Promise<void> {
     // Said once: no need to look for it again every 2 s
     const note = (alerted ?? (await read($, alert)))?.startsWith('legacy:') ? null : await legacyNote($)
     if (note) await alertOnce($, `legacy:${note}`, `orchestre: ${note}`)
+    // The plan shown was closed (0.16.1): nothing shows any more
+    const shown = await read($, snapshot)
+    if (shown && !shown.demo && shown.planClosed != null) {
+      await update($, snapshot, () => null)
+      lastFile = null
+      await updateStatus($)
+    }
     return forgetDemo($)
   }
   const f = `${base}/${plan}/progress.json`
@@ -316,6 +346,8 @@ export const register: Register = on => {
   // On returning after a silence, what changed since the last prompt. The prompt goes first, always.
   on('prompt.submit', async ($, e, next) => {
     const r = await next(e)
+    // The plan closed in this session (0.16.1): its pane closes at the next prompt, and it is no longer followed
+    if (holdPlan) await releaseClosed($)
     const now = await $.clock.now()
     const before = lastPrompt
     lastPrompt = now
@@ -352,6 +384,8 @@ export const register: Register = on => {
     const inst = await read($, snapshot)
     if (!inst) {
       const note = await legacyNote($, chosenPlan)
+      // Plans there, but closed (0.16.1): say which one, and how to see it
+      if (lastClosed) return { text: `orchestre: no plan in progress in this repository; ${lastClosed} is closed. /progress ${lastClosed} shows it.${note ? `\n${note}` : ''}` }
       return { text: `orchestre: nothing ${NOTHING_TO_FOLLOW}${note ? `\n${note}` : ''}` }
     }
     const elsewhere = chosenPlan ? await notFollowed($, chosenPlan, inst) : ''
@@ -493,6 +527,8 @@ async function press($: EngineInterface, action: Action): Promise<void> {
     case 'save': return saveEdit($, draft ?? action.ref?.shown ?? '')
     case 'cancel': draft = null; await update($, editing, () => false); return
     case 'undo': return undoLast($)
+    case 'closePlan': return closePlan($)
+    case 'reopenPlan': return reopenPlan($)
     case 'page': {
       const to = action.page ?? 0
       await update($, page, () => to)
@@ -522,7 +558,7 @@ async function findNode($: EngineInterface): Promise<string | null> {
 
 // One write of progress.mjs on the plan followed, its object on standard input, from the root of the repository. null:
 // no node found; otherwise whether it was done, and its line (its refusal when it refuses)
-async function runProgress($: EngineInterface, verb: 'ack' | 'ticket' | 'reopen' | 'relabel', payload: object): Promise<{ ok: boolean; out: string } | null> {
+async function runProgress($: EngineInterface, verb: 'ack' | 'ticket' | 'reopen' | 'relabel' | 'close-plan' | 'reopen-plan', payload: object): Promise<{ ok: boolean; out: string } | null> {
   const inst = await read($, snapshot), base = await repoRoot($)
   if (!inst || !base) return { ok: false, out: 'no plan followed in this repository' }
   const bin = await findNode($)
@@ -591,6 +627,50 @@ async function saveEdit($: EngineInterface, value: string): Promise<void> {
   return written($, { plan: inst.plan, op: 'edit', ref, prev: ref.edited ? ref.shown : null, text }, text)
 }
 
+// [ Close the plan ] (0.16.1): progress.mjs close-plan. The banner and the status line go at once; the pane shows the card of
+// the closed plan until the next prompt, then closes; the plan is no longer followed, in this session or the next ones
+async function closePlan($: EngineInterface): Promise<void> {
+  const inst = await read($, snapshot)
+  if (!inst) return
+  if (inst.demo) { $.ui.toast('Demo: nothing is written. In a real plan, this button closes it: nothing shows for it any more, until a run starts on it again.', { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  const r = await runProgress($, 'close-plan', {})
+  if (!r) { $.ui.toast(`${NODE_MISSING} The plan stays open.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  if (!r.ok) { $.ui.toast(`orchestre: ${r.out.replace(/^progress: /, '')}`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  holdPlan = inst.dir || `plans/${inst.plan}`
+  await update($, selected, () => null)
+  await update($, editing, () => false)
+  await refresh($, true).catch(() => undefined)
+  await updateStatus($)
+  $.ui.toast('Plan closed: nothing shows for it any more. The pane closes at your next prompt.')
+}
+
+// [ Reopen ] in the card of the closed plan: progress.mjs reopen-plan; the plan is followed again
+async function reopenPlan($: EngineInterface): Promise<void> {
+  const inst = await read($, snapshot)
+  if (!inst || inst.demo) return
+  const r = await runProgress($, 'reopen-plan', {})
+  if (!r) { $.ui.toast(`${NODE_MISSING} The plan stays closed.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  if (!r.ok) { $.ui.toast(`orchestre: ${r.out.replace(/^progress: /, '')}`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  holdPlan = null
+  await refresh($, true).catch(() => undefined)
+  await updateStatus($)
+  $.ui.toast('Plan open again: /progress follows it.')
+}
+
+// The next prompt after [ Close the plan ]: the pane closes, the closed plan is no longer followed, even if /progress
+// plans/<name> had chosen it
+async function releaseClosed($: EngineInterface): Promise<void> {
+  const dir = holdPlan
+  holdPlan = null
+  await $.ui.close({ id: PANE_ID }).catch(() => undefined)
+  if (dir && chosenPlan === dir) {
+    chosenPlan = null
+    await update($, followedPlan, () => null)
+  }
+  await refresh($, true).catch(() => undefined)
+  await updateStatus($)
+}
+
 // Undo: the last action of the pane cancelled, by progress.mjs reopen or relabel
 async function undoLast($: EngineInterface): Promise<void> {
   const inst = await read($, snapshot), u = undoStack[undoStack.length - 1]
@@ -617,6 +697,9 @@ async function act($: EngineInterface, action: Action): Promise<void> {
   $.ui.toast(filled.isFilled ? 'In the prompt: read it, complete it, then send it. Nothing was sent.' : 'The prompt did not take the text.')
 }
 
+// The keys of the buttons that are not in the detail card
+const OP_KEYS: Partial<Record<NonNullable<Action['op']>, string>> = { undo: 'undo', page: 'page', closePlan: 'close-plan', reopenPlan: 'reopen-plan' }
+
 // A line of pieces: one Text per piece, in a row
 function draw($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], line: Line, itemKey: string) {
   const { Box, Button, Input, Text } = $.ui.resolve(e)
@@ -633,7 +716,7 @@ function draw($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']
         if (action) {
           // A button in brackets (0.16.0), its label without them; the lines of "Your turn" stay plain, with their key
           const label = action.bracket ? m.t.replace(/^\[ (.*) \]$/, '$1') : m.t
-          const key = action.op ? (action.op === 'undo' || action.op === 'page' ? action.op : `detail-${action.op}`) : action.mode === 'select' ? `action-${action.hotkey ?? `${itemKey}-${i}`}` : action.key ? 'detail-act' : 'action-next'
+          const key = action.op ? (OP_KEYS[action.op] ?? `detail-${action.op}`) : action.mode === 'select' ? `action-${action.hotkey ?? `${itemKey}-${i}`}` : action.key ? 'detail-act' : `action-next${itemKey.startsWith('card-closed') ? '-closed' : ''}`
           return <Button key={key} label={label} {...(action.bracket ? {} : { plain: true })} {...(action.hotkey ? { hotkey: action.hotkey } : {})} onPress={() => press($, action)} />
         }
         return <Text key={`${itemKey}-${i}`} color={m.c} backgroundColor={m.f} bold={m.b} dimColor={m.d} wrap="truncate">{m.t}</Text>

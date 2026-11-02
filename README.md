@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/orchestre-0.16.0-E8743B" alt="orchestre 0.16.0">
+  <img src="https://img.shields.io/badge/orchestre-0.16.1-E8743B" alt="orchestre 0.16.1">
   <img src="https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.287-1F2340" alt="Claude Code 2.1.287 or later">
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A5%2018-1F2340" alt="Node.js 18 or later">
 </p>
@@ -48,7 +48,7 @@ Once orchestre is [installed](#install), at the root of your repository, on its 
 
 - `/orchestre:prepare` installs orchestre in the repository first if needed. It gives each task a model, and asks every open decision; you can defer some.
 - `/orchestre:run` asks the mode: stop at each phase (advised for a first plan), stop on a major deviation, or autonomous.
-- At the end, `plan/<name>` is ready for a pull request. The summary lists the auto-decisions and the files to review, and `[ PR draft in the prompt ]` in `/progress` drafts the PR text, with the reviews as a task list. What is left in "Your turn" closes from the pane, or with `/orchestre:done plans/<name>` in one answer. Pushing, merging into `main` and deploying stay with you.
+- At the end, `plan/<name>` is ready for a pull request. The summary lists the auto-decisions and the files to review, and `[ PR draft in the prompt ]` in `/progress` drafts the PR text, with the reviews as a task list. What is left in "Your turn" closes from the pane, or with `/orchestre:done plans/<name>` in one answer, and `[ Close the plan ]` makes the plan disappear from the display. Pushing, merging into `main` and deploying stay with you.
 
 The path of each task during a run:
 
@@ -159,6 +159,8 @@ The actions are buttons, in brackets, without a key:
 | `[ Undo ]` | Under "Your turn" | Cancels the last of these actions. |
 | `[ Next 3 › ]` | Under "Your turn" | Shows the items beyond the 9th. |
 | `[ Resume command in the prompt ]`, `[ PR draft in the prompt ]` | Run card | Prepares what comes next after a run. |
+| `[ Close the plan ]` | Run card, once every task is merged | Closes the plan: the banner and the status line go at once, the pane closes at your next prompt, and nothing shows for the plan in the next sessions. What is left open stays in the PR draft. A run that starts on the plan opens it again. |
+| `[ Reopen ]` | Card of the closed plan (`/progress plans/<name>`) | Opens the plan again: it is followed as before. |
 
 In the banner, "⤢ Details" opens the pane and, after a run, "✕ Hide" hides the banner. Both are clicked; they have no key.
 

@@ -84,6 +84,8 @@ export function normalize(raw) {
   }
   return {
     demo: false, legend: null, plan: text(raw.plan), dir: text(raw.dir), updated: date(raw.updated),
+    // Closed by the pilot ([ Close the plan ], 0.16.1): nothing shows for it any more, unless it is asked for
+    planClosed: date(raw.closed),
     tasks,
     runs: runs.map(runView),
     run: lastRun ? runView(lastRun) : null,
@@ -406,7 +408,7 @@ export const width = l => l.reduce((n, m) => n + [...m.t].length, 0)
  * @param {Snapshot} inst @param {number} now @param {number} columns @param {number} [reserve] @param {boolean} [animated] @returns {Line | null}
  */
 export function banner(inst, now, columns, reserve = 0, animated = false) {
-  if (!inst.run) return null
+  if (!inst.run || inst.planClosed != null) return null
   const s = summarize(inst, now)
   const place = Math.max(0, columns - reserve)
   /** @type {Line | null} */
@@ -711,6 +713,8 @@ export function yourTurnCard(inst, now, columns, selected = null, { page = 0, la
 export const CLOSE_LABEL = '✕ Close'
 // The buttons of the pane (0.16.0): drawn in brackets by Claude Code, "[ ✓ Done ]", without a key
 export const DONE_LABEL = '✓ Done', TICKET_LABEL = '→ Ticket', EDIT_LABEL = '✎ Edit text', SAVE_LABEL = 'Save', CANCEL_LABEL = 'Cancel', UNDO_LABEL = 'Undo'
+// The plan closed by the pilot (0.16.1)
+export const CLOSE_PLAN_LABEL = 'Close the plan', REOPEN_LABEL = 'Reopen'
 const GROUPS = /** @type {Record<YourTurnItem['group'], string>} */ ({ settle: 'to settle', review: 'to review before the PR', decision: 'auto-decision' })
 // The room of the labels of the detail card ("blocker  ", "prompt   ")
 const FIELD = 9
@@ -854,9 +858,12 @@ export function runCard(inst, now, columns, animated) {
     // whole
     const resume = `/orchestre:run ${dir} --resume`, room = inner - 8
     const button = bracketed(s.allMerged ? 'PR draft in the prompt' : 'Resume command in the prompt'), left = room - [...button].length - 2
-    lines.push(s.allMerged
-      ? [{ t: 'next    ', d: true }, { t: button, x: { hotkey: null, prompt: prText(inst, now), help: 'prepare the PR', bracket: true } }]
-      : [{ t: 'next    ', d: true }, { t: button, x: { hotkey: null, prompt: resume, help: 'resume the run', bracket: true } }, ...(left >= 12 ? [{ t: `  ${cut(resume, left)}`, d: true }] : [])])
+    // Plan finished, not closed yet: [ Close the plan ] next to the PR draft (0.16.1), over two lines when the card lacks room
+    /** @type {Line} */
+    const buttons = [{ t: button, x: { hotkey: null, prompt: prText(inst, now), help: 'prepare the PR', bracket: true } }]
+    if (inst.planClosed == null) buttons.push({ t: bracketed(CLOSE_PLAN_LABEL), x: { hotkey: null, prompt: '', help: 'close the plan', op: 'closePlan', bracket: true } })
+    if (s.allMerged) buttonLines(buttons, room).forEach((l, i) => lines.push([{ t: i ? '        ' : 'next    ', d: true }, ...l]))
+    else lines.push([{ t: 'next    ', d: true }, { t: button, x: { hotkey: null, prompt: resume, help: 'resume the run', bracket: true } }, ...(left >= 12 ? [{ t: `  ${cut(resume, left)}`, d: true }] : [])])
   }
   const marker = runLive ? '' : r.status === 'finished' ? '✓ ' : r.status === 'error' ? '✗ ' : '■ '
   return {
@@ -1089,13 +1096,16 @@ export function pane(inst, now, columns, { animated = false, fullLog = false, si
   const yourTurn = yourTurnCard(inst, now, columns, selected, { page, last })
   // The detail card of the selected item of "Your turn", right above it (0.14.0); its text being edited (0.16.0)
   const detail = detailCard(inst, now, columns, selected, { page, editing, draft })
+  const closed = inst.planClosed != null
   /** @type {Piece} */
-  const state = !r ? { t: 'NO RUN', d: true }
+  const state = closed ? { t: 'PLAN CLOSED', c: 'success', b: true }
+    : !r ? { t: 'NO RUN', d: true }
     : s.allMerged && r.status !== 'in-progress' ? { t: 'PLAN FINISHED', c: 'success', b: true }
     : s.silent ? { t: `RUN ${r.number} NO NEWS`, c: 'warning', b: true }
     : { t: `RUN ${r.number} ${r.status === 'in-progress' ? 'IN PROGRESS' : r.status.toUpperCase()}`, c: r.status === 'in-progress' ? 'claude' : r.status === 'finished' ? 'success' : r.status === 'error' ? 'error' : 'warning', b: true }
   /** @type {Piece | null} */
-  const endMark = yourTurn && yourTurn.urgent ? { t: ` ⚠ ${yourTurn.urgent} YOUR TURN `, c: 'inverseText', f: 'warning', b: true }
+  const endMark = closed ? null
+    : yourTurn && yourTurn.urgent ? { t: ` ⚠ ${yourTurn.urgent} YOUR TURN `, c: 'inverseText', f: 'warning', b: true }
     : s.reviews ? { t: `⚑ ${s.reviews} TO REVIEW`, c: 'warning', b: true }
     : s.inProgress.length ? { t: `◐ ${s.inProgress.length} IN PROGRESS`, c: 'suggestion' } : null
   /** @type {Line[]} */
@@ -1109,19 +1119,44 @@ export function pane(inst, now, columns, { animated = false, fullLog = false, si
   if (away) header.push(away)
   /** @type {Card[]} */
   const cards = []
-  if (detail) cards.push(detail)
-  if (yourTurn) cards.push(yourTurn)
+  // A closed plan (0.16.1): its card first, instead of "Your turn"
+  if (closed) cards.push(closedCard(inst, now, columns))
+  else {
+    if (detail) cards.push(detail)
+    if (yourTurn) cards.push(yourTurn)
+  }
   cards.push(runCard(inst, now, columns, animated))
   cards.push({ id: 'tasks', color: null, title: [{ t: 'tasks', b: true }, { t: ` · ${s.inProgress.length} in progress · ${s.total} in total`, d: true }], meta: [], lines: taskLines(inst, now, columns, animated) })
   cards.push(logCard(inst, now, columns, fullLog))
   // selection: the selected item, if still there; register.tsx forgets it otherwise
-  return { header, cards, borders: columns >= BORDER_COLUMNS, selection: detail ? selected : null }
+  return { header, cards, borders: columns >= BORDER_COLUMNS, selection: detail && !closed ? selected : null }
+}
+
+/**
+ * The card of a plan closed by the pilot (0.16.1): what closing it changed, what is left open, the PR draft and Reopen.
+ * @param {Snapshot} inst @param {number} now @param {number} columns @returns {Card}
+ */
+export function closedCard(inst, now, columns) {
+  const inner = Math.max(24, columns - 4), left = inst.reviews.length + inst.decisions.length
+  /** @param {string} s @param {boolean} dim @returns {Line[]} */
+  const say = (s, dim) => wrap(s, inner).map(t => [{ t, ...(dim ? { d: true } : {}) }])
+  /** @type {Line[]} */
+  const lines = [
+    ...say('Nothing shows for this plan any more, now or in later sessions, until a run starts on it.', false),
+    ...(left ? say(`${plural(left, 'item')} of "Your turn" left open: in the PR draft.`, false) : []),
+    ...buttonLines([
+      { t: bracketed('PR draft in the prompt'), x: { hotkey: null, prompt: prText(inst, now), help: 'prepare the PR', bracket: true } },
+      { t: bracketed(REOPEN_LABEL), x: { hotkey: null, prompt: '', help: 'open the plan again', op: 'reopenPlan', bracket: true } },
+    ], inner),
+    ...say(`The pane closes at your next prompt; /progress ${dirOf(inst)} shows the plan again.`, true),
+  ]
+  return { id: 'closed', color: 'success', title: [{ t: '✓ Plan closed', c: 'success', b: true }], meta: inst.planClosed != null ? [{ t: `closed ${age(inst.planClosed, now)} ago`, d: true }] : [], lines }
 }
 
 /** The status line when the banner is hidden and something is left to do: "orchestre ✓ 5/5 · ⚑ 3". @param {Snapshot} inst @param {number} now */
 export function statusLine(inst, now) {
   const s = summarize(inst, now)
-  if (s.allMerged && !s.reviews && !s.attention.length) return null
+  if (inst.planClosed != null || (s.allMerged && !s.reviews && !s.attention.length)) return null
   return `orchestre ${s.allMerged ? '✓' : '■'} ${s.done}/${s.total}${s.reviews ? ` · ⚑ ${s.reviews}` : ''}${s.attention.length ? ` · ⚠ ${s.attention.length}` : ''}`
 }
 
@@ -1131,7 +1166,7 @@ export const plainText = l => l.map(m => m.t).join('').replace(/\s+$/, '')
 /** The state as text, where nothing is drawn (`/progress text`, pane refused): the banner, then the cards. @param {Snapshot} inst @param {number} now */
 export function stateText(inst, now) {
   const b = banner(inst, now, 120)
-  const out = [b ? plainText(b) : `${inst.plan}: no run noted in progress.json`]
+  const out = [b ? plainText(b) : inst.planClosed != null ? `${inst.plan}: plan closed` : `${inst.plan}: no run noted in progress.json`]
   for (const c of pane(inst, now, 104).cards) {
     out.push('', plainText([...c.title, ...(c.meta.length ? [{ t: '   ' }, ...c.meta] : [])]))
     for (const l of c.lines) out.push(plainText(l))

@@ -2,6 +2,18 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.16.1 — 2026-11-02: close the plan
+
+Once a plan was finished, orchestre stayed on screen: the end banner until "✕ Hide", for one session only, the pane until Esc, and the next session followed the same plan again, as the last `progress.json` written. Asked by Fabien on 2026-11-02 ("orchestre stays open even when everything is finished"); the plan closes through a button, never on its own, and the pane closes at the next prompt (his choices).
+
+- `[ Close the plan ]`, in the run card next to `[ PR draft in the prompt ]`, once every task is merged or cancelled and no run is in progress; over two lines when the card lacks room. It runs `progress.mjs close-plan`:
+  - the banner and the status line go at once;
+  - the pane shows "✓ Plan closed" instead of "Your turn": what closing changed, the items left open (they stay open, in the PR draft), `[ PR draft in the prompt ]` and `[ Reopen ]`; it closes at the next prompt;
+  - from then on, the mod no longer follows the plan, in this session or the next ones: it takes the `progress.json` written last among the plans not closed (a closed one is read once per change to know it). `/progress` says "no plan in progress in this repository; plans/<name> is closed. /progress plans/<name> shows it."; `/progress plans/<name>` shows it, with `[ Reopen ]`.
+- `progress.mjs`: `close-plan {}` sets the optional `closed` date of `progress.json` (schema `orchestre-progress/3`); refused while a run is in progress, or while a task is neither merged nor cancelled. `reopen-plan {}` removes it; `run-start` removes it too ("plan open again: a run starts"), so a run that starts on the plan shows it again and opens the pane as for any run. `status` and `/orchestre:status` say "plan finished, closed".
+- `/orchestre:run`: at the end of a finished plan, says what `[ Close the plan ]` does.
+- Tests: `progress.mjs` (close-plan refused during a run and with a task not merged, reopen-plan, run-start, status), the view model (no banner nor status line, the card of the closed plan, the button over two lines) and the mod under the engine (the button, the pane closed at the next prompt, `/progress` and `/progress plans/<name>`, Reopen, a plan closed in an earlier session).
+
 ## 0.16.0 — 2026-11-02: close "Your turn" with buttons, without a prompt
 
 At the end of a plan, the reviews before the PR and the auto-decisions stayed in "Your turn", even those on tasks merged long before and already reviewed in GitHub. Closing one took a key, a prompt sent and a turn of Claude, one item at a time, and items beyond the 9th had no key. Reported by Fabien on 2026-11-02 ("I would like to close a task quickly, without going through a prompt"; "no need for keys to act, clearly identifiable buttons are good"); a playable prototype compared 0.15.1 and 0.16.0 before the code.

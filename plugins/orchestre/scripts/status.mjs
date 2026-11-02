@@ -98,6 +98,8 @@ function status() {
   const open = v3 && Array.isArray(progress.reviews) ? progress.reviews.filter(r => r && !r.done && !r.ticket).length : null
   const moved = v3 ? [...(Array.isArray(progress.reviews) ? progress.reviews : []), ...(Array.isArray(progress.auto_decisions) ? progress.auto_decisions : [])].filter(x => x && x.ticket && !x.done).length : 0
   const reviews = open ?? count('review'), tickets = count('ticket') + moved
+  // A plan closed by the pilot ([ Close the plan ] of /progress, 0.16.1)
+  const closedOn = v3 && typeof progress.closed === 'string'
   if (reviews) yourTurn.push(`${plural(reviews, 'review')} before the PR`)
   if (tickets) yourTurn.push(`${plural(tickets, 'ticket')} after the PR`)
   if (!L.ok) yourTurn.push(`plan-lint: ${plural((L.errors || []).length, 'error')}`)
@@ -110,7 +112,7 @@ function status() {
   const m = merge && merge[1].match(MERGE)
   const out = [
     `## ${name} — ${doneCount}/${plural(active.length, 'task')} · ${pct(doneCount, active.length)}%`,
-    `\`${bar(doneCount / active.length, 24)}\` ${current == null ? 'plan finished' : `phase ${current} ${started(current) ? 'in progress' : 'not started'}`}${m ? ` · last merge ${m[1] || m[2]} ${ago(Number(merge[0]))}` : ''}`,
+    `\`${bar(doneCount / active.length, 24)}\` ${current == null ? `plan finished${closedOn ? ', closed' : ''}` : `phase ${current} ${started(current) ? 'in progress' : 'not started'}`}${m ? ` · last merge ${m[1] || m[2]} ${ago(Number(merge[0]))}` : ''}`,
     '',
     '| Phase | Progress | Tasks |',
     '| :-- | :-- | :-- |',

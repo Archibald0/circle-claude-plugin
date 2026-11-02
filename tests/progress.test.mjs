@@ -538,6 +538,44 @@ async function main() {
     writeFileSync(join(C.d, 'progress.json'), saved); writeFileSync(join(C.d, 'HANDOFF.md'), handoff)
   })
 
+  await test('close-plan, reopen-plan (0.16.1): refused during a run or with a task not merged; a run-start opens it again; status says it', () => {
+    const saved = C.read('progress.json')
+    const doc0 = JSON.parse(saved)
+    // A task neither merged nor cancelled: refused, nothing written
+    const pending = { ...doc0, runs: doc0.runs.map(x => ({ ...x, status: x.status === 'in-progress' ? 'finished' : x.status })), tasks: doc0.tasks.map((t, i) => ({ ...t, status: i ? 'merged' : 'todo', step: null })) }
+    writeFileSync(join(C.d, 'progress.json'), JSON.stringify(pending, null, 2) + '\n')
+    const kept = C.read('progress.json')
+    let r = C.progress('close-plan', {})
+    assert.equal(r.code, 1); assert.match(r.err, new RegExp(`close-plan: 1 task neither merged nor cancelled \\(${doc0.tasks[0].id} todo\\); cancel or merge it first`))
+    assert.equal(C.read('progress.json'), kept, 'nothing written')
+    // Every task merged, an item left open: closed, the item stays open
+    const all = { ...doc0, tasks: doc0.tasks.map(t => ({ ...t, status: t.status === 'cancelled' ? 'cancelled' : 'merged', step: null })), runs: doc0.runs.map(x => ({ ...x, status: x.status === 'in-progress' ? 'finished' : x.status })), reviews: [{ task: null, phase: null, text: 'README: relire', run: null, at: null }], auto_decisions: [] }
+    writeFileSync(join(C.d, 'progress.json'), JSON.stringify(all, null, 2) + '\n')
+    r = C.progress('close-plan', {})
+    assert.deepEqual([r.code, r.out], [0, 'progress: plan closed, 1 item left open (in the PR draft); /progress no longer follows it'], r.err)
+    let doc = C.doc()
+    assert.equal(typeof doc.closed, 'string'); assert.equal(doc.reviews[0].done, undefined)
+    assert.ok(doc.log.some(e => e.kind === 'pilot' && e.task === null && e.text === 'plan closed by the pilot, 1 item left open in "Your turn"'))
+    assert.equal(C.progress('close-plan', {}).out, 'progress: plan already closed')
+    assert.equal(C.progress('validate').code, 0)
+    // Reopen, then closed again
+    assert.equal(C.progress('reopen-plan', {}).out, 'progress: plan open again; /progress follows it')
+    assert.equal(C.doc().closed, undefined)
+    assert.equal(C.progress('reopen-plan', {}).out, 'progress: plan already open')
+    assert.equal(C.progress('close-plan', {}).code, 0)
+    // A run that starts opens it again; while it runs, closing is refused
+    assert.equal(C.progress('run-start', RUN).code, 0)
+    doc = C.doc()
+    assert.equal(doc.closed, undefined); assert.ok(doc.log.some(e => e.kind === 'run' && e.text === 'plan open again: a run starts'))
+    r = C.progress('close-plan', {})
+    assert.equal(r.code, 1); assert.match(r.err, /close-plan: run \d+ is in progress; a plan closes between two runs/)
+    // status: "plan finished, closed"
+    writeFileSync(join(C.d, 'progress.json'), JSON.stringify({ ...all, closed: '2026-11-02T12:00:00+01:00' }, null, 2) + '\n')
+    const st = C.progress('status').out
+    assert.match(st, /plan finished, closed/, st)
+    writeFileSync(join(C.d, 'progress.json'), saved)
+  })
+
   await test('--json: same effect as standard input, text escaped as the workflow writes it; added task without a file skipped', () => {
     const gaps = ["the option `--force` costs $5", 'quotes "double", backslash \\ and accents éèà']
     const raw = JSON.stringify({ task: 'T07', step: 'fix', rejection: { attempt: 1, by: 'evaluation', gaps } })

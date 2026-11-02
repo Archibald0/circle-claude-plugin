@@ -258,7 +258,9 @@ try {
     // Plan finished: what comes next is the PR draft; the status line stays as long as there are reviews
     const next = M.runCard(H, tE, 100, false).lines.flat().find(m => m.x)
     assert.deepEqual([next.x.hotkey, next.x.prompt], [null, M.prText(H, tE)])
-    assert.match(text(M.runCard(H, tE, 100, false).lines), /^next {4}\[ PR draft in the prompt \]$/m)
+    assert.match(text(M.runCard(H, tE, 100, false).lines), /^next {4}\[ PR draft in the prompt \] {2}\[ Close the plan \]$/m)
+    assert.deepEqual(M.runCard(H, tE, 100, false).lines.flat().filter(m => m.x?.op === 'closePlan').map(m => [m.x.hotkey, m.x.bracket]), [[null, true]], 'the plan finished can be closed (0.16.1)')
+    assert.match(text(M.runCard(H, tE, 40, false).lines), /^next {4}\[ PR draft in the prompt \]\n {8}\[ Close the plan \]$/m, 'narrow: over two lines')
     // Phase 2 is the run's: its task to do says what it waits for
     assert.match(text(M.taskLines(G2, tE, 100)), /^ {2}○ T04 .* waits for T03$/m)
     assert.equal(M.statusLine(H, tE), 'orchestre ✓ 4/4 · ⚑ 3'); assert.equal(M.statusLine({ ...H, reviews: [] }, tE), null)
@@ -666,6 +668,30 @@ try {
     // A review open again by Undo is not a new review
     const reopened = M.normalize({ ...doc, reviews: doc.reviews.map((r, i) => (i === 0 ? { ...r, done: undefined } : r)) })
     assert.deepEqual(M.changes(X, reopened).filter(m => m.startsWith('⚑')), [])
+  })
+
+  testCase('plan closed (0.16.1): no banner nor status line, its card instead of "Your turn", Reopen and the PR draft', () => {
+    const raw = rawFile(), closedAt = '2026-11-02T12:00:00+01:00'
+    const X = M.normalize({ ...raw, closed: closedAt })
+    assert.equal(X.planClosed, Date.parse(closedAt)); assert.equal(M.normalize(raw).planClosed, null)
+    assert.equal(M.banner(H, tE, 140) != null, true); assert.equal(M.banner(X, tE, 140), null, 'no banner')
+    assert.equal(M.statusLine(X, tE), null, 'no status line, even with reviews left open')
+    const p = M.pane(X, tE, 100, { selected: M.yourTurnItems(X, tE).items[0]?.key ?? null })
+    assert.deepEqual(p.cards.map(c => c.id), ['closed', 'run', 'tasks', 'log']); assert.equal(p.selection, null)
+    assert.match(M.plainText(p.header[0]), /^ORCHESTRE · DEMO · PLAN CLOSED$/)
+    const c = p.cards[0]
+    assert.deepEqual([M.plainText(c.title), c.color], ['✓ Plan closed', 'success'])
+    const t = text(c.lines)
+    assert.match(t, /^Nothing shows for this plan any more, now or in later sessions, until a run starts on it\.$/m)
+    assert.match(t, new RegExp(`^${X.reviews.length + X.decisions.length} items of "Your turn" left open: in the PR draft\\.$`, 'm'))
+    assert.match(t, /^\[ PR draft in the prompt \] {2}\[ Reopen \]$/m)
+    assert.match(t, /The pane closes at your next prompt; \/progress plans\/demo shows the plan again\.$/)
+    assert.deepEqual(c.lines.flat().filter(m => m.x).map(m => m.x.op ?? 'prompt'), ['prompt', 'reopenPlan'])
+    for (const l of c.lines) assert.ok(M.width(l) <= 96, M.plainText(l))
+    assert.equal(M.runCard(X, tE, 100, false).lines.flat().filter(m => m.x?.op === 'closePlan').length, 0, 'no Close on a closed plan')
+    assert.match(M.stateText(X, tE), /^demo: plan closed\n/)
+    // Nothing left open: no line on it
+    assert.doesNotMatch(text(M.closedCard({ ...X, reviews: [], decisions: [] }, tE, 100).lines), /left open/)
   })
 
   testCase('wrap: words over lines of n characters at most, a word too long cut', () => {
