@@ -77,7 +77,7 @@ Then `/orchestre:install`, a new session, `/orchestre:ready plans/demo` and `/or
 
 ## Commands
 
-`/orchestre:prepare`, `/orchestre:ready` and `/orchestre:run` are used in that order. `/orchestre:install` runs from `/orchestre:prepare` when needed, and `/orchestre:status` shows where a plan stands.
+`/orchestre:prepare`, `/orchestre:ready` and `/orchestre:run` are used in that order. `/orchestre:install` runs from `/orchestre:prepare` when needed, `/orchestre:status` shows where a plan stands, and `/orchestre:done` closes the reviews and the auto-decisions left at the end.
 
 ### `/orchestre:prepare`: write or convert a plan
 
@@ -151,6 +151,15 @@ At any time, including in the pilot session during a run: the command only reads
 
 ✓ phase finished, ● started, ⚠ a task there waits for a human, is blocked or failed, ○ not started. While tasks are started, a line **In progress** lists them, for example "T04 (worktree, last commit 3 min ago)". A task is in progress when its branch `task/<id>` (or `tache/<id>` of 0.11) exists; the exact step of each agent can be read in `/workflows`. The reviews counted are all the `review` entries of `HANDOFF.md`.
 
+### `/orchestre:done plans/<name>`: close what is left in "Your turn"
+
+The reviews before the PR and the auto-decisions stay in "Your turn" until you close them; `/orchestre:status` counts them too. In the `/progress` pane, the buttons of the detail card do it one by one, without a turn ([The buttons of "Your turn"](#banner-pane-notifications)). The command does it in one answer:
+
+- `/orchestre:done plans/<name>`, the plan alone, lists what is still open, numbered, the reviews of merged tasks first, and waits for a line such as `1-6 done, 8 ticket, all decisions done`. `done` marks an item done, `ticket` moves it to the tickets to open after the PR, `keep` leaves it open; what the answer leaves out stays open. A review is named by its number or a range: `all` covers the auto-decisions only. A number outside the list or an unknown action: nothing is written, and the command asks again.
+- `/orchestre:done plans/<name> review|decision <task|-> <text>` marks one item done; with `ticket` before the kind, moves it to tickets. `-` stands for the source plan; the text can be a unique start of it. This is what the pane puts in the prompt when Claude Code finds no node to run `progress.mjs`.
+
+The command writes through `progress.mjs` only, safe during a run, and carries its own permission (`allowed-tools`): nothing to add to the settings. An item closed stays in `progress.json` with its date, so that neither the next run nor a close brings it back.
+
 ## The progress display
 
 The progress mod follows the run without a turn of Claude. It only reads `plans/<name>/progress.json`. `/orchestre:status` gives the plan, `/workflows` the step of each agent.
@@ -176,7 +185,7 @@ In any session where the mod is loaded, with or without a plan:
 /progress demo
 ```
 
-The mod plays in memory two runs of a made-up plan of 5 tasks, `showcase-site`, in a little over a minute: animated banner in colors, marked DEMO, notifications, a stop awaiting a ruling (a 12 s pause to open `/progress`), the resume, the end. The header of the pane gives the frame and, at some frames, what to try. An action key says what it would do, without putting anything in the prompt. Nothing is read or written in the repository meanwhile. A minute after the last frame, the real progress comes back; `/progress auto` goes back to it right away. The scenario is that of `tests/demo-progress.mjs`, which plays it with the real `progress.mjs`: the tests check that both give the same notifications and the same log.
+The mod plays in memory two runs of a made-up plan of 5 tasks, `showcase-site`, in a little over a minute: animated banner in colors, marked DEMO, notifications, a stop awaiting a ruling (a 12 s pause to open `/progress`), the resume, the end. The header of the pane gives the frame and, at some frames, what to try. A button says what it would do, without putting anything in the prompt or writing anything. Nothing is read or written in the repository meanwhile. A minute after the last frame, the real progress comes back; `/progress auto` goes back to it right away. The scenario is that of `tests/demo-progress.mjs`, which plays it with the real `progress.mjs`: the tests check that both give the same notifications and the same log.
 
 ### Troubleshooting
 
@@ -284,11 +293,11 @@ brand/                               README banner and screenshot, social previe
 
 - Try a change without installing it: `claude --plugin-dir plugins/orchestre`, then `/reload-plugins` after each change.
 - Tests: `npm test` runs four groups, which can also be run alone:
-  - `npm run test:scripts`: 24 cases of `plan-lint`, 9 of `/orchestre:status`, 27 of `progress.mjs`, 4 of `worktrees.mjs`, 21 of `migrate.mjs` and 21 of `settings.mjs`, in temporary git repositories;
+  - `npm run test:scripts`: 24 cases of `plan-lint`, 10 of `/orchestre:status`, 29 of `progress.mjs`, 4 of `worktrees.mjs`, 21 of `migrate.mjs` and 21 of `settings.mjs`, in temporary git repositories;
   - `npm run test:workflow`: 103 scenarios of the workflow, with simulated agents, 6 of which run the real `progress.mjs` and `worktrees.mjs` in a temporary repository;
-  - `npm run test:commands`: the settings template, and 15 tests of the contract between the skills and the rest of the plugin;
-  - `npm run test:mod`: 24 cases of the mod's view model on `progress.json` files written by `progress.mjs`, `/progress demo` compared with the real `progress.mjs` included.
-- Validation: `npm run validate` (`claude plugin validate` on the plugin and on the marketplace, then `claude plugin test` of the plugin, which runs the 25 tests of the mod under the engine).
+  - `npm run test:commands`: the settings template, and 17 tests of the contract between the skills and the rest of the plugin;
+  - `npm run test:mod`: 30 cases of the mod's view model on `progress.json` files written by `progress.mjs`, `/progress demo` compared with the real `progress.mjs` included.
+- Validation: `npm run validate` (`claude plugin validate` on the plugin and on the marketplace, then `claude plugin test` of the plugin, which runs the 28 tests of the mod under the engine).
 - Try the mod without installing it: `claude --plugin-dir plugins/orchestre`, then `/progress demo`; or, on a real `progress.json`, `node tests/demo-progress.mjs <folder>` in another terminal.
 - The workflow script has no access to files and cannot import anything; `Date.now()`, `Math.random()` and `new Date()` are forbidden there. Before changing it, load the reference `/workflow-authoring`.
 

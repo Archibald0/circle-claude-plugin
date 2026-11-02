@@ -748,7 +748,7 @@ test('/progress demo, without a repository: a run played in memory, marked DEMO,
   await p.press({ key: 'action-next' })
   await p.unmount()
   expect(filled).toEqual([])
-  expect(toasts.at(-1) ?? '').toMatch(/^Demo: this key would prepare in the prompt "Plan showcase-site: 5\/5 tasks merged/)
+  expect(toasts.at(-1) ?? '').toMatch(/^Demo: this button would prepare in the prompt "Plan showcase-site: 5\/5 tasks merged/)
   // A minute after the end, the real progress comes back: here, nothing to follow; the pane of the demo closes
   expect(closed).toEqual([])
   await clock.advance(60000)

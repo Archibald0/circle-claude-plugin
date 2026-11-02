@@ -610,7 +610,7 @@ async function undoLast($: EngineInterface): Promise<void> {
 async function act($: EngineInterface, action: Action): Promise<void> {
   const inst = await read($, snapshot)
   if (inst?.demo) {
-    $.ui.toast(`Demo: this key would prepare in the prompt "${cut(action.prompt, 90)}".`, { timeoutMs: IMPORTANT_TOAST_MS })
+    $.ui.toast(`Demo: this button would prepare in the prompt "${cut(action.prompt, 90)}".`, { timeoutMs: IMPORTANT_TOAST_MS })
     return
   }
   const filled = await $.prompt.fill({ text: action.prompt, mode: 'append' })

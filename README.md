@@ -48,7 +48,7 @@ Once orchestre is [installed](#install), at the root of your repository, on its 
 
 - `/orchestre:prepare` installs orchestre in the repository first if needed. It gives each task a model, and asks every open decision; you can defer some.
 - `/orchestre:run` asks the mode: stop at each phase (advised for a first plan), stop on a major deviation, or autonomous.
-- At the end, `plan/<name>` is ready for a pull request. The summary lists the auto-decisions and the files to review, and <kbd>p</kbd> in `/progress` drafts the PR text. Pushing, merging into `main` and deploying stay with you.
+- At the end, `plan/<name>` is ready for a pull request. The summary lists the auto-decisions and the files to review, and `[ PR draft in the prompt ]` in `/progress` drafts the PR text, with the reviews as a task list. What is left in "Your turn" closes from the pane, or with `/orchestre:done plans/<name>` in one answer. Pushing, merging into `main` and deploying stay with you.
 
 The path of each task during a run:
 
