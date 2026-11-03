@@ -2,6 +2,14 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.16 to 0.17
+
+Nothing to do: plans of 0.12 to 0.16 run as they are, and `progress.json` keeps its format (`orchestre-progress/3`), with two optional fields on the prerequisites, `evidence` and `how`.
+
+1. In the `/progress` pane, the detail card of a line of "Your turn" opens on when and where to act ("when Before phase 3", "where This session once no run is going…"), in blue, then what the item is. The prompt of a review is no longer repeated under its text; a command still is (`› /orchestre:ready plans/<name>`).
+2. A prerequisite shows its text (the Prerequisite column of PREREQUISITES.md, which the card left out), the tasks it holds back, its steps and its evidence (`check`).
+3. Its steps come from a new section of PREREQUISITES.md, `## <ID> · how`, under the table (see the [format](../plugins/orchestre/skills/prepare/format.md)). `/orchestre:prepare` writes it for each open manual action or environment; for a plan prepared before, `plan-lint` warns about those that lack it, and `/orchestre:ready plans/<name>` offers to write them. Without it, the card shows the text only.
+
 ## From 0.15 to 0.16
 
 Nothing to do: `progress.json` keeps its format (`orchestre-progress/3`), with two optional fields on the reviews and the auto-decisions, `ticket` and `label`.

@@ -190,7 +190,7 @@ async function main() {
   const B = repo('demo', {
     tasks: Object.entries(E8).map(([id, phase]) => ({ id, phase, ...(id === 'T04' ? { prerequisites: 'D5' } : {}) })),
     progress: `| ID | Title | Phase | Status | Attempts | Branch |\n|----|-------|-------|--------|----------|--------|\n${Object.entries(E8).map(([id, ph]) => `| ${id} | Task ${id} | ${ph} | ${id === 'T06' ? 'needs-human' : id === 'T08' ? 'cancelled' : 'todo'} | 0 | — |`).join('\n')}\n`,
-    prerequisites: '| ID | Type | Prerequisite | Status | Evidence |\n|----|------|--------------|--------|----------|\n| D5 | decision | Choose the model | open | — |\n',
+    prerequisites: '| ID | Type | Prerequisite | Status | Evidence |\n|----|------|--------------|--------|----------|\n| D5 | decision | Choose the model | open | — |\n\n## D5 · how\n1. Compare the two models.\n2. Answer /orchestre:ready.\n',
     handoff: '# Handoff\n\n## T01\n- review · major · agents/x/.env.example: add MR_MAX\n- ticket · minor · rename the script\n\n## T02\nreview · major · command `grep -q X a` refused to agents\n',
     config: { base_branch: 'main' },
   })
@@ -220,7 +220,7 @@ async function main() {
     const doc = B.doc()
     assert.deepEqual(doc.runs[0].waiting_on_prerequisites, [{ id: 'T04', prerequisites: ['D5'] }])
     assert.deepEqual(doc.tasks.find(t => t.id === 'T04').waiting, ['D5'], 'T04 waits for D5')
-    assert.deepEqual(doc.prerequisites, [{ id: 'D5', type: 'decision', status: 'open', text: 'Choose the model', blocks: ['T04'] }])
+    assert.deepEqual(doc.prerequisites, [{ id: 'D5', type: 'decision', status: 'open', text: 'Choose the model', evidence: '—', how: ['Compare the two models.', 'Answer /orchestre:ready.'], blocks: ['T04'] }], 'the evidence and the steps of "## D5 · how" (0.17.0)')
     assert.equal(statusMjs(), expected, 'status.mjs unchanged by the progress file')
     assert.equal(B.progress('status', undefined, { arg: 'plans/missing' }).out, 'orchestre:status: plan not found in this checkout: plans/missing')
   })

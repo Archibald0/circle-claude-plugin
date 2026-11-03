@@ -65,7 +65,9 @@ export type Snapshot = {
   // on its own: no banner, no status line, and the pane closes at the next prompt
   planClosed?: number | null
   issues: { task: string; title: string; human: boolean; role: string }[]
-  prerequisites: { id: string; type: string; blocks: string[] }[]
+  // Open only. text: the Prerequisite column; evidence: the Evidence column; how: the steps of "## <ID> · how" (0.17.0).
+  // Absent in a snapshot built by hand: empty
+  prerequisites: { id: string; type: string; text?: string; evidence?: string; how?: string[]; blocks: string[] }[]
   majorCounts: Record<string, number>
   tickets: number
   lint: { ok: boolean; errors: number }
@@ -101,7 +103,10 @@ export type LastAction = { text: string; kind: 'done' | 'ticket' | 'edit' }
 // An item of "Your turn": its key stays the same while it is there, its group says where it comes from
 // ack, toTicket: the /orchestre:done that marks a review or an auto-decision done, or moves it to tickets, put in the prompt
 // when the mod cannot run progress.mjs itself (0.16.0); ref: what progress.mjs needs to find it
-export type YourTurnItem = { key: string; group: 'settle' | 'review' | 'decision'; task: string; g: Piece; text: string; detail?: string; prompt: string; help: string; ack?: string; toTicket?: string; ref?: ItemRef }
+// For the detail card (0.17.0): kind, what it is ("manual action", "review"…); what, its text without the id in front;
+// when, the moment to act ("Now", "Before phase 3"…), and where, the place to act from, both drawn from the state of the
+// plan; blocks, the tasks a prerequisite holds back; how and check, the steps and the evidence of a prerequisite
+export type YourTurnItem = { key: string; group: 'settle' | 'review' | 'decision'; task: string; g: Piece; text: string; detail?: string; prompt: string; help: string; ack?: string; toTicket?: string; ref?: ItemRef; kind: string; what: string; when: string; where: string; blocks?: string[]; how?: string[]; check?: string }
 
 // The cards of the pane, in order; the banner opens the pane at one of them
 // closed: the card of a plan closed by the pilot (0.16.1)

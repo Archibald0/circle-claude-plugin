@@ -68,7 +68,7 @@ try {
     const issue = (title, status) => ({ run: 1, task: 'T02', title, context: '', human: false, role: 'open', status, chosen_option: status === 'settled' ? 'A' : null, options: [] })
     const X = M.normalize({ ...raw, handoff: { 'Phase 1': { ticket: { minor: 1, major: 1 }, deviation: { minor: 3, major: 0 } }, 'Phase 2': { deviation: { minor: 0, major: 2 } } }, prerequisites: [{ id: 'D5', type: 'decision', status: 'open', blocks: ['T04'] }, { id: 'D6', type: 'access', status: 'done', blocks: ['T03'] }], lint: { ok: false, errors: ['a', 'b'] }, issues: [issue('Settled', 'settled'), issue('Open', 'open')] })
     assert.deepEqual([X.tickets, X.majorCounts], [2, { ticket: 1, deviation: 2 }])
-    assert.deepEqual(X.prerequisites, [{ id: 'D5', type: 'decision', blocks: ['T04'] }])
+    assert.deepEqual(X.prerequisites, [{ id: 'D5', type: 'decision', text: '', evidence: '', how: [], blocks: ['T04'] }])
     assert.deepEqual([X.lint, X.issues.map(p => p.title)], [{ ok: false, errors: 2 }, ['Open']])
   })
 
@@ -549,13 +549,17 @@ try {
       assert.equal(p.selection, k)
       const d = p.cards[0]
       assert.equal(d.color, 'claude')
-      assert.equal(M.plainText(d.title), `▸ Detail · ${rank} · T03 · to review before the PR`)
+      assert.equal(M.plainText(d.title), `▸ Detail · ${rank} · T03 · review`)
       assert.equal(M.plainText(d.meta), M.CLOSE_LABEL)
       assert.ok(M.width(d.title) + M.width(d.meta) + 1 <= columns - 4, 'title and Close on one line')
       for (const l of d.lines) assert.ok(M.width(l) <= columns - 4, `${columns} columns: ${M.plainText(l)}`)
-      // The whole text, word for word, over several lines; then the prompt; then the buttons, without a key (0.16.0)
-      const body = d.lines.slice(0, d.lines.findIndex(l => /^prompt /.test(M.plainText(l)))).map(M.plainText).join(' ')
-      assert.equal(body, `T03 · ${long}`)
+      // The whole text, word for word, over several lines, under the rule (0.17.0); then the buttons, without a key (0.16.0)
+      const rule = d.lines.findIndex(l => /^─+$/.test(M.plainText(l)))
+      const body = d.lines.slice(rule + 1, d.lines.findIndex((l, i) => i > rule && !l.length)).map(M.plainText).join(' ')
+      assert.equal(body, long)
+      const whatLines = d.lines.slice(rule + 1, d.lines.findIndex((l, i) => i > rule && !l.length))
+      assert.equal(whatLines.every(l => l.every(m => m.b)), whatLines.length <= 2, `${columns} columns: in bold on two lines at most, ${whatLines.length} here`)
+      assert.ok(!d.lines.some(l => /^ {2}› /.test(M.plainText(l))), 'no prompt line: it would repeat the text (0.17.0)')
       assert.ok(d.lines.length > 3)
       const act = d.lines.flat().filter(m => m.x)
       assert.deepEqual(act.map(m => [m.t, m.x.hotkey, m.x.op ?? null, m.x.bracket, m.x.key]), [
@@ -570,22 +574,78 @@ try {
       assert.deepEqual([line[0].t, line[0].c, line[2].b], ['▸', 'claude', true])
       assert.match(line[2].t, /…$/)
     }
-    // A blocker: its own field, wrapped under its label
+    // A blocker: under the text, dim (0.17.0)
     const blocked = M.detailCard(B, tA, 60, M.yourTurnItems(B, tA).items[0].key)
-    assert.match(M.plainText(blocked.lines.find(l => /^blocker/.test(M.plainText(l)))), /^blocker {2}secret missing for the tests$/)
-    assert.match(M.plainText(blocked.title), /^▸ Detail · 1 · T02 · to settle$/)
+    assert.match(M.plainText(blocked.lines.find(l => /^ {2}blocker/.test(M.plainText(l)))), /^ {2}blocker: secret missing for the tests$/)
+    assert.match(M.plainText(blocked.title), /^▸ Detail · 1 · T02 · waits for you$/)
     // The item is gone (review settled): no more detail card, no more selection
     const gone = M.pane(B, tA, 100, { selected: k })
     assert.deepEqual([gone.cards[0].id, gone.selection], ['yourTurn', null])
     // Beyond 9: its rank on its own page only (0.16.0)
     const many = { ...B, reviews: Array.from({ length: 10 }, (_, i) => ({ task: 'T01', phase: 1, text: `f${i}`, at: null })) }
     const tenth = M.yourTurnItems(many, tA).items[10]
-    assert.equal(M.plainText(M.detailCard(many, tA, 100, tenth.key).title), '▸ Detail · T01 · to review before the PR')
-    assert.equal(M.plainText(M.detailCard(many, tA, 100, tenth.key, { page: 1 }).title), '▸ Detail · 2 · T01 · to review before the PR')
+    assert.equal(M.plainText(M.detailCard(many, tA, 100, tenth.key).title), '▸ Detail · T01 · review')
+    assert.equal(M.plainText(M.detailCard(many, tA, 100, tenth.key, { page: 1 }).title), '▸ Detail · 2 · T01 · review')
     assert.equal(M.detailCard(many, tA, 100, tenth.key).lines.flat().find(m => m.x).t, '[ Review with Claude ]')
     // The same review twice: two keys
     const twice = { ...B, reviews: [B.reviews[0], B.reviews[0]] }
     assert.deepEqual(M.yourTurnItems(twice, tA).items.filter(it => it.group === 'review').map(it => it.key.replace(/^review\|.*?(#\d)?$/, '$1')), ['', '#2'])
+  })
+
+  testCase('detail card (0.17.0): when and where on top, aired; what it is; steps, check and command of a prerequisite; one-line note', () => {
+    // During run 1 (phase 1, in progress): H1 holds back T04 (phase 2), E1 holds back T02 (phase 1)
+    const H1 = { id: 'H1', type: 'manual', text: 'API token in `.env.local`', evidence: '`grep -c TOKEN .env.local`', how: ['Ask the contracts team for a staging token.', 'Add it to `.env.local` as `TOKEN`, never in the repository, and keep a copy in the team vault.'], blocks: ['T04'] }
+    const H = { ...B, prerequisites: [H1, { id: 'E1', type: 'environment', text: '', evidence: '—', how: [], blocks: ['T02'] }, { id: 'D5', type: 'decision', blocks: ['T04'] }] }
+    const items = M.yourTurnItems(H, tA).items, item = id => items.find(x => x.task === id)
+    const MANUAL = 'Outside Claude (a secret stays out of the chat), then this session to mark it done'
+    assert.deepEqual([item('H1').kind, item('H1').what, item('H1').when, item('H1').where, item('H1').check], ['manual action', H1.text, 'Before phase 2', MANUAL, H1.evidence])
+    assert.deepEqual([item('E1').kind, item('E1').what, item('E1').when, item('E1').where, item('E1').check], ['environment to set up', 'E1 (environment) open', 'Now', 'Your terminal, then this session: /orchestre:ready checks it', undefined], 'T02 is in the phase of the run: now; no text, its id; "—" is no evidence')
+    assert.deepEqual([item('D5').kind, item('D5').where, item('D5').how], ['decision to take', 'This session, between two runs: /orchestre:ready asks the question', []])
+    assert.deepEqual(items.filter(x => x.group !== 'settle' || x.task === 'T02').map(x => [x.task, x.kind, x.when, x.where]), [
+      ['T02', 'waits for you', 'Now', 'This session, once the run stops'],
+      ['T01', 'review', 'After phase 1', 'This session once no run is going (the agents work in the main checkout), or the PR on GitHub'],
+      ['T02', 'review', 'After phase 1', 'This session once no run is going (the agents work in the main checkout), or the PR on GitHub'],
+      ['T02', 'review', 'After phase 1', 'This session once no run is going (the agents work in the main checkout), or the PR on GitHub'],
+      ['T01', 'auto-decision', 'Before phase 2', 'This session, between two runs (reversing it amends the plan)'],
+    ])
+    // The card: when, a blank line, where, a blank line, a rule; then what it is, in bold, and under it, dim and indented
+    for (const columns of [80, 44]) {
+      const inner = columns - 4, d = M.detailCard(H, tA, columns, item('H1').key), L = d.lines.map(M.plainText)
+      assert.equal(M.plainText(d.title), `▸ Detail · ${items.indexOf(item('H1')) + 1} · H1 · manual action`)
+      for (const l of d.lines) assert.ok(M.width(l) <= inner, `${columns} columns: ${M.plainText(l)}`)
+      const where = M.wrap(MANUAL, inner - 9)
+      assert.deepEqual(L.slice(0, 5 + where.length), ['when     Before phase 2', '', ...where.map((t, j) => `${j ? '         ' : 'where    '}${t}`), '', '─'.repeat(inner), M.wrap(H1.text, inner)[0]])
+      assert.deepEqual([d.lines[0][0].c, d.lines[0][0].b, d.lines[0][1].c], ['suggestion', true, 'suggestion'], 'when and where in the color of what waits for you')
+      assert.ok(d.lines[4 + where.length].every(m => m.b), 'what it is: in bold')
+      const at = re => L.findIndex(l => re.test(l))
+      const order = [/^ {2}blocks T04$/, /^ {2}1\. Ask the contracts team/, /^ {2}2\. Add it to/, /^ {2}check {2}`grep -c TOKEN \.env\.local`$/, /^ {2}› \/orchestre:ready plans\/demo$/, /^\[ Settle the prerequisites \]$/, /^The button fills the prompt;/]
+      const places = order.map(at)
+      assert.ok(places.every((x, i) => x > 0 && (i === 0 || x > places[i - 1])), `${columns} columns, in this order: ${JSON.stringify(places)}\n${L.join('\n')}`)
+      // A long step: its words wrapped under its first word
+      const step2 = at(/^ {2}2\. /)
+      assert.match(L[step2 + 1], /^ {5}\S/)
+      assert.equal(L[places[5] - 1], '', 'a blank line before the buttons')
+    }
+    // A review: no prompt line (it repeats its text), the note of the buttons that apply at once
+    const r = M.detailCard(H, tA, 80, items.find(x => x.group === 'review').key).lines.map(M.plainText)
+    assert.ok(!r.some(l => /^ {2}› /.test(l)), r.join('\n'))
+    assert.equal(r.at(-1), 'First button: fills the prompt, sends nothing. Others: apply at once.')
+    assert.ok(M.detailCard(H, tA, 80, item('T02').key).lines.map(M.plainText).includes('  › /orchestre:run plans/demo --resume'))
+    // The run stopped: where and when change; no run yet; all merged; a review of the source plan; a decision of the last phase
+    const stopped = { ...H, run: { ...H.run, status: 'awaiting-ruling' } }
+    const sItems = M.yourTurnItems(stopped, tA).items, sItem = id => sItems.find(x => x.task === id)
+    assert.deepEqual([sItem('T02').where, sItem('E1').when, sItem('H1').when], ['This session: the run is stopped, resume it here', 'Before the next run', 'Before phase 2'])
+    const blocked = { ...stopped, issues: [], tasks: stopped.tasks.map(t => (t.id === 'T02' ? { ...t, status: 'blocked' } : t)) }
+    assert.deepEqual(['kind', 'when', 'where'].map(k => M.yourTurnItems(blocked, tA).items[0][k]), ['blocked task', 'Now', 'This session: the run is stopped, ask the pilot'])
+    assert.equal(M.yourTurnItems({ ...H, runs: [], run: null }, tA).items.find(x => x.task === 'H1').when, 'Before the first run')
+    assert.equal(M.yourTurnItems({ ...H, prerequisites: [{ id: 'H9', type: 'manual', blocks: [] }] }, tA).items.find(x => x.task === 'H9').when, 'Before the next run', 'holding back no task: not "Now", even during a run')
+    const merged = { ...H, prerequisites: [], issues: [], tasks: H.tasks.map(t => ({ ...t, status: 'merged', step: null })) }
+    assert.deepEqual([...new Set(M.yourTurnItems(merged, tA).items.map(x => x.when))], ['Before the PR'])
+    const other = { ...stopped, prerequisites: [], reviews: [{ task: null, phase: null, text: 'README: relire', at: null }], decisions: [{ task: 'T04', title: 'Cap', option: 'A', description: '' }] }
+    assert.deepEqual(M.yourTurnItems(other, tA).items.filter(x => x.group !== 'settle').map(x => x.when), ['Before the PR', 'Before the PR'])
+    // Read from progress.json: the text, the evidence and the steps of an open prerequisite
+    const raw = rawFile()
+    assert.deepEqual(M.normalize({ ...raw, prerequisites: [{ ...H1, status: 'open' }, { ...H1, id: 'H2', status: 'done' }] }).prerequisites, [{ id: 'H1', type: 'manual', text: H1.text, evidence: H1.evidence, how: H1.how, blocks: ['T04'] }])
   })
 
   testCase('mark done (0.15.1): d on a review or an auto-decision, the items done leave "Your turn", the notifications by key', () => {
@@ -634,7 +694,7 @@ try {
     assert.equal(M.plainText(M.yourTurnCard(X, tA, 100).meta), '1 review · 1 auto-decision · 1 moved to tickets')
     // The detail card of an edited item: its original text under it
     const d = M.detailCard(X, tA, 100, review.key)
-    assert.match(text(d.lines), new RegExp(`^original ${R0[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'))
+    assert.match(text(d.lines), new RegExp(`^ {2}original: ${R0[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'))
     // While the text is edited: a field with what is typed so far, Save and Cancel, the note on HANDOFF.md
     const e = M.detailCard(X, tA, 100, review.key, { editing: true, draft: 'new text' })
     const field = e.lines.flat().find(m => m.in)

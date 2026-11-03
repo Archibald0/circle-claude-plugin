@@ -98,7 +98,8 @@ export function normalize(raw) {
       ...decisionsOf(raw).filter(closedAs).map(d => ({ kind: /** @type {const} */ ('decision'), task: text(d.task), text: text(d.title), shown: labelOf(d) ?? `${text(d.title)}: option ${text(d.option)}, ${text(d.description)}`, as: /** @type {'done' | 'ticket'} */ (closedAs(d)) })),
     ],
     issues: (Array.isArray(raw.issues) ? raw.issues : []).filter(p => isObject(p) && p.status !== 'settled').map(p => ({ task: text(p.task), title: text(p.title), human: p.human === true, role: text(p.role) })),
-    prerequisites: (Array.isArray(raw.prerequisites) ? raw.prerequisites : []).filter(p => isObject(p) && p.status === 'open').map(p => ({ id: text(p.id), type: text(p.type), blocks: texts(p.blocks) })),
+    // Its text, evidence and steps (0.17.0): what the detail card says there is to do
+    prerequisites: (Array.isArray(raw.prerequisites) ? raw.prerequisites : []).filter(p => isObject(p) && p.status === 'open').map(p => ({ id: text(p.id), type: text(p.type), text: text(p.text), evidence: text(p.evidence), how: texts(p.how), blocks: texts(p.blocks) })),
     majorCounts, tickets,
     lint: { ok: !isObject(raw.lint) || raw.lint.ok !== false, errors: isObject(raw.lint) ? texts(raw.lint.errors).length : 0 },
     log: (Array.isArray(raw.log) ? raw.log : []).filter(isObject).slice(-LOG_READ).map(j => ({ at: date(j.at), kind: text(j.kind), task: j.task == null ? null : text(j.task), text: text(j.text) })),
@@ -614,17 +615,47 @@ function phaseTimeline(phases, cur, w) {
   return l
 }
 
+// Where to act (0.17.0), by kind of item: this session (the pilot, where /progress is open), outside Claude, the PR. During
+// a run, the agents work in the main checkout: what changes the plan or the code waits for the run to stop
+const WHERE = {
+  resume: 'This session: the run is stopped, resume it here',
+  pilot: 'This session: the run is stopped, ask the pilot',
+  live: 'This session, once the run stops',
+  decision: 'This session, between two runs: /orchestre:ready asks the question',
+  manual: 'Outside Claude (a secret stays out of the chat), then this session to mark it done',
+  environment: 'Your terminal, then this session: /orchestre:ready checks it',
+  lint: 'This session, between two runs',
+  review: 'This session once no run is going (the agents work in the main checkout), or the PR on GitHub',
+  autoDecision: 'This session, between two runs (reversing it amends the plan)',
+}
+// What a prerequisite is, in the title of its detail card
+const PREREQUISITE_KINDS = /** @type {Record<string, string>} */ ({ decision: 'decision to take', manual: 'manual action', environment: 'environment to set up' })
+
 /**
  * What waits for you, one item per thing, each with its action: the tasks that need a human, blocked or failed, the
  * issues to settle, the open prerequisites, plan-lint in error, then the reviews and the auto-decisions to check before
  * the PR. Each item has a key that stays the same while the item is there (0.14.0: the detail card follows it, not its
  * place in the list, which changes during a run). A review or an auto-decision has its reference for progress.mjs
- * (0.16.0: the buttons of the detail card mark it done, move it to tickets or change its text).
+ * (0.16.0: the buttons of the detail card mark it done, move it to tickets or change its text). Each item also says what
+ * it is, when and where to act (0.17.0), from the state of the plan: no agent writes them.
  * @param {Snapshot} inst @param {number} now
  * @returns {{ items: YourTurnItem[], urgent: number }}
  */
 export function yourTurnItems(inst, now) {
   const s = summarize(inst, now), dir = dirOf(inst), resume = `/orchestre:run ${dir} --resume`
+  // When to act (0.17.0): the phase the plan is at, the one of the run in progress if there is one
+  const live = !!runInProgress(inst), cur = live ? runPhase(inst) : s.current?.number ?? null
+  const phaseOf = /** @param {string | null} id */ id => inst.tasks.find(t => t.id === id)?.phase ?? null
+  /** Before the phase of the first task it holds back. @param {string[]} blocks */
+  const beforeTasks = blocks => {
+    if (!inst.runs.length) return 'Before the first run'
+    const held = inst.tasks.filter(t => blocks.includes(t.id) && t.status !== 'merged' && t.status !== 'cancelled')
+    // Holding back no task left (plan-lint warns about it): nothing presses
+    if (!held.length) return 'Before the next run'
+    const first = Math.min(...held.map(t => t.phase))
+    return cur != null && first > cur ? `Before phase ${first}` : live ? 'Now' : 'Before the next run'
+  }
+  const stopped = live ? WHERE.live : WHERE.resume
   /** @type {YourTurnItem[]} */
   const items = []
   const seen = new Set()
@@ -632,24 +663,36 @@ export function yourTurnItems(inst, now) {
     const p = inst.issues.find(x => x.task === t.id)
     if (p) seen.add(p)
     const reason = /** @type {Record<string, string>} */ (ATTENTION)[t.status]
+    const what = `${p ? p.title : reason}${p?.human ? ' (human)' : ''}`
     items.push(p || t.status === 'needs-human'
-      ? { key: '', group: 'settle', task: t.id, g: { t: '⚑', c: 'warning', b: true }, text: `${t.id} · ${p ? p.title : reason}${p?.human ? ' (human)' : ''}`, detail: t.blocker[0], prompt: resume, help: 'resume the run' }
-      : { key: '', group: 'settle', task: t.id, g: { t: '✗', c: 'error', b: true }, text: `${t.id} · ${reason}`, detail: t.blocker[0], prompt: `Explain the blocker of ${t.id}${t.blocker[0] ? ` (${t.blocker[0]})` : ''} and propose a way forward.`, help: 'ask the pilot' })
+      ? { key: '', group: 'settle', task: t.id, g: { t: '⚑', c: 'warning', b: true }, text: `${t.id} · ${what}`, detail: t.blocker[0], prompt: resume, help: 'resume the run', kind: p && !p.human && t.status !== 'needs-human' ? 'issue to settle' : 'waits for you', what, when: 'Now', where: stopped }
+      : { key: '', group: 'settle', task: t.id, g: { t: '✗', c: 'error', b: true }, text: `${t.id} · ${reason}`, detail: t.blocker[0], prompt: `Explain the blocker of ${t.id}${t.blocker[0] ? ` (${t.blocker[0]})` : ''} and propose a way forward.`, help: 'ask the pilot', kind: `${t.status} task`, what: reason, when: 'Now', where: live ? WHERE.live : WHERE.pilot })
   }
-  for (const p of inst.issues) if (!seen.has(p)) items.push({ key: '', group: 'settle', task: p.task, g: { t: '?', c: 'warning', b: true }, text: `${p.task} · ${p.title}${p.human ? ' (human)' : ''}`, prompt: resume, help: 'settle when resuming' })
-  for (const p of inst.prerequisites) items.push({ key: '', group: 'settle', task: p.id, g: { t: '◇', c: 'warning', b: true }, text: `${p.id} (${p.type}) open${p.blocks.length ? `, blocks ${p.blocks.slice(0, 4).join(', ')}` : ''}`, prompt: `/orchestre:ready ${dir}`, help: 'settle the prerequisites' })
-  if (!inst.lint.ok) items.push({ key: '', group: 'settle', task: 'plan-lint', g: { t: '✗', c: 'error', b: true }, text: `plan-lint: ${plural(inst.lint.errors, 'error')} at the last progress update`, prompt: `Show me the plan-lint errors on ${dir} and propose a fix.`, help: 'ask the pilot' })
+  for (const p of inst.issues) if (!seen.has(p)) { const what = `${p.title}${p.human ? ' (human)' : ''}`; items.push({ key: '', group: 'settle', task: p.task, g: { t: '?', c: 'warning', b: true }, text: `${p.task} · ${what}`, prompt: resume, help: 'settle when resuming', kind: 'issue to settle', what, when: 'Now', where: stopped }) }
+  for (const p of inst.prerequisites) {
+    const evidence = (p.evidence ?? '').trim()
+    items.push({
+      key: '', group: 'settle', task: p.id, g: { t: '◇', c: 'warning', b: true }, text: `${p.id} (${p.type}) open${p.blocks.length ? `, blocks ${p.blocks.slice(0, 4).join(', ')}` : ''}`, prompt: `/orchestre:ready ${dir}`, help: 'settle the prerequisites',
+      kind: PREREQUISITE_KINDS[p.type] ?? 'prerequisite', what: p.text?.trim() || `${p.id} (${p.type}) open`, when: beforeTasks(p.blocks), where: p.type === 'decision' ? WHERE.decision : p.type === 'environment' ? WHERE.environment : WHERE.manual,
+      blocks: p.blocks, how: p.how ?? [], ...(evidence && !/^[—–-]$/.test(evidence) ? { check: evidence } : {}),
+    })
+  }
+  if (!inst.lint.ok) { const what = `${plural(inst.lint.errors, 'error')} at the last progress update`; items.push({ key: '', group: 'settle', task: 'plan-lint', g: { t: '✗', c: 'error', b: true }, text: `plan-lint: ${what}`, prompt: `Show me the plan-lint errors on ${dir} and propose a fix.`, help: 'ask the pilot', kind: 'plan-lint error', what, when: 'Now', where: WHERE.lint }) }
   const urgent = items.length
   // /orchestre:done marks it done (0.15.1), or moves it to tickets (0.16.0): what the pane puts in the prompt when it cannot
   // run progress.mjs itself
   const done = /** @param {'review' | 'decision'} kind @param {string | null} task @param {string} text @param {boolean} [ticket] */ (kind, task, text, ticket = false) => `/orchestre:done ${dir} ${ticket ? 'ticket ' : ''}${kind} ${task ?? '-'} ${text}`
   for (const r of inst.reviews) {
     const shown = r.label ?? r.text
-    items.push({ key: '', group: 'review', ack: done('review', r.task, r.text), toTicket: done('review', r.task, r.text, true), ref: { kind: 'review', task: r.task, text: r.text, shown, original: r.text, edited: r.label != null }, task: r.task ?? 'source plan', g: { t: '⚑', c: 'warning' }, text: `${r.task ?? 'source plan'} · ${shown}`, prompt: `Review with me, before the PR (review of ${r.task ?? 'source plan'}): ${shown}`, help: 'review' })
+    // After the phase of its task; one of the source plan, or a plan all merged: before the PR
+    const phase = r.phase ?? phaseOf(r.task)
+    items.push({ key: '', group: 'review', ack: done('review', r.task, r.text), toTicket: done('review', r.task, r.text, true), ref: { kind: 'review', task: r.task, text: r.text, shown, original: r.text, edited: r.label != null }, task: r.task ?? 'source plan', g: { t: '⚑', c: 'warning' }, text: `${r.task ?? 'source plan'} · ${shown}`, prompt: `Review with me, before the PR (review of ${r.task ?? 'source plan'}): ${shown}`, help: 'review', kind: 'review', what: shown, when: s.allMerged || phase == null ? 'Before the PR' : `After phase ${phase}`, where: WHERE.review })
   }
   for (const d of inst.decisions) {
     const original = `${d.title}: ${d.option}${d.description ? ` (${d.description})` : ''}`, shown = d.label ?? original
-    items.push({ key: '', group: 'decision', ack: done('decision', d.task, d.title), toTicket: done('decision', d.task, d.title, true), ref: { kind: 'decision', task: d.task, text: d.title, shown, original, edited: d.label != null }, task: d.task, g: { t: '⇒', c: 'merged' }, text: `${d.task} · ${shown}`, prompt: `Go over the auto-decision for ${d.task} with me: "${d.title}", option ${d.option}${d.description ? ` (${d.description})` : ''}.`, help: 'go over' })
+    // To reverse it, before the next phase builds on it; in the last phase, before the PR
+    const phase = phaseOf(d.task)
+    items.push({ key: '', group: 'decision', ack: done('decision', d.task, d.title), toTicket: done('decision', d.task, d.title, true), ref: { kind: 'decision', task: d.task, text: d.title, shown, original, edited: d.label != null }, task: d.task, g: { t: '⇒', c: 'merged' }, text: `${d.task} · ${shown}`, prompt: `Go over the auto-decision for ${d.task} with me: "${d.title}", option ${d.option}${d.description ? ` (${d.description})` : ''}.`, help: 'go over', kind: 'auto-decision', what: shown, when: s.allMerged || phase == null || phase >= s.maxPhase ? 'Before the PR' : `Before phase ${phase + 1}`, where: WHERE.autoDecision })
   }
   // The key: the group and the text; the same text twice gets its rank
   /** @type {Map<string, number>} */
@@ -715,19 +758,21 @@ export const CLOSE_LABEL = '✕ Close'
 export const DONE_LABEL = '✓ Done', TICKET_LABEL = '→ Ticket', EDIT_LABEL = '✎ Edit text', SAVE_LABEL = 'Save', CANCEL_LABEL = 'Cancel', UNDO_LABEL = 'Undo'
 // The plan closed by the pilot (0.16.1)
 export const CLOSE_PLAN_LABEL = 'Close the plan', REOPEN_LABEL = 'Reopen'
-const GROUPS = /** @type {Record<YourTurnItem['group'], string>} */ ({ settle: 'to settle', review: 'to review before the PR', decision: 'auto-decision' })
-// The room of the labels of the detail card ("blocker  ", "prompt   ")
-const FIELD = 9
+// The room of the labels of the detail card ("when     ", "where    "), as in the run card; the indent of what goes under
+// its text (blocker, steps, check, command)
+const FIELD = 9, INDENT = '  '
 // What the first button of the detail card says: the action of the item, with a capital
 const capital = /** @param {string} s */ s => s.charAt(0).toUpperCase() + s.slice(1)
 /** The label of a button as Claude Code draws it in the terminal: "[ label ]". @param {string} label */
 export const bracketed = label => `[ ${label} ]`
 
 /**
- * The detail card (0.14.0), above "Your turn": the whole text of the selected item, wrapped to the width of the card, its
- * blocker, the text its action prepares in the prompt, then its buttons (0.16.0, no key): the action of the item, which
- * prepares the prompt; for a review or an auto-decision, Done, Ticket and Edit text, which apply at once. While the text is
- * edited, a field and Save, Cancel. null if nothing is selected or if the item is gone (settled, merged).
+ * The detail card (0.14.0), above "Your turn". 0.17.0: on top, when and where to act, in blue, a blank line between them
+ * and before a rule; under it, what the item is, wrapped to the width of the card (in bold on two lines at most), its
+ * blocker, the tasks it holds back, the steps and the evidence of a prerequisite, the command its action prepares (not the
+ * prompt of a review, which repeats its text); then its buttons (0.16.0, no key): the action of the item, which prepares
+ * the prompt; for a review or an auto-decision, Done, Ticket and Edit text, which apply at once; and a one-line note.
+ * While the text is edited, a field and Save, Cancel. null if nothing is selected or if the item is gone (settled, merged).
  * @param {Snapshot} inst @param {number} now @param {number} columns @param {string | null} selected
  * @param {{ page?: number, editing?: boolean, draft?: string | null }} [o] draft: the text typed in the field so far
  * @returns {Card | null}
@@ -741,8 +786,6 @@ export function detailCard(inst, now, columns, selected, { page = 0, editing = f
   const hotkey = Math.floor(i / PAGE_SIZE) === p ? String(i - p * PAGE_SIZE + 1) : null
   // Border and padding take 4 columns, as for the other cards
   const inner = Math.max(24, columns - 4)
-  /** @param {string} label @param {string} value @param {boolean} dim @returns {Line[]} */
-  const field = (label, value, dim) => wrap(value, inner - FIELD).map((t, j) => [{ t: (j ? '' : label).padEnd(FIELD), d: true }, { t, ...(dim ? { d: true } : {}) }])
   /** @param {string} s @returns {Line[]} */
   const note = s => wrap(s, inner).map(t => [{ t, d: true }])
   /** @type {Line[]} */
@@ -757,10 +800,27 @@ export function detailCard(inst, now, columns, selected, { page = 0, editing = f
     ], inner))
     lines.push(...note('HANDOFF.md keeps the original text, so the next run does not bring the item back.'))
   } else {
-    lines.push(...wrap(it.text, inner).map(t => [{ t }]))
-    if (ref?.edited) lines.push(...field('original', ref.original, true))
-    if (it.detail) lines.push(...field('blocker', it.detail, false))
-    lines.push(...field('prompt', it.prompt, true))
+    // When and where first, in the color of what waits for you, a blank line between them and before the rule (0.17.0)
+    /** @param {string} label @param {string} value @returns {Line[]} */
+    const band = (label, value) => wrap(value, inner - FIELD).map((t, j) => [{ t: (j ? '' : label).padEnd(FIELD), c: 'suggestion', b: true }, { t, c: 'suggestion' }])
+    lines.push(...band('when', it.when), [], ...band('where', it.where), [], [{ t: '─'.repeat(inner), d: true }])
+    // What it is: in bold when it holds on two lines, a long review stays in normal weight
+    const what = wrap(it.what, inner)
+    lines.push(...what.map(t => [{ t, ...(what.length <= 2 ? { b: true } : {}) }]))
+    /** Dim, under the text: two spaces, then the words wrapped below them. @param {string} s @returns {Line[]} */
+    const under = s => wrap(s, inner - INDENT.length).map(t => [{ t: INDENT + t, d: true }])
+    if (ref?.edited) lines.push(...under(`original: ${ref.original}`))
+    if (it.detail) lines.push(...under(`blocker: ${it.detail}`))
+    if (it.blocks?.length) lines.push(...under(`blocks ${it.blocks.join(', ')}`))
+    // The steps of a prerequisite, numbered, the words of a step wrapped under its first word
+    for (const [i, step] of (it.how ?? []).entries()) {
+      const mark = `${INDENT}${i + 1}. `
+      lines.push(...wrap(step, inner - mark.length).map((t, j) => [{ t: j ? ' '.repeat(mark.length) : mark, d: true }, { t }]))
+    }
+    if (it.check) { const label = `${INDENT}check  `; lines.push(...wrap(it.check, inner - label.length).map((t, j) => [{ t: j ? ' '.repeat(label.length) : label, d: true }, { t, d: true }])) }
+    // The text the first button prepares, only when it is a command: a review's would repeat its text
+    if (it.prompt.startsWith('/')) lines.push(...wrap(it.prompt, inner - INDENT.length - 2).map((t, j) => [{ t: j ? `${INDENT}  ` : `${INDENT}› `, d: true }, { t, d: true }]))
+    lines.push([])
     const ask = ref ? (ref.kind === 'review' ? 'Review with Claude' : 'Go over with Claude') : capital(it.help)
     /** @type {Line} */
     const buttons = [{ t: bracketed(ask), c: 'claude', x: { hotkey: null, prompt: it.prompt, help: it.help, key: it.key, bracket: true } }]
@@ -770,11 +830,11 @@ export function detailCard(inst, now, columns, selected, { page = 0, editing = f
       { t: bracketed(EDIT_LABEL), x: { hotkey: null, prompt: '', help: 'edit the text', key: it.key, op: 'edit', ref, bracket: true } },
     )
     lines.push(...buttonLines(buttons, inner))
-    lines.push(...note(ref ? `${ask} puts the prompt above in the prompt box; nothing is sent. Done, Ticket and Edit text apply at once.` : `${ask} puts the prompt above in the prompt box; nothing is sent.`))
+    lines.push(...note(ref ? 'First button: fills the prompt, sends nothing. Others: apply at once.' : 'The button fills the prompt; nothing is sent.'))
   }
   return {
     id: 'detail', color: 'claude',
-    title: [{ t: '▸ Detail', c: 'claude', b: true }, { t: ' · ', d: true }, { t: `${hotkey ? `${hotkey} · ` : ''}${cut(it.task, 20)}`, b: true }, { t: ` · ${GROUPS[it.group]}`, d: true }],
+    title: [{ t: '▸ Detail', c: 'claude', b: true }, { t: ' · ', d: true }, { t: `${hotkey ? `${hotkey} · ` : ''}${cut(it.task, 20)}`, b: true }, { t: ` · ${it.kind}`, d: true }],
     meta: [{ t: CLOSE_LABEL }],
     lines,
   }

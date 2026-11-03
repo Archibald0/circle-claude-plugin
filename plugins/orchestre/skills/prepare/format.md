@@ -122,6 +122,10 @@ Everything the plan expects from a human or from the environment before a task c
 | E1 | environment | Test database started (`docker compose up -d db`) | open | `docker compose ps db` |
 
 Types: decision · manual · environment. Statuses: open · done · dropped.
+
+## E1 · how
+1. `docker compose up -d db`
+2. Run `/orchestre:ready plans/<name>`: it checks the evidence.
 ```
 
 - Ids: capital letters then digits (D5, H1, E1), as for tasks, and distinct from the tasks' ids.
@@ -129,6 +133,7 @@ Types: decision · manual · environment. Statuses: open · done · dropped.
 - `manual`: what an agent never does — an access, a secret, a paid account, real data, a deployment.
 - `environment`: a service, a tool or test data the verifications need.
 - `Evidence`: what shows it is done — the HANDOFF entry, a file, a safe command, or the user's confirmation. Never the content of a secret.
+- `## <ID> · how` (0.17.0), under the table, one section per `manual` or `environment` prerequisite: the steps the user follows, as a numbered list, in the plan's language (the heading stays in English). Concrete: what to get and from whom, where to put it, then how to mark it done. A line indented under a step goes on with it; any other line ends the list. The `/progress` pane shows these steps in the detail card of the prerequisite, with the evidence as `check`. plan-lint warns about an open one that blocks a task and has no section; a `decision` needs none, `/orchestre:ready` asks it. Never a secret, nor a step an agent would do.
 - A `|` in a cell is written `\|`. `dropped` counts as `done`: the prerequisite is no longer needed.
 - `/orchestre:ready` adds at the end of the file a line "Checked by /orchestre:ready on <date>: <verdict>".
 

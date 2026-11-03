@@ -208,7 +208,8 @@ export const SCHEMA = {
       ticket: ref('date'),
       label: { type: 'string', minLength: 1 },
     }),
-    prerequisite: object(['id', 'type', 'status', 'text', 'blocks'], { id: ref('taskId'), type: { type: 'string' }, status: { type: 'string' }, text: { type: 'string' }, blocks: ref('ids') }),
+    // evidence and how (0.17.0): the Evidence column and the steps of "## <ID> · how", optional in the contract
+    prerequisite: object(['id', 'type', 'status', 'text', 'blocks'], { id: ref('taskId'), type: { type: 'string' }, status: { type: 'string' }, text: { type: 'string' }, evidence: { type: 'string' }, how: arrayOf({ type: 'string' }), blocks: ref('ids') }),
     event: object(['at', 'kind', 'task', 'text'], {
       at: ref('date'),
       kind: { enum: KINDS },
@@ -564,7 +565,7 @@ function mergeReviews(doc, handoff) {
 
 // Derived fields, recomputed at each write and valid as of the updated date
 function derive(doc, L, handoff) {
-  if (Array.isArray(L.prerequisites)) doc.prerequisites = L.prerequisites.filter(p => RE_ID.test(p.id)).map(p => ({ id: p.id, type: String(p.type ?? ''), status: String(p.status ?? ''), text: String(p.text ?? ''), blocks: p.blocks || [] }))
+  if (Array.isArray(L.prerequisites)) doc.prerequisites = L.prerequisites.filter(p => RE_ID.test(p.id)).map(p => ({ id: p.id, type: String(p.type ?? ''), status: String(p.status ?? ''), text: String(p.text ?? ''), evidence: String(p.evidence ?? ''), how: Array.isArray(p.how) ? p.how.map(String) : [], blocks: p.blocks || [] }))
   doc.lint = { ok: !!L.ok, errors: (L.errors || []).map(String) }
   doc.handoff = parseHandoff(handoff).counts
   const st = new Map(doc.tasks.map(t => [t.id, t.status]))

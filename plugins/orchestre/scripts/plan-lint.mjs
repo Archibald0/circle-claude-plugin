@@ -6,7 +6,9 @@
 // already in main. Commits "tâche <id> : " of orchestre 0.11 and earlier count too: git history is never rewritten.
 // A task "cancelled" in PROGRESS.md counts as done: it blocks neither its phase nor the tasks that depend on it.
 // PREREQUISITES.md (optional): what the plan expects from a human or the environment. A task lists its own in "prerequisites";
-// while one of them is "open", the task waits (open_prerequisites) and the rest of the phase can run.
+// while one of them is "open", the task waits (open_prerequisites) and the rest of the phase can run. Under the table, a
+// section "## <ID> · how" lists the steps of a manual action or an environment (0.17.0): "how" in the JSON, a warning
+// when an open one that blocks a task has none.
 // Warnings (block nothing): compound verification or setup commands, which an agent isolated in a worktree would be refused
 // by Claude Code's isolation guard; shared setup resource that no task declares; remaining task without model or
 // model_reason. A model outside MODELS is an error; the choice itself is never judged.
@@ -128,11 +130,33 @@ const tokens = s => { const m = String(s || '').match(/([\d.,]+)\s*M/i); return 
 const norm = s => String(s || '').trim().toLowerCase()
 const TYPES = ['decision', 'manual', 'environment']
 const PREREQ_STATUSES = ['open', 'done', 'dropped']
+// "## H1 · how" under the table (0.17.0): the steps of a prerequisite, a numbered or bulleted list; an indented line goes on
+// with the step above, any other line ends the list ("Checked by /orchestre:ready…" included)
+const HOW = /^##\s+(\S+)\s+·\s+how\s*$/i
+function howSections(lines) {
+  const out = new Map()
+  let cur = null
+  for (const line of lines) {
+    const h = line.match(HOW)
+    if (h) {
+      if (out.has(h[1])) errors.push(`PREREQUISITES.md: section "## ${h[1]} · how" written twice`)
+      cur = []; out.set(h[1], cur); continue
+    }
+    if (!cur) continue
+    if (/^#/.test(line)) { cur = null; continue }
+    const step = line.match(/^\s*(?:\d+[.)]|[-*])\s+(.*\S)\s*$/)
+    if (step) cur.push(step[1])
+    else if (/^\s+\S/.test(line) && cur.length) cur[cur.length - 1] += ' ' + line.trim()
+    else if (line.trim() && cur.length) cur = null
+  }
+  return out
+}
 function prerequisites() {
   const p = join(dir, 'PREREQUISITES.md'), list = []
   if (!existsSync(p)) return null
   let cols = null
-  for (const line of readFileSync(p, 'utf8').split(/\r?\n/)) {
+  const lines = readFileSync(p, 'utf8').split(/\r?\n/)
+  for (const line of lines) {
     if (!line.trim().startsWith('|')) continue
     const row = cells(line)
     const idx = k => row.findIndex(x => norm(x) === norm(k))
@@ -143,6 +167,12 @@ function prerequisites() {
     else errors.push(`PREREQUISITES.md: row ignored, invalid id "${c('ID')}" (capital letters then digits, like D5)`)
   }
   if (!cols) errors.push('PREREQUISITES.md: no table recognized (headers ID, Type, Prerequisite, Status, Evidence)')
+  const how = howSections(lines)
+  for (const [id, steps] of how) {
+    if (!list.some(x => x.id === id)) errors.push(`PREREQUISITES.md: section "## ${id} · how" for a prerequisite that is not in the table`)
+    else if (!steps.length) warnings.push(`PREREQUISITES.md: section "## ${id} · how" without steps (a numbered list)`)
+  }
+  for (const x of list) x.how = how.get(x.id) || []
   return list
 }
 
@@ -238,6 +268,9 @@ const prereqs = [...PR.values()].map(x => ({ ...x, blocks: blocks(x.id) }))
 // A deferred decision that no remaining task cites would block nothing: an agent would settle it instead of the human
 for (const x of prereqs) if (x.type === 'decision' && x.status === 'open' && !x.blocks.length) errors.push(`prerequisite ${x.id}: open decision that no remaining task cites in "prerequisites" (add it to the tasks it affects, or set it to "dropped")`)
 const orphans = prereqs.filter(x => x.type !== 'decision' && x.status === 'open' && !x.blocks.length)
+// A manual action or an environment without its steps: the /progress pane shows only its text (0.17.0); a plan written
+// before keeps running. With --phase, only those that block a task of the phase
+for (const x of prereqs) if (x.type !== 'decision' && x.status === 'open' && x.blocks.length && !x.how.length && (phaseF == null || x.blocks.some(id => T.get(id)?.phase === phaseF))) warnings.push(`prerequisite ${x.id} (${x.type}) open without a "## ${x.id} · how" section in PREREQUISITES.md: the /progress pane will show only its text, not the steps to follow`)
 
 // Verification commands of remaining tasks: compound, they would be refused to an agent isolated in a worktree
 const refusable = "an agent isolated in a worktree will be refused it (Claude Code's isolation guard): make it a simple command, or a project script"

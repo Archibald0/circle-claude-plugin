@@ -143,6 +143,12 @@ test('/progress pane: a view in cards, its keys, its buttons; the actions prepar
     expect([(await one.find({ key: 'card-detail' }))?.props.borderStyle, (await one.find({ key: 'card-detail' }))?.props.borderColor]).toEqual(['round', 'claude'])
     expect(await one.find({ type: 'Text', text: '▸ Detail' })).toBeDefined()
     expect(await one.find({ type: 'Text', text: '▸' })).toBeDefined()
+    // 0.17.0: when and where on top of the card, then what it is
+    expect(await one.find({ type: 'Text', text: 'when     ' })).toBeDefined()
+    expect(await one.find({ type: 'Text', text: 'Now' })).toBeDefined()
+    expect(await one.find({ type: 'Text', text: 'where    ' })).toBeDefined()
+    expect(await one.find({ type: 'Text', text: /^This session/ })).toBeDefined()
+    expect(await one.find({ type: 'Text', text: /^─+$/ })).toBeDefined()
     const close = await one.find({ type: 'Button', key: 'detail-close' })
     expect([close?.props.label, close?.props.hotkey]).toEqual(['✕ Close', 'x'])
     const act = await one.find({ type: 'Button', key: 'detail-act' })

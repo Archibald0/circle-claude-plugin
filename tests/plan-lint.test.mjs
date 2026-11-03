@@ -116,7 +116,7 @@ try {
     const t = id => r.json.tasks.find(x => x.id === id)
     assert.deepEqual(t('P01').open_prerequisites, []); assert.deepEqual(t('P02').open_prerequisites, ['D5']); assert.deepEqual(t('P04').open_prerequisites, ['H2'])
     const e1 = r.json.prerequisites.find(x => x.id === 'E1')
-    assert.deepEqual(e1, { id: 'E1', type: 'environment', text: 'Test database | port 5433', status: 'dropped', evidence: 'no longer needed', blocks: ['P02'] })
+    assert.deepEqual(e1, { id: 'E1', type: 'environment', text: 'Test database | port 5433', status: 'dropped', evidence: 'no longer needed', how: [], blocks: ['P02'] })
     assert.deepEqual(r.json.prerequisites.find(x => x.id === 'D5').blocks, ['P02']); assert.equal(r.json.prerequisites.find(x => x.id === 'H2').type, 'manual')
     assert.deepEqual(r.json.ready[0], { phase: 1, after_phase: null, tasks: 3, waiting: [{ id: 'P02', waiting_on: ['D5'] }, { id: 'P03', waiting_on: ['P02'] }] })
     assert.equal(r.json.ready[1].after_phase, 1); assert.deepEqual(r.json.ready[1].waiting, [{ id: 'P04', waiting_on: ['H2'] }])
@@ -168,6 +168,50 @@ try {
     const h = lint(q); assert.equal(h.code, 0, h.out)
     assert.ok(h.out.includes('⚠ prerequisite H3 (manual) open, but no remaining task cites it'), h.out)
     assert.ok(h.out.includes('- phase 1: O02 waits for needs-human'), h.out)
+  })
+  test('prerequisites: "## <ID> · how" read as steps (0.17.0), unknown or doubled section, open action without steps as a warning', () => {
+    const q = plan('how', { W01: task('W01', { prerequisites: '[H1, E1, D1]' }), W02: task('W02', { phase: 2, prerequisites: '[H2]' }) })
+    writeFileSync(join(root, q, 'PREREQUISITES.md'), `# PREREQUISITES — how
+
+| ID | Type | Prerequisite | Status | Evidence |
+|----|------|--------------|--------|----------|
+| H1 | manual | API token in \`.env.local\` | open | \`grep -c TOKEN .env.local\` |
+| E1 | environment | Test database | open | \`docker compose ps db\` |
+| D1 | decision | Pick the provider | open | — |
+| H2 | manual | Service account | open | — |
+
+## H1 · how
+Ask first.
+
+1. Ask the contracts team for a staging token.
+2. Add it to \`.env.local\` as \`TOKEN\`,
+   never in the repository.
+
+3) Mark it done: /orchestre:ready checks it.
+Checked by /orchestre:ready on 2026-11-03: not ready.
+4. Not a step: the list ended above.
+
+## E1 · How
+- \`docker compose up -d db\`
+
+## Notes
+- not a step of E1
+`)
+    let r = lint(q, '--json'); assert.equal(r.code, 0, JSON.stringify(r.json.errors))
+    const p = id => r.json.prerequisites.find(x => x.id === id)
+    assert.deepEqual(p('H1').how, ['Ask the contracts team for a staging token.', 'Add it to `.env.local` as `TOKEN`, never in the repository.', 'Mark it done: /orchestre:ready checks it.'])
+    assert.equal(p('H1').evidence, '`grep -c TOKEN .env.local`')
+    assert.deepEqual(p('E1').how, ['`docker compose up -d db`']); assert.deepEqual(p('D1').how, [])
+    const w = r.json.warnings.join('\n')
+    assert.ok(w.includes('prerequisite H2 (manual) open without a "## H2 · how" section in PREREQUISITES.md'), w)
+    assert.ok(!/prerequisite (H1|E1|D1) /.test(w), 'H1 and E1 have their steps; a decision needs none: ' + w)
+    assert.ok(!lint(q, '--json', '--phase', '1').json.warnings.some(x => x.includes('H2')), 'H2 blocks only a task of phase 2')
+    writeFileSync(join(root, q, 'PREREQUISITES.md'), '| ID | Type | Prerequisite | Status | Evidence |\n|---|---|---|---|---|\n| H1 | manual | a | open | — |\n| E1 | environment | b | done | ok |\n| D1 | decision | c | open | — |\n| H2 | manual | d | done | ok |\n\n## H1 · how\n1. One.\n\n## H1 · how\n1. Two.\n\n## H9 · how\n1. Three.\n\n## E1 · how\nNothing here.\n\n## Notes\n- not a step of E1\n')
+    r = lint(q, '--json'); assert.equal(r.code, 1)
+    const e = r.json.errors.join('\n')
+    assert.ok(e.includes('PREREQUISITES.md: section "## H1 · how" written twice'), e)
+    assert.ok(e.includes('PREREQUISITES.md: section "## H9 · how" for a prerequisite that is not in the table'), e)
+    assert.ok(r.json.warnings.includes('PREREQUISITES.md: section "## E1 · how" without steps (a numbered list)'), r.json.warnings.join('\n'))
   })
   test('errors: verification, done, unknown or later dependency, cycle, duplicate, shared files in parallel', () => {
     const q = plan('ko', {

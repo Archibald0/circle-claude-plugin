@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/orchestre-0.16.1-E8743B" alt="orchestre 0.16.1">
+  <img src="https://img.shields.io/badge/orchestre-0.17.0-E8743B" alt="orchestre 0.17.0">
   <img src="https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.287-1F2340" alt="Claude Code 2.1.287 or later">
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A5%2018-1F2340" alt="Node.js 18 or later">
 </p>
@@ -146,7 +146,7 @@ To try orchestre on a toy repository first: [First try](docs/reference.md#first-
 
 | Key | Action |
 | :- | :- |
-| <kbd>1</kbd> to <kbd>9</kbd> | Show a line of "Your turn" in the detail card, with its buttons; a second press closes it. |
+| <kbd>1</kbd> to <kbd>9</kbd> | Show a line of "Your turn" in the detail card: when and where to act, what it is (the steps of a prerequisite included), its buttons. A second press closes it. |
 | <kbd>l</kbd> | Switch the log card between its last entries and the whole log (its counter, "l: all (24)"). |
 | <kbd>Esc</kbd> | Close the pane. |
 
