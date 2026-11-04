@@ -13,7 +13,7 @@ What `/orchestre:install` writes:
 - **`.claude/settings.local.json`** (personal, not versioned), through `settings.mjs`. When git does not ignore that file yet, the script excludes it from git through `.git/info/exclude`. It holds:
   - `worktree.baseRef: "head"`: the worktrees start from the integration branch;
   - permissions for the workflow `orchestre:run-phase`, the plugin's scripts (`plan-lint`, progress, worktree cleanup), the agents' git commands and, if you accept them, the project's test and build commands;
-  - denials: `git push`, the project's deployment tool, and reading `.env` and `.env.*` at any depth (`Read(.env)`, `Read(.env.*)`). The versioned templates (`.env.example`, `.env.sample`, `.env.template`, `.env.dist`) are excepted: the agents read and change them;
+  - denials: `git push` in its usual forms (with `-C`, `-c`, `--git-dir`, `--work-tree`), `gh pr merge`, the project's deployment tool, and reading `.env` and `.env.*` at any depth (`Read(.env)`, `Read(.env.*)`). The versioned templates (`.env.example`, `.env.sample`, `.env.template`, `.env.dist`) are excepted: the agents read and change them;
   - `env.PATH`, if the project's tools (node, pnpm, php…) cannot be found in the agents' shell. Without it, the agents would prefix their commands with `export PATH=…`, which the isolation guard of the worktrees refuses.
 - **`.worktreeinclude`**: the unversioned files (`.env`…) to copy into the worktrees of parallel tasks.
 - **Formatter and linter exclusions** of `plans/` and `.claude/`, committed after your agreement.

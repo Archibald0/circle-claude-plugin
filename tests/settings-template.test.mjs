@@ -9,6 +9,8 @@ const allow = template.permissions.allow
 // .env at any depth (0.18.0): a bare file name matches like .gitignore, Read(./.env) only the .env of the current folder
 // (code.claude.com/docs/en/permissions)
 for (const rule of ['Bash(git push *)', 'Bash(git -C * push *)', 'Read(.env)', 'Read(.env.*)']) assert.ok(deny.includes(rule), `missing denial: ${rule}`)
+// A push written another way than "git push" (0.18.0): the forms the documentation of permissions cites, and a merge through gh
+for (const rule of ['Bash(git -c * push *)', 'Bash(git --git-dir* push *)', 'Bash(git --work-tree* push *)', 'Bash(gh pr merge *)']) assert.ok(deny.includes(rule), `missing denial: ${rule}`)
 assert.equal(deny.some(r => r.startsWith('Read(./')), false, 'a .env denial anchored at the current folder: Read(.env) covers every depth')
 // A "!" exception only cancels the rules listed before it in the same file
 const envRule = deny.indexOf('Read(.env.*)')

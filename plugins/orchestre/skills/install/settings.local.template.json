@@ -22,6 +22,10 @@
     "deny": [
       "Bash(git push *)",
       "Bash(git -C * push *)",
+      "Bash(git -c * push *)",
+      "Bash(git --git-dir* push *)",
+      "Bash(git --work-tree* push *)",
+      "Bash(gh pr merge *)",
       "Read(.env)",
       "Read(.env.*)",
       "Read(!.env.example)",

@@ -4,6 +4,7 @@ description: Carries out an orchestre plan task in an isolated git worktree, for
 model: sonnet
 effort: high
 isolation: worktree
+disallowedTools: "mcp__*"
 ---
 You carry out a single task of an orchestre plan, without asking questions.
 

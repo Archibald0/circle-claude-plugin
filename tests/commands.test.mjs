@@ -468,6 +468,17 @@ try {
     assert.ok(WF.includes('Before adding a task, prefer amending a task not yet started'), 'workflow instructions of the replanner')
   })
 
+  test('agents without MCP tools (0.18.0): the workers inherit none, the other agents list their tools without any MCP', () => {
+    for (const a of AGENTS) {
+      const fm = read(join(PLUGIN, 'agents', `${a}.md`)).match(/^---\n([\s\S]*?)\n---\n/)[1]
+      const tools = (fm.match(/^tools:\s*(.*)$/m) || [])[1]
+      if (tools) assert.ok(!/mcp__/.test(tools), `${a}: an MCP tool among its tools`)
+      // Without a tools field, an agent inherits every tool of the session, the user's MCP servers included (code.claude.com/docs/en/sub-agents)
+      else assert.match(fm, /^disallowedTools:\s*"?mcp__\*"?\s*$/m, `${a}: no tools field and no disallowedTools: mcp__*`)
+    }
+    assert.ok(['worker', 'isolated-worker'].every(a => AGENTS.includes(a)))
+  })
+
   console.log(`commands: ALL GREEN (${n} tests)`)
 } finally {
   for (const d of tmp) rmSync(d, { recursive: true, force: true })

@@ -215,7 +215,7 @@ Each task carries its model and the reason for it, chosen by opus when the plan 
 
 **Safeguards.**
 
-- No agent pushes, merges into `main` or deploys.
+- No agent is allowed to push, merge into `main` or deploy. The settings deny `git push` in its usual forms (`git push`, `git -C <folder> push`, `git -c <option> push`, `git --git-dir=… push`, `git --work-tree=… push`) and `gh pr merge`; the workers have no MCP tools (`disallowedTools: mcp__*`); the instructions of every agent forbid it. A permission rule does not see every way a command can be written (code.claude.com/docs/en/permissions): with the Bash sandbox of Claude Code on (`/sandbox`), the commands and the processes they start reach only the hosts you allow.
 - No agent opens, restores or copies real production or personal data: these actions are the human's.
 - A deviation that touches data, a database, production or a secret is always major.
 - No agent gets around a read or write ban: the file concerned goes to human review before the PR.
@@ -232,7 +232,7 @@ Each task carries its model and the reason for it, chosen by opus when the plan 
 - A ban that the worker reports as an ordinary deviation is only reclassified as a review if its description cites neither a database, nor production, nor a secret (`DATABASE_URL`, `JWT_SECRET`…). Otherwise the run stops for a human.
 - `/orchestre:ready` spots the "safe" commands on the strength of the configuration and of `DISCOVERY.md`. When in doubt, it asks you to run them yourself with `!`.
 - The settings (worktree, permissions) cannot come from a plugin: `scripts/settings.mjs` writes them into each project, from `/orchestre:install`, `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run`. Its check does not read the managed settings of an organization. Claude Code reloads the permission rules during the session; for `worktree.baseRef`, its documentation does not say, hence a run in a new session. If the Bash sandbox is on, it refuses the writes of the script into the settings files: the command gives the line to run yourself at the prompt with `!`, which runs outside the sandbox.
-- The denials of the template, `Read(.env)` and `Read(.env.*)`, match at any depth (`apps/api/.env` included) and bind the file tools of Claude Code (code.claude.com/docs/en/permissions). They do not reach a script or a test that opens the file itself: a guarantee at the level of the system takes the Bash sandbox of Claude Code.
+- The denials of the template, `Read(.env)` and `Read(.env.*)`, match at any depth (`apps/api/.env` included) and bind the file tools of Claude Code (code.claude.com/docs/en/permissions). They do not reach a script or a test that opens the file itself: for that, turn on the Bash sandbox of Claude Code and add the `.env` files to its `filesystem.denyRead`.
 - The actual tokens are not collected automatically: read them in `/workflows`, task by task. On the pilot, the actual figure was 3 to 8 times the estimate.
 - In autonomous mode, the auto-decisions are only reviewed at the PR. The circuit breaker caps their number, not their quality.
 - Sensitive deviations are spotted by keywords (data, database, production, secret…, in English and in French). The filter catches wide, but does not see a risk worded otherwise.

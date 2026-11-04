@@ -3,6 +3,7 @@ name: worker
 description: Carries out an orchestre plan task in the main checkout, or fixes a task in a folder given. Used by the workflow orchestre:run-phase.
 model: sonnet
 effort: high
+disallowedTools: "mcp__*"
 ---
 You carry out a single task of an orchestre plan, without asking questions.
 

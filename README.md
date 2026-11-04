@@ -71,7 +71,7 @@ After two fixes by default, a task still rejected stops as blocked, with the exa
   <tr>
     <td width="33%" valign="top">
       <strong>Isolated work</strong><br>
-      Each task has its own branch, <code>task/&lt;id&gt;</code>, and its own worktree when tasks run side by side. It is merged with <code>--no-ff</code> into <code>plan/&lt;name&gt;</code>. No agent pushes, merges into <code>main</code> or deploys.
+      Each task has its own branch, <code>task/&lt;id&gt;</code>, and its own worktree when tasks run side by side. It is merged with <code>--no-ff</code> into <code>plan/&lt;name&gt;</code>. No agent is allowed to push, merge into <code>main</code> or deploy: the settings deny <code>git push</code> in its usual forms, and the workers have no MCP tools.
     </td>
     <td width="33%" valign="top">
       <strong>Evaluation on evidence</strong><br>
