@@ -184,7 +184,6 @@ Details: [`docs/upgrading.md`](docs/upgrading.md).
 
 ---
 
-<!-- TODO(license): choose the license with Dayuse, add a LICENSE file, then replace the line below. -->
-License: not chosen yet.
+License: [MIT](LICENSE).
 
 orchestre is an independent project, not affiliated with or endorsed by Anthropic.
