@@ -9,6 +9,11 @@ for (const bad of ['Date.now', 'Math.random', 'new Date(', 'require(', 'import '
 const body = src.replace(/^export const meta = /m, 'const meta = ')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const run = new AsyncFunction('args', 'agent', 'phase', 'log', body)
+// Fingerprint of the plan-lint output the plan-reader copies (0.18.1), taken from the workflow itself. An answer of the
+// plan-reader without a "digest" key gets the right one: the scenarios play a faithful copy unless they say otherwise
+// (a digest of another plan, or the key present without a value)
+const planDigest = new Function(src.match(/\nfunction planDigest\(p\) \{\n[\s\S]*?\n\}/)[0] + '\nreturn planDigest')()
+const sealed = (k, a) => (k.startsWith('plan-reader') && a && typeof a === 'object' && !('digest' in a) ? { ...a, digest: planDigest(a) } : a)
 // lint is required since 0.12.0 (/orchestre:run passes it): no default path any more
 const ARGS = { plan: 'plans/p', phase: 1, mode: 'phase', parallelism: 4, integration: 'plan/p', max_fixes: 2, escalation: ['sonnet', 'opus'], lint: '/plug/scripts/plan-lint.mjs' }
 // T00 without a model (plan from before 0.11.0): worker on sonnet, fixes along the ladder, without the replanner's choice;
@@ -32,7 +37,7 @@ async function scenario(name, q, args = {}) {
     const k = opts.label
     if (!(k in q) || !q[k].length) throw new Error(`[${name}] unexpected call: ${k}`)
     const v = q[k].shift()
-    return typeof v === 'function' ? v(prompt, opts) : v
+    return sealed(k, typeof v === 'function' ? v(prompt, opts) : v)
   }
   const res = await run({ ...ARGS, ...args }, agent, () => {}, (m) => logs.push(m))
   last = res
@@ -372,7 +377,7 @@ await test('P1: plugin — "orchestre:*" agents by default, plan-lint of the plu
   const at = l => byLabel(calls, l)[0].opts.agentType
   assert.equal(at('plan-reader'), 'orchestre:plan-reader'); assert.equal(at('T00 · worker'), 'orchestre:worker'); assert.equal(at('T00 · verification'), 'orchestre:verifier')
   assert.equal(at('T00 · evaluation'), 'orchestre:evaluator'); assert.equal(at('T00 · merge'), 'orchestre:integrator'); assert.equal(at('T00 · replanning'), 'orchestre:replanner'); assert.equal(at('T00 · progress'), 'orchestre:scribe')
-  assert.ok(byLabel(calls, 'plan-reader')[0].prompt.includes(`node ${LP} plans/p --json --phase 1 --integration plan/p`), 'reading: plan-lint of the plugin')
+  assert.ok(byLabel(calls, 'plan-reader')[0].prompt.includes(`node ${LP} plans/p --reader --phase 1 --integration plan/p`), 'reading: plan-lint of the plugin, --reader (0.18.1)')
   const sc = byLabel(calls, 'T00 · progress')[0].prompt
   assert.ok(sc.includes(`node ${LP} plans/p --integration plan/p`) && !sc.includes('.claude/orchestre/') && !sc.includes(ARGS.lint), 'scribe: plan-lint of the plugin')
   drained('P1', q)
@@ -380,7 +385,7 @@ await test('P1: plugin — "orchestre:*" agents by default, plan-lint of the plu
 await test('P2: manual install — empty agent_prefix gives unprefixed agent types; without lint (required since 0.12.0), an error and no agent', async () => {
   const { calls, q } = await scenario('P2', { 'plan-reader': [plan(T00)], 'T00 · worker': [report(0)], 'T00 · verification': [ok(1)], 'T00 · evaluation': [{ verdict: 'pass' }], 'T00 · merge': [MOK], 'T00 · progress': [SOK] }, { agent_prefix: '', parallelism: 1 })
   assert.equal(byLabel(calls, 'plan-reader')[0].opts.agentType, 'plan-reader'); assert.equal(byLabel(calls, 'T00 · worker')[0].opts.agentType, 'worker')
-  assert.ok(byLabel(calls, 'plan-reader')[0].prompt.includes('node /plug/scripts/plan-lint.mjs plans/p --json'))
+  assert.ok(byLabel(calls, 'plan-reader')[0].prompt.includes('node /plug/scripts/plan-lint.mjs plans/p --reader'))
   drained('P2', q)
   const b = await scenario('P2b', {}, { agent_prefix: '', lint: undefined })
   assert.deepEqual(b.res, { status: 'error', detail: 'args required: plan, phase, integration, lint' }); assert.equal(b.calls.length, 0)
@@ -392,7 +397,7 @@ await test('P3: plan-lint path with a space → quoted; parallel tasks → orche
   const tt = id => ({ [`${id} · worker`]: [report(id, { branch: `task/${id}`, path: `/wt/${id}` })], [`${id} · verification`]: [ok(id)], [`${id} · evaluation`]: [{ verdict: 'pass' }], [`${id} · merge`]: [MOK], [`${id} · progress`]: [SOK] })
   const { res, calls, q } = await scenario('P3', { 'plan-reader': [plan(T02, T03)], ...tt('T02'), ...tt('T03') }, { lint: L })
   assert.equal(res.status, 'finished')
-  assert.ok(byLabel(calls, 'plan-reader')[0].prompt.includes(`node "${L}" plans/p --json`))
+  assert.ok(byLabel(calls, 'plan-reader')[0].prompt.includes(`node "${L}" plans/p --reader`))
   assert.equal(byLabel(calls, 'T02 · worker')[0].opts.agentType, 'orchestre:isolated-worker'); assert.equal(byLabel(calls, 'T02 · worker')[0].opts.isolation, 'worktree')
   drained('P3', q)
 })
@@ -659,7 +664,7 @@ await test('V1: progress — the plan reader opens the run, each agent first run
   const lp = byLabel(calls, 'plan-reader')[0].prompt
   assert.ok(lp.startsWith(HEADER + ', opens the run'))
   assert.deepEqual(progressOf(calls, 'plan-reader'), [{ cmd: 'run-start', plan: 'plans/p', E: { phase: 1, mode: 'phase', parallelism: 4, max_fixes: 2, max_auto_decisions: 3 } }])
-  assert.ok(lp.includes('plan-lint.mjs plans/p --json --phase 1') && lp.includes('with run_start_ok'))
+  assert.ok(lp.includes('plan-lint.mjs plans/p --reader --phase 1') && lp.includes('with run_start_ok'))
   for (const [l, E] of [['T00 · worker', { task: 'T00', step: 'worker', isolated: false, model: 'sonnet' }], ['T00 · verification', { task: 'T00', step: 'verification' }], ['T00 · evaluation', { task: 'T00', step: 'evaluation' }], ['T00 · merge', { task: 'T00', step: 'merge' }]]) {
     assert.ok(byLabel(calls, l)[0].prompt.startsWith(HEADER), l + ': step first')
     assert.deepEqual(progressOf(calls, l), [{ cmd: 'step', plan: 'plans/p', E }], l)
@@ -676,7 +681,7 @@ await test('V1: progress — the plan reader opens the run, each agent first run
   assert.deepEqual(re.E.tasks, [{ id: 'T00', status: 'merged', attempts: 1, branch: 'task/T00' }], 'summary without the workers\' summaries')
   for (const x of ['1. `git switch plan/p`', '`git diff --quiet HEAD -- plans/p/PROGRESS.md`', '`git commit -m "progress: end of the run of phase 1" -- plans/p/PROGRESS.md`']) assert.ok(clerk[0].prompt.includes(x), 'clerk: ' + x)
   assert.ok(!clerk[0].prompt.includes('git add'), 'the clerk only commits PROGRESS.md')
-  assert.deepEqual([byLabel(calls, 'plan-reader')[0].opts.schema.required, byLabel(calls, 'T00 · progress')[0].opts.schema.required, byLabel(calls, 'T00 · worker')[0].opts.schema.required], [['ok', 'tasks', 'run_start_ok'], ['ok', 'progress_ok'], ['status', 'summary', 'branch', 'path']], 'result required only where it decides what follows')
+  assert.deepEqual([byLabel(calls, 'plan-reader')[0].opts.schema.required, byLabel(calls, 'T00 · progress')[0].opts.schema.required, byLabel(calls, 'T00 · worker')[0].opts.schema.required], [['ok', 'tasks', 'digest', 'run_start_ok'], ['ok', 'progress_ok'], ['status', 'summary', 'branch', 'path']], 'result required only where it decides what follows')
   drained('V1', q)
 })
 await test('V2: progress — fix and its rejection, escaped text; full close in autonomous mode (auto-decision, added task, amendment, replanning)', async () => {
@@ -883,7 +888,7 @@ async function play(name, D, q, args = {}) {
     // { before, answer }: what the agent does before its progress commands (the scribe writes the created tasks)
     const v = v0 && typeof v0 === 'object' && 'before' in v0 ? (v0.before(), v0.answer) : v0
     const codes = cs.map(c => { const r = spawnSync('sh', ['-c', bashTool(c)], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.status })
-    const answer = typeof v === 'function' ? v(prompt, opts) : v
+    const answer = sealed(k, typeof v === 'function' ? v(prompt, opts) : v)
     // The clerk also runs the cleaning of the worktrees: its last line goes in "worktrees"
     const wt = [...prompt.matchAll(/`(node "?[^`"]*worktrees\.mjs"? clean [^`]*)`/g)].map(m => m[1])
     const cleaning = wt.map(c => { const r = spawnSync('sh', ['-c', c], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.stdout.trim() || r.stderr.trim() }).pop()
@@ -1288,7 +1293,7 @@ await test('W9: shell — plan path with a space quoted in the plan-lint and cle
   const P = 'plans/my plan', T = { ...T00, title: 'Add `--json` "flag" for $HOME \\ paths', file: 'plans/my plan/tasks/T00.md' }
   const { res, calls, q } = await scenario('W9', { 'plan-reader': [planOpened(T)], ...s00(), 'run end · progress': [COK] }, { ...AP, plan: P })
   assert.equal(res.status, 'finished')
-  assert.ok(byLabel(calls, 'plan-reader')[0].prompt.includes('`node /plug/scripts/plan-lint.mjs "plans/my plan" --json --phase 1 --integration plan/p`'))
+  assert.ok(byLabel(calls, 'plan-reader')[0].prompt.includes('`node /plug/scripts/plan-lint.mjs "plans/my plan" --reader --phase 1 --integration plan/p`'))
   const g = byLabel(calls, 'run end · progress')[0].prompt
   assert.ok(g.includes('`git diff --quiet HEAD -- "plans/my plan/PROGRESS.md"`') && g.includes('-- "plans/my plan/PROGRESS.md"`, which only commits'))
   assert.ok(g.includes('worktrees.mjs clean "plans/my plan"`'))
@@ -1332,5 +1337,78 @@ await test('W11: a worktree is never removed by force (0.18.0) — kept by git, 
   assert.ok(logs.some(l => l === "T03: uncommitted in /wt/T03, outside the task's files: dist/bundle.js"))
   assert.ok(!byLabel(calls, 'T03 · progress')[0].prompt.includes('kept after the merge'), 'T03: no review')
   drained('W11', q)
+})
+// ——— 0.18.1: the copy of the plan-reader checked against the digest of plan-lint --reader ———
+const SECOND = 'plan-reader · second reading'
+await test('R1: a copy that does not match its digest (status of T00 changed) → second reading, without run-start; the faithful copy runs', async () => {
+  const wrong = { ...plan({ ...T00, status: 'merged' }), digest: planDigest(plan(T00)) }
+  const { res, calls, logs, q } = await scenario('R1', { 'plan-reader': [wrong], [SECOND]: [plan(T00)], ...t00(), 'T00 · progress': [SOK] })
+  assert.equal(res.status, 'finished'); assert.deepEqual(res.tasks.map(t => [t.id, t.status]), [['T00', 'merged']], 'T00 runs: the second copy says todo')
+  assert.deepEqual(calls.slice(0, 3).map(c => c.opts.label), ['plan-reader', SECOND, 'T00 · worker'])
+  const p2 = byLabel(calls, SECOND)[0]
+  assert.ok(p2.prompt.startsWith('Your first copy of this output did not match its digest. Run `node /plug/scripts/plan-lint.mjs plans/p --reader --phase 1 --integration plan/p`'), p2.prompt)
+  assert.equal(p2.opts.agentType, 'orchestre:plan-reader'); assert.equal(p2.opts.model, 'haiku'); assert.deepEqual(p2.opts.schema.required, ['ok', 'tasks', 'digest'])
+  assert.ok(logs.some(l => l.startsWith(`plan-reader: copy of plan-lint that does not match its digest (${planDigest(plan(T00))}, ${planDigest(wrong)} computed); second reading`)), JSON.stringify(logs))
+  drained('R1', q)
+})
+await test('R2: progress — two copies that do not match (a verification rephrased, then no digest) → error, no task started, a single run-start, the clerk closes the run', async () => {
+  const rephrased = { ...planOpened({ ...T00, verification: ['typecheck', 'e2e'] }), digest: planDigest(plan(T00)) }
+  const { res, calls, q } = await scenario('R2', { 'plan-reader': [rephrased], [SECOND]: [{ ...plan(T00), digest: undefined }], 'run end · progress': [COK] }, AP)
+  assert.equal(res.status, 'error')
+  assert.equal(res.detail, "plan-reader: two copies of plan-lint's output that do not match its digest; no task started. Launch a new run.")
+  assert.deepEqual(calls.map(c => c.opts.label), ['plan-reader', SECOND, 'run end · progress'], 'no worker')
+  assert.deepEqual(progressOf(calls, 'plan-reader').map(c => c.cmd), ['run-start'])
+  assert.deepEqual(progressOf(calls, SECOND), [], 'the run is already open: no second run-start')
+  assert.ok(!byLabel(calls, SECOND)[0].prompt.includes('run_start_ok'))
+  assert.deepEqual(progressOf(calls, 'run end · progress').map(c => [c.cmd, c.E.status]), [['run-end', 'error']])
+  drained('R2', q)
+})
+await test('R3: a copy that turns a plan in error into a valid plan → second reading; the errors of plan-lint stop the run, no task started', async () => {
+  const truth = { ok: false, errors: ['T09: unknown dependency'], tasks: [] }
+  const { res, calls, q } = await scenario('R3', { 'plan-reader': [{ ok: true, errors: [], tasks: [{ ...T00 }], digest: planDigest(truth) }], [SECOND]: [truth] })
+  assert.equal(res.status, 'error'); assert.deepEqual(res.detail, ['T09: unknown dependency'])
+  assert.deepEqual(calls.map(c => c.opts.label), ['plan-reader', SECOND])
+  // Two copies that do not match, the second one of a plan in error: its errors, as copied, in the detail
+  const r = await scenario('R3b', { 'plan-reader': [{ ...truth, digest: '00000000' }], [SECOND]: [{ ...truth, digest: '00000000' }] })
+  assert.equal(r.res.detail, "plan-reader: two copies of plan-lint's output that do not match its digest; no task started. Launch a new run. plan-lint, as copied: T09: unknown dependency")
+  drained('R3', q); drained('R3b', r.q)
+})
+await test('R4: the digest reads a field left out, empty or null alike, and changes with each field the workflow reads', () => {
+  const base = { ok: true, errors: [], tasks: [{ ...T01, title: 'Foundations', model_reason: 'contract', effort: 'high', open_prerequisites: ['D1'] }], all: [{ id: 'T01', phase: 1, status: 'todo' }], max_phase: 2 }
+  const d = planDigest(base)
+  assert.match(d, /^[0-9a-f]{8}$/)
+  assert.equal(planDigest({ ...base, errors: undefined }), d); assert.equal(planDigest({ ...base, tasks: [{ ...base.tasks[0], resources: null }] }), planDigest({ ...base, tasks: [{ ...base.tasks[0], resources: [] }] }))
+  assert.equal(planDigest({ ...base, tasks: [{ ...base.tasks[0], model: undefined }] }), planDigest({ ...base, tasks: [{ ...base.tasks[0], model: '' }] }))
+  assert.equal(planDigest({ ...base, digest: 'x', run_start_ok: true, progress_error: 'y', warnings: ['w'] }), d, 'only the fields the workflow reads')
+  const t = base.tasks[0]
+  const changes = [{ ok: false }, { errors: ['e'] }, { max_phase: 3 }, { all: [{ id: 'T01', phase: 1, status: 'merged' }] }, { all: [] },
+    ...['id', 'title', 'file', 'model', 'model_reason', 'effort', 'status'].map(k => ({ tasks: [{ ...t, [k]: t[k] + 'x' }] })), { tasks: [{ ...t, phase: 2 }] },
+    ...['depends_on', 'resources', 'verification', 'open_prerequisites'].map(k => ({ tasks: [{ ...t, [k]: [...t[k], 'x'] }] })), { tasks: [] }, { tasks: [t, t] }]
+  for (const c of changes) assert.notEqual(planDigest({ ...base, ...c }), d, JSON.stringify(c))
+  // Robust to a copy of any shape: never an exception
+  for (const x of [{}, { tasks: [null, 3, 'T01'] }, { tasks: 'T01', all: {} }]) assert.match(planDigest(x), /^[0-9a-f]{8}$/)
+})
+await test('R5: real plan-lint --reader read by a plan-reader that copies its output → digest that matches, a single reading, the run goes on', async () => {
+  const D = toyRepo()
+  const LINT_SCRIPT = join(resolve(dirname(SRC), '..'), 'scripts', 'plan-lint.mjs')
+  try {
+    let printed = null
+    const reader = prompt => {
+      const cmd = prompt.match(/Run `([^`]*--reader[^`]*)`/)[1]
+      const r = spawnSync('sh', ['-c', cmd], { cwd: D.root, encoding: 'utf8' })
+      assert.equal(r.status, 0, r.stderr)
+      assert.equal(r.stdout.trim().split('\n').length, 1, 'one line of JSON, no warning')
+      printed = JSON.parse(r.stdout)
+      return printed
+    }
+    const { res } = await play('R5', D, {
+      'plan-reader': [reader], 'T00 · worker': [report(0, { branch: 'task/T00' })], 'T00 · verification': [ok(1)], 'T00 · evaluation': [{ verdict: 'pass' }], 'T00 · merge': [MOK], 'T00 · progress': [SOK],
+      'T01 · worker': [{ status: 'blocked', summary: 'blocked', branch: 'task/T01', path: D.root, blocker: 'ambiguous schema' }], 'T01 · replanning': [NOTHING], 'T01 · progress': [SOK],
+      'run end · progress': [{ commit: '', detail: '' }] }, { lint: LINT_SCRIPT })
+    assert.deepEqual(Object.keys(printed), ['ok', 'errors', 'tasks', 'all', 'max_phase', 'digest'])
+    assert.deepEqual(Object.keys(printed.tasks[0]), ['id', 'title', 'file', 'phase', 'model', 'effort', 'depends_on', 'resources', 'status', 'verification', 'open_prerequisites'])
+    assert.equal(printed.digest, planDigest(printed), 'plan-lint and the workflow compute the same digest')
+    assert.equal(res.status, 'partial'); assert.deepEqual(res.tasks.map(t => [t.id, t.status]), [['T00', 'merged'], ['T01', 'blocked']])
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
 })
 console.log(`scenarios: ALL GREEN (${n} cases)`)

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // plan-lint (orchestre plugin 0.12.0): validates a plan folder and compiles it to JSON. Node 18 or later, no dependencies.
-// Usage: node <plugin root>/scripts/plan-lint.mjs <plan-dir> [--json] [--phase N] [--integration <branch>] [--base <branch>]
+// Usage: node <plugin root>/scripts/plan-lint.mjs <plan-dir> [--json | --reader] [--phase N] [--integration <branch>] [--base <branch>]
 //        node <plugin root>/scripts/plan-lint.mjs --used-prefixes [<plans folder>]
 // With --integration, a task whose merge commit "task <id>: " is on the integration branch, and not on the base branch
 // (--base, else main, else master), counts as merged: git is the source of truth. The base excludes merges of earlier plans
@@ -25,6 +25,10 @@
 // this one or committed on a local branch plan/* (where a plan lives until its pull request is merged). "used_prefixes": the
 // prefixes of the plans next to this one and of the branches task/*. Usage without a plan: plan-lint.mjs --used-prefixes
 // [<plans folder>], which also reads the branches plan/*, for /orchestre:prepare, which gives a new plan a free prefix.
+// --reader (0.18.1): the JSON of the workflow orchestre:run-phase, and nothing else: ok, errors, the tasks of the phase with
+// the fields the workflow reads, all, max_phase, and "digest", a fingerprint of these fields (planDigest). The plan-reader,
+// an agent, retypes this JSON; the workflow computes the fingerprint again on its copy and reads the plan a second time,
+// then stops, when they differ. --json does not change: /orchestre:ready, /orchestre:run and /orchestre:prepare read it.
 import { readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs'
 import { join, dirname, resolve, relative, basename, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -47,9 +51,10 @@ const integ = ii >= 0 ? argv[ii + 1] : null
 const bi = argv.indexOf('--base')
 const baseArg = bi >= 0 ? argv[bi + 1] : null
 const asJson = argv.includes('--json')
+const asReader = argv.includes('--reader')
 const pi = argv.indexOf('--phase')
 const phaseF = pi >= 0 ? Number(argv[pi + 1]) : null
-if (!dir) { console.error('usage: plan-lint <plan-dir> [--json] [--phase N] [--integration <branch>] [--base <branch>] | plan-lint --used-prefixes [<plans folder>]'); process.exit(2) }
+if (!dir) { console.error('usage: plan-lint <plan-dir> [--json | --reader] [--phase N] [--integration <branch>] [--base <branch>] | plan-lint --used-prefixes [<plans folder>]'); process.exit(2) }
 // A branch name never starts with "-": git would read it as an option (--output=… would write a file)
 for (const [name, b] of [['integration', integ], ['base', baseArg]]) if (b != null && (!b || b.startsWith('-'))) { console.error(`invalid ${name} branch: ${b}`); process.exit(2) }
 if (!existsSync(join(dir, 'tasks'))) {
@@ -405,7 +410,8 @@ const language = config && config.language !== undefined ? config.language : 'en
 if (typeof language !== 'string' || !language.trim()) errors.push('orchestre.config.json: "language" must be a non-empty text, like "en" or "fr"')
 const readyShown = ready.filter(p => phaseF == null || p.phase === phaseF)
 // JSON on one line: read by scripts and agents, it thus stays under the Bash tool's display thresholds longer (0.8.1)
-if (asJson) console.log(JSON.stringify({ ok: errors.length === 0, errors, warnings, tasks, all, max_phase: maxPhase, prerequisites: prereqs, ready: readyShown, fable: typeof fable === 'boolean' ? fable : null, language: typeof language === 'string' && language.trim() ? language.trim() : 'en', used_prefixes: usedPrefixes }))
+if (asReader) console.log(JSON.stringify(readerView({ ok: errors.length === 0, errors, tasks, all, max_phase: maxPhase })))
+else if (asJson) console.log(JSON.stringify({ ok: errors.length === 0, errors, warnings, tasks, all, max_phase: maxPhase, prerequisites: prereqs, ready: readyShown, fable: typeof fable === 'boolean' ? fable : null, language: typeof language === 'string' && language.trim() ? language.trim() : 'en', used_prefixes: usedPrefixes }))
 else {
   if (errors.length) console.log(errors.map(e => '✗ ' + e).join('\n'))
   else {
@@ -432,6 +438,37 @@ else {
     }
   }
 }
-if (!asJson) for (const a of warnings) console.log('⚠ ' + a)
+if (!asJson && !asReader) for (const a of warnings) console.log('⚠ ' + a)
 // No process.exit() here: in a pipe, it would cut the output at 64 KB (the JSON of a big plan, 0.8.1)
 process.exitCode = errors.length ? 1 : 0
+
+// --reader (0.18.1): the fields of the plan the workflow reads, with their fingerprint. Texts as text, lists of texts, phases
+// as integers or left out: the copy fits the workflow's schema field for field, and the fingerprint reads the same values.
+function readerView(p) {
+  const text = x => (x == null ? '' : String(x)), texts = x => arr(x).map(text), int = x => (Number.isInteger(x) ? x : undefined)
+  const v = {
+    ok: p.ok, errors: texts(p.errors),
+    tasks: p.tasks.map(t => ({
+      id: text(t.id), title: text(t.title), file: text(t.file), phase: int(t.phase),
+      ...(t.model !== undefined ? { model: text(t.model) } : {}), ...(t.model_reason !== undefined ? { model_reason: text(t.model_reason) } : {}),
+      effort: text(t.effort), depends_on: texts(t.depends_on), resources: texts(t.resources), status: text(t.status),
+      verification: texts(t.verification), open_prerequisites: texts(t.open_prerequisites),
+    })),
+    all: p.all.map(x => ({ id: text(x.id), phase: int(x.phase), status: text(x.status) })),
+    max_phase: int(p.max_phase),
+  }
+  return { ...v, digest: planDigest(v) }
+}
+// Fingerprint of what the workflow reads from plan-lint (0.18.1). The same text, to the character, in
+// workflows/run-phase.js, which can load no module: tests/commands.test.mjs compares them. A field left out, empty or
+// null reads alike; FNV-1a on 32 bits, as 8 hexadecimal digits.
+function planDigest(p) {
+  const s = x => (typeof x === 'string' ? x : ''), ss = x => (Array.isArray(x) ? x.map(s) : []), n = x => (Number.isInteger(x) ? x : null)
+  const list = x => (Array.isArray(x) ? x : []).map(y => (y && typeof y === 'object' ? y : {}))
+  const c = JSON.stringify([p.ok === true, ss(p.errors),
+    list(p.tasks).map(t => [s(t.id), s(t.title), s(t.file), n(t.phase), s(t.model), s(t.model_reason), s(t.effort), ss(t.depends_on), ss(t.resources), s(t.status), ss(t.verification), ss(t.open_prerequisites)]),
+    list(p.all).map(x => [s(x.id), n(x.phase), s(x.status)]), n(p.max_phase)])
+  let h = 0x811c9dc5
+  for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193)
+  return (h >>> 0).toString(16).padStart(8, '0')
+}

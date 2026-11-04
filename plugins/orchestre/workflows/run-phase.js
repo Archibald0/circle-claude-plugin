@@ -8,7 +8,9 @@ export const meta = {
 // args: { plan, phase, mode: 'auto'|'deviation'|'phase', parallelism, integration, base, decisions, max_fixes, escalation, max_auto_decisions,
 //   rulings, rerun, lint, agent_prefix, progress, setup, shared_setup, language }
 // base: branch the integration branch starts from (main by default, read by plan-lint)
-// lint: path of scripts/plan-lint.mjs, required (0.12.0): /orchestre:run passes it; the fallback of the manual install (v0.5) is gone
+// lint: path of scripts/plan-lint.mjs, required (0.12.0): /orchestre:run passes it; the fallback of the manual install (v0.5) is gone.
+//   The plan-reader runs it with --reader (0.18.1), which adds the fingerprint of what it prints (digest): the workflow computes it
+//   again on the copy the agent returns, reads the plan a second time when they differ, then stops (planDigest)
 // rulings: options chosen by the user since the previous run, [{ task, title, option }]; the scribe applies them before the plan is read
 // rerun: ids of "needs-human" tasks the user restarts, after their decision
 // progress (0.8.0): path of scripts/progress.mjs, sole writer of progress.json and of the PROGRESS.md view (contract orchestre-progress/3
@@ -87,6 +89,18 @@ Language: write the free text you return or add to the plan files (summaries, de
 // is reclassified as a review
 const SENSITIVE_NOT_ENV = /base de (données|dev|prod)|\bbdd\b|database|\bdump\b|\bprod\b|production|données (personnelles|réelles|de prod|utilisateur)|personal data|\bdbs?\b(?!:)|\b(?:real|user|customer|live|production) data\b|\bpii\b|rgpd|gdpr|secret|mot de passe|password|api[ -]?key|clé (d')?api|credential|pg_restore|pg_dump|database_url/i
 const SENSITIVE = new RegExp(SENSITIVE_NOT_ENV.source + '|\\.env\\b', 'i')
+// Fingerprint of what the workflow reads from plan-lint (0.18.1): the same text, to the character, as in scripts/plan-lint.mjs,
+// which prints it in "digest" with --reader. A field left out, empty or null reads alike; FNV-1a on 32 bits, 8 hexadecimal digits.
+function planDigest(p) {
+  const s = x => (typeof x === 'string' ? x : ''), ss = x => (Array.isArray(x) ? x.map(s) : []), n = x => (Number.isInteger(x) ? x : null)
+  const list = x => (Array.isArray(x) ? x : []).map(y => (y && typeof y === 'object' ? y : {}))
+  const c = JSON.stringify([p.ok === true, ss(p.errors),
+    list(p.tasks).map(t => [s(t.id), s(t.title), s(t.file), n(t.phase), s(t.model), s(t.model_reason), s(t.effort), ss(t.depends_on), ss(t.resources), s(t.status), ss(t.verification), ss(t.open_prerequisites)]),
+    list(p.all).map(x => [s(x.id), n(x.phase), s(x.status)]), n(p.max_phase)])
+  let h = 0x811c9dc5
+  for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193)
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
 if (!PLAN || !PHASE || !INTEG || !LINT) return { status: 'error', detail: 'args required: plan, phase, integration, lint' }
 if (!['auto', 'deviation', 'phase'].includes(MODE)) return { status: 'error', detail: `unknown mode: ${MODE} (auto, deviation or phase)` }
 
@@ -95,7 +109,7 @@ const S = (properties, required) => ({ type: 'object', properties, required })
 const str = { type: 'string' }, bool = { type: 'boolean' }, strs = { type: 'array', items: str }
 // Result of the progress command run by the agent (0.8.0); run_start_ok for the first agent of the run, which runs run-start
 const PROGRESS_P = { progress_ok: bool, progress_error: str }
-const PLAN_S = S({ ok: bool, errors: strs, tasks: { type: 'array', items: S({ id: str, title: str, file: str, phase: { type: 'integer' }, model: str, model_reason: str, effort: str, depends_on: strs, resources: strs, status: str, verification: strs, open_prerequisites: strs }, ['id', 'file', 'depends_on', 'status', 'verification', 'open_prerequisites']) }, all: { type: 'array', items: S({ id: str, phase: { type: 'integer' }, status: str }, ['id']) }, max_phase: { type: 'integer' }, run_start_ok: bool, progress_error: str }, ['ok', 'tasks'])
+const PLAN_S = S({ ok: bool, errors: strs, tasks: { type: 'array', items: S({ id: str, title: str, file: str, phase: { type: 'integer' }, model: str, model_reason: str, effort: str, depends_on: strs, resources: strs, status: str, verification: strs, open_prerequisites: strs }, ['id', 'file', 'depends_on', 'status', 'verification', 'open_prerequisites']) }, all: { type: 'array', items: S({ id: str, phase: { type: 'integer' }, status: str }, ['id']) }, max_phase: { type: 'integer' }, digest: str, run_start_ok: bool, progress_error: str }, ['ok', 'tasks', 'digest'])
 const REPORT_S = S({
   status: { type: 'string', enum: ['done', 'partial', 'blocked'] }, summary: str, branch: str, commit: str, path: str, changed_files: strs,
   deviations: { type: 'array', items: S({ type: { type: 'string', enum: ['deviation', 'blind-spot', 'decision', 'debt', 'needs-human', 'review'] }, description: str, affected_tasks: strs }, ['type', 'description']) },
@@ -218,7 +232,9 @@ const pRuling = (a, updates, opens = false) => PROGRESS ? `${opens ? pRunStart('
   ...(updates.amendments.length ? { amendments: updates.amendments.map(m => ({ id: m.id, reason: m.reason })) } : {}),
 }, 'it notes the ruling in progress.json and regenerates the table of PROGRESS.md'))}` : `In the main checkout, start with \`git switch ${INTEG}\`. Apply the user's ruling to the plan ${PLAN}, then commit these files only, and the tasks created or amended, with the message "progress(${a.task}): ruling ${a.option.id}".
 - HANDOFF.md: under "## ${a.task}" (create this heading if it is missing), add these entries, word for word: ${JSON.stringify(updates.entries)}.${pUpdates(a.task, updates)}`
-const pReader = opens => `${opens ? pRunStart('return ok=false and empty tasks') : ''}Run \`${LINTCMD} ${PLANARG} --json --phase ${PHASE} --integration ${INTEG}${BASE}\` and return its JSON as is${opens ? ', with run_start_ok' : ''}.`
+// The plan-reader retypes the JSON of plan-lint --reader (0.18.1): the workflow checks its copy against the digest that plan-lint
+// computed. A second reading, after a copy that does not match, never runs run-start again: the run is already open
+const pReader = (opens, again) => `${opens ? pRunStart('return ok=false and empty tasks') : ''}${again ? 'Your first copy of this output did not match its digest. ' : ''}Run \`${LINTCMD} ${PLANARG} --reader --phase ${PHASE} --integration ${INTEG}${BASE}\` and return its JSON exactly as printed${opens ? ', with run_start_ok' : ''}: every field and every value, \`digest\` included, character for character. Leave nothing out, add nothing, rephrase nothing: the workflow checks the copy against the digest.`
 // End of run: the clerk runs run-end with the summary, then commits PROGRESS.md if it changed (task closed without a scribe, exception E:316)
 const withoutActions = p => ({
   task: p.task, title: short(p.title), context: short(p.context), human: !!p.human, ...(p.circuit_breaker ? { circuit_breaker: true } : {}), ...(p.inconsistency ? { inconsistency: short(p.inconsistency) } : {}),
@@ -301,8 +317,16 @@ for (const [i, a] of RULINGS.entries()) {
 }
 // Without a ruling, the plan reader opens the run
 const readerOpens = !!PROGRESS && !RULINGS.length
-const plan = await agent(pReader(readerOpens), { label: 'plan-reader', agentType: AG('plan-reader'), model: 'haiku', schema: readerOpens ? requireFields(PLAN_S, 'run_start_ok') : PLAN_S })
+const readPlan = (opens, again) => agent(pReader(opens, again), { label: again ? 'plan-reader · second reading' : 'plan-reader', agentType: AG('plan-reader'), model: 'haiku', schema: opens ? requireFields(PLAN_S, 'run_start_ok') : PLAN_S })
+let plan = await readPlan(readerOpens, false)
 if (readerOpens && plan) { if (plan.run_start_ok !== true) return notOpened(plan); opened = true }
+// Copy checked (0.18.1): everything that follows (statuses, dependencies, verifications, prerequisites) comes from this copy
+const faithful = p => typeof p.digest === 'string' && p.digest === planDigest(p)
+if (plan && !faithful(plan)) {
+  log(`plan-reader: copy of plan-lint that does not match its digest (${typeof plan.digest === 'string' ? short(plan.digest, 20) : 'none'}, ${planDigest(plan)} computed); second reading`)
+  plan = await readPlan(false, true)
+  if (plan && !faithful(plan)) return await finish({ status: 'error', phase: PHASE, detail: `plan-reader: two copies of plan-lint's output that do not match its digest; no task started. Launch a new run.${plan.ok === false && (plan.errors || []).length ? ` plan-lint, as copied: ${short((plan.errors || []).join('; '), 400)}` : ''}`, rulings_applied: rulingsApplied })
+}
 if (!plan || !plan.ok) return await finish({ status: 'error', phase: PHASE, detail: plan ? plan.errors : 'plan-reader without an answer', rulings_applied: rulingsApplied })
 const T = new Map(plan.tasks.map(t => [t.id, t]))
 const done = new Set(plan.tasks.filter(t => DONE(t.status)).map(t => t.id))

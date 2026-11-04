@@ -1,7 +1,7 @@
 // Tests of plan-lint on toy plans, in a temporary git repository.
 // Usage: node tests/plan-lint.test.mjs [path of plan-lint.mjs]
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -460,6 +460,36 @@ Checked by /orchestre:ready on 2026-11-03: not ready.
     assert.equal(gr.json.ok, true, JSON.stringify(gr.json.errors)); assert.deepEqual(gr.json.tasks.map(t => t.id), ['GA01', 'GA02'])
     git('switch', '-q', 'plan/ok')
     for (const x of ['task/T21', 'plan/alpha', 'plan/beta', 'plan/gamma']) git('branch', '-q', '-D', x)
+  })
+
+  test('--reader (0.18.1): the fields of the workflow only, one line, digest of these fields; it changes with a status; plan in error printed with its digest', () => {
+    const src = readFileSync(LINT, 'utf8')
+    const planDigest = new Function(src.match(/\nfunction planDigest\(p\) \{\n[\s\S]*?\n\}/)[0] + '\nreturn planDigest')()
+    const R = plan('reader', { T01: task('T01'), T02: task('T02', { depends_on: '[T01]', model: null, reason: null, prerequisites: '[D1]', resources: '[local-db]' }) })
+    writeFileSync(join(root, R, 'PREREQUISITES.md'), '| ID | Type | Prerequisite | Status | Evidence |\n|----|------|--------------|--------|----------|\n| D1 | decision | Choose the schema | open | — |\n')
+    const r = lint(R, '--reader', '--phase', '1')
+    assert.equal(r.code, 0, r.out + r.err)
+    assert.equal(r.out.trim().split('\n').length, 1, 'one line: no warning after the JSON')
+    const j = JSON.parse(r.out)
+    assert.deepEqual(Object.keys(j), ['ok', 'errors', 'tasks', 'all', 'max_phase', 'digest'])
+    assert.deepEqual(Object.keys(j.tasks[0]), ['id', 'title', 'file', 'phase', 'model', 'model_reason', 'effort', 'depends_on', 'resources', 'status', 'verification', 'open_prerequisites'])
+    assert.deepEqual(Object.keys(j.tasks[1]), ['id', 'title', 'file', 'phase', 'effort', 'depends_on', 'resources', 'status', 'verification', 'open_prerequisites'], 'no model: left out, as in --json')
+    assert.deepEqual(j.tasks[1].open_prerequisites, ['D1']); assert.deepEqual(j.tasks[1].resources, ['local-db'])
+    assert.equal(j.digest, planDigest(j))
+    // The same values as --json, for the fields the workflow reads
+    const full = lint(R, '--json', '--phase', '1').json
+    assert.deepEqual(j.tasks.map(t => [t.id, t.file, t.status, t.depends_on, t.verification]), full.tasks.map(t => [t.id, t.file, t.status, t.depends_on, t.verification]))
+    assert.equal(j.max_phase, full.max_phase); assert.deepEqual(j.all, full.all)
+    // A status that changes changes the digest
+    writeFileSync(join(root, R, 'PROGRESS.md'), PROGRESS([['T01', 'cancelled'], ['T02', 'todo']]))
+    const j2 = JSON.parse(lint(R, '--reader', '--phase', '1').out)
+    assert.equal(j2.tasks[0].status, 'cancelled'); assert.notEqual(j2.digest, j.digest); assert.equal(j2.digest, planDigest(j2))
+    // Plan in error: exit code 1, the errors in the JSON, with their digest
+    const E = plan('reader-ko', { T01: task('T01', { depends_on: '[T09]' }) })
+    const e = lint(E, '--reader')
+    assert.equal(e.code, 1)
+    const je = JSON.parse(e.out)
+    assert.equal(je.ok, false); assert.ok(je.errors.some(x => x.includes('T09')), JSON.stringify(je.errors)); assert.equal(je.digest, planDigest(je))
   })
 
   console.log(`plan-lint: ALL GREEN (${n} tests)`)

@@ -2,6 +2,10 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.18.0 to 0.18.1
+
+Nothing to do: plans, `progress.json` and the settings keep their format. The plan-reader now runs `plan-lint --reader`, which the rule `Bash(node <plugin>/scripts/plan-lint.mjs *)` already covers, and the workflow checks its copy against the digest that plan-lint prints. A copy that does not match twice stops the run in `error` before any task: launch a new run.
+
 ## From 0.17 to 0.18
 
 Plans and `progress.json` keep their format. The settings and the plans that share ids change.
