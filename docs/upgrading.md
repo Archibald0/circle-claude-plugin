@@ -2,6 +2,19 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.17 to 0.18
+
+Plans and `progress.json` keep their format. The settings and the plans that share ids change.
+
+1. Settings: the next `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run`, or `/orchestre:install`, offers in one agreement to replace four rules of the template of 0.17 and to add the new denials:
+   - `Bash(git -C * diff *)` and `Bash(git -C * log *)` go: a `*` before the subcommand also matched `-c`, which makes git run a program. The evaluator now reads the diff from the main checkout.
+   - `Read(./.env)` and `Read(./.env.*)` become `Read(.env)` and `Read(.env.*)`, which match at any depth (`apps/api/.env` included); the exceptions of the templates follow them.
+   - New denials: `git -c * push *`, `git --git-dir* push *`, `git --work-tree* push *` and `gh pr merge *`. Like the denial of `git push`, they also hold for your own sessions in the repository.
+2. The workers no longer get the MCP tools of your session (`disallowedTools: mcp__*`).
+3. A worktree with uncommitted work is no longer removed after the merge: it stays, and a review before the PR names it.
+4. Two plans of a repository no longer share task ids. A plan that has never run is refused while a branch `task/<id>` of one of its ids exists; `/orchestre:ready` offers to give it a free prefix. A plan that has already run goes on as it is. New plans get a free prefix from `/orchestre:prepare`.
+5. The repository is public, under `Archibald0/circle-claude-plugin`. If you declared the plugin for a team (`/orchestre:install --team`), run it once again: it rewrites the source of the marketplace in `.claude/settings.json` (the old name still redirects).
+
 ## From 0.16 to 0.17
 
 Nothing to do: plans of 0.12 to 0.16 run as they are, and `progress.json` keeps its format (`orchestre-progress/3`), with two optional fields on the prerequisites, `evidence` and `how`.

@@ -19,19 +19,12 @@ This repository is the Claude Code plugin marketplace `circle` ([Claude Code plu
 - The progress display (banner, `/progress`) is a mod, made of function hooks: it needs Claude Code 2.1.287 or later (`claude --version`), the version from which mods are on by default ([mods documentation](https://code.claude.com/docs/en/plugins/mods/overview)).
 - `git` and Node.js 18 or later on the machine: the plan check (`plan-lint`) and the progress are Node scripts without dependencies.
 
-### Access to the repository
-
-The repository is private for now. Claude Code clones it with the machine's `git`, so read access must work without a prompt:
-
-- either a GitHub SSH key loaded in `ssh-agent`;
-- or `gh auth login` then `gh auth setup-git`, and `export CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` to clone over HTTPS.
-
 ### Install
 
 Once per machine, in a Claude Code session:
 
 ```
-/plugin marketplace add FabienDayuse/circle-claude-plugin
+/plugin marketplace add Archibald0/circle-claude-plugin
 /plugin install orchestre@circle
 /reload-plugins
 ```
@@ -39,7 +32,7 @@ Once per machine, in a Claude Code session:
 Or from a terminal:
 
 ```sh
-claude plugin marketplace add FabienDayuse/circle-claude-plugin
+claude plugin marketplace add Archibald0/circle-claude-plugin
 claude plugin install orchestre@circle
 ```
 
@@ -57,7 +50,7 @@ Between two runs, never during one:
 Or from a terminal: `claude plugin update orchestre@circle`, then a new session.
 
 - An update only arrives if the version in `plugins/orchestre/.claude-plugin/plugin.json` changed. Otherwise, the command answers that the plugin is already up to date.
-- Automatic update: `/plugin` → *Marketplaces* → `circle` → *Enable auto-update*. For a private repository, it needs a git credential already saved (SSH key in `ssh-agent`, or `gh auth setup-git`). Otherwise it fails silently and keeps the version in place.
+- Automatic update: `/plugin` → *Marketplaces* → `circle` → *Enable auto-update*.
 - The path of the plugin's scripts contains the version number. After an update, `scripts/settings.mjs` finds the rules of the older version, and `/orchestre:prepare`, `/orchestre:ready` and `/orchestre:run` offer to replace them, in one agreement.
 - Installed version: `claude plugin list`.
 
@@ -68,7 +61,7 @@ Version notes: [`upgrading.md`](upgrading.md).
 A toy repository with one task checks the install end to end in a few minutes:
 
 ```sh
-git clone git@github.com:FabienDayuse/circle-claude-plugin.git && cd circle-claude-plugin
+git clone https://github.com/Archibald0/circle-claude-plugin.git && cd circle-claude-plugin
 sh tests/toy-repo.sh ~/tmp/orchestre-toy
 cd ~/tmp/orchestre-toy && claude
 ```
@@ -207,11 +200,11 @@ The plugin runs a dev plan split into tasks (`plans/<name>/`, one file per task)
 | :- | :- | :- | :- |
 | Reading | `plan-reader` | haiku | `plan-lint` as JSON: tasks of the phase, statuses, dependencies |
 | Work | `worker`, or `isolated-worker` in a worktree if tasks run in parallel | the task's model, as is (sonnet if it has none) | carries out the task on `task/<id>`, runs its verifications, returns a report |
-| Verification | `verifier` | sonnet | replays the verification commands: exit code and excerpt of each |
+| Verification | `verifier` | sonnet | checks that the task's files are committed (a file of the task left uncommitted is a failure), then replays the verification commands: exit code and excerpt of each |
 | Evaluation | `evaluator` | opus | judges each criterion of done on evidence (diff, results of the verifier) |
 | Model choice | `replanner` | opus | after a rejected attempt, chooses the model of the fix from the rejection; the task's model is the floor; without a valid answer, the `escalation` ladder |
 | Fixes | `worker` | model chosen; without a model in the plan: sonnet then opus (`escalation`) | 2 fixes at most (`max_fixes`), on the gaps found |
-| Merge | `integrator` | sonnet | `--no-ff` into `plan/<name>`, then the post-merge check |
+| Merge | `integrator` | sonnet | `--no-ff` into `plan/<name>`, then the post-merge check; removes the task's worktree without force, and keeps it, as a review, when git finds uncommitted work there |
 | Replanning | `replanner` | opus | rates the deviations, prepares the issues to settle with their options |
 | Progress | `scribe` | sonnet | the only one to write `HANDOFF.md`, `DISCOVERY.md` and the tasks created or amended; closes the task through `progress.mjs`, which regenerates `PROGRESS.md` |
 | End of run | `clerk` | haiku | closes the run with `progress.mjs run-end`, commits `PROGRESS.md` if it changed, removes the clean worktrees of the tasks (`worktrees.mjs`) |
@@ -222,12 +215,13 @@ Each task carries its model and the reason for it, chosen by opus when the plan 
 
 **Safeguards.**
 
-- No agent pushes, merges into `main` or deploys.
+- No agent is allowed to push, merge into `main` or deploy. The settings deny `git push` in its usual forms (`git push`, `git -C <folder> push`, `git -c <option> push`, `git --git-dir=… push`, `git --work-tree=… push`) and `gh pr merge`; the workers have no MCP tools (`disallowedTools: mcp__*`); the instructions of every agent forbid it. A permission rule does not see every way a command can be written (code.claude.com/docs/en/permissions): with the Bash sandbox of Claude Code on (`/sandbox`), the commands and the processes they start reach only the hosts you allow.
 - No agent opens, restores or copies real production or personal data: these actions are the human's.
 - A deviation that touches data, a database, production or a secret is always major.
 - No agent gets around a read or write ban: the file concerned goes to human review before the PR.
 - No agent rewrites history (rebase, reset): a branch taken back receives the integration branch by a merge.
 - A worktree that holds uncommitted work is never removed.
+- Two plans of a repository never share a task id: the branches `task/<id>` belong to the repository. `/orchestre:prepare` gives a new plan a free prefix, and `plan-lint` refuses a plan that has never run while a branch `task/<id>` of one of its ids exists.
 - An interrupted run is not resumed: a new one is launched, and the tasks already merged are skipped.
 
 **Origin.** The orchestration was worked out on a pilot of 15 tasks in 4 phases (SPACE-Platform, plan `acces-par-metier`). Version history: [`CHANGELOG.md`](../CHANGELOG.md).
@@ -239,13 +233,12 @@ Each task carries its model and the reason for it, chosen by opus when the plan 
 - A ban that the worker reports as an ordinary deviation is only reclassified as a review if its description cites neither a database, nor production, nor a secret (`DATABASE_URL`, `JWT_SECRET`…). Otherwise the run stops for a human.
 - `/orchestre:ready` spots the "safe" commands on the strength of the configuration and of `DISCOVERY.md`. When in doubt, it asks you to run them yourself with `!`.
 - The settings (worktree, permissions) cannot come from a plugin: `scripts/settings.mjs` writes them into each project, from `/orchestre:install`, `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run`. Its check does not read the managed settings of an organization. Claude Code reloads the permission rules during the session; for `worktree.baseRef`, its documentation does not say, hence a run in a new session. If the Bash sandbox is on, it refuses the writes of the script into the settings files: the command gives the line to run yourself at the prompt with `!`, which runs outside the sandbox.
-- The denials of the template cover `.env` and `.env.*` at the root of the repository only. `Read(./.env)` matches the file in the current folder (code.claude.com/docs/en/permissions), so a `.env` in a subfolder (`apps/api/.env`) can be read by the agents. Add a rule for it with `/orchestre:install`, or a `Read(.env)` without `./`, which matches at any depth.
+- The denials of the template, `Read(.env)` and `Read(.env.*)`, match at any depth (`apps/api/.env` included) and bind the file tools of Claude Code (code.claude.com/docs/en/permissions). They do not reach a script or a test that opens the file itself: for that, turn on the Bash sandbox of Claude Code and add the `.env` files to its `filesystem.denyRead`.
+- The progress commands of the agents carry their JSON in a heredoc whose delimiter is quoted (0.18.0): the Bash tool of Claude Code decodes the `\uXXXX` sequences of a command before the shell reads it, which broke the `--json '…'` of 0.17 on a text with an apostrophe, a backtick or a `$`. The tests run these commands through a shell that decodes `\u` the same way. Whether the rule `Bash(node <plugin>/scripts/progress.mjs *)` covers the heredoc form in manual permission mode, and whether an isolated worker is never refused it, is to check on a real run.
 - The actual tokens are not collected automatically: read them in `/workflows`, task by task. On the pilot, the actual figure was 3 to 8 times the estimate.
 - In autonomous mode, the auto-decisions are only reviewed at the PR. The circuit breaker caps their number, not their quality.
 - Sensitive deviations are spotted by keywords (data, database, production, secret…, in English and in French). The filter catches wide, but does not see a risk worded otherwise.
 - Two tasks that share a database or a port run one after the other.
-- Claude Code may report at startup the permission rules `Bash(git -C * diff *)` and `Bash(git -C * log *)` (wildcard before the subcommand): the evaluator uses them to read the diff of a worktree.
-
 ## Development
 
 ### Repository content
@@ -294,10 +287,10 @@ brand/                               README banner and screenshot, social previe
 
 - Try a change without installing it: `claude --plugin-dir plugins/orchestre`, then `/reload-plugins` after each change.
 - Tests: `npm test` runs four groups, which can also be run alone:
-  - `npm run test:scripts`: 24 cases of `plan-lint`, 10 of `/orchestre:status`, 30 of `progress.mjs`, 4 of `worktrees.mjs`, 21 of `migrate.mjs` and 21 of `settings.mjs`, in temporary git repositories;
-  - `npm run test:workflow`: 103 scenarios of the workflow, with simulated agents, 6 of which run the real `progress.mjs` and `worktrees.mjs` in a temporary repository;
-  - `npm run test:commands`: the settings template, and 17 tests of the contract between the skills and the rest of the plugin;
-  - `npm run test:mod`: 31 cases of the mod's view model on `progress.json` files written by `progress.mjs`, `/progress demo` compared with the real `progress.mjs` included.
+  - `npm run test:scripts`: 26 cases of `plan-lint`, 10 of `/orchestre:status`, 30 of `progress.mjs`, 4 of `worktrees.mjs`, 21 of `migrate.mjs` and 22 of `settings.mjs`, in temporary git repositories;
+  - `npm run test:workflow`: 105 scenarios of the workflow, with simulated agents, 6 of which run the real `progress.mjs` and `worktrees.mjs` in a temporary repository;
+  - `npm run test:commands`: the settings template, and 18 tests of the contract between the skills and the rest of the plugin;
+  - `npm run test:mod`: 32 cases of the mod's view model on `progress.json` files written by `progress.mjs`, `/progress demo` compared with the real `progress.mjs` included.
 - Validation: `npm run validate` (`claude plugin validate` on the plugin and on the marketplace, then `claude plugin test` of the plugin, which runs the 30 tests of the mod under the engine).
 - Try the mod without installing it: `claude --plugin-dir plugins/orchestre`, then `/progress demo`; or, on a real `progress.json`, `node tests/demo-progress.mjs <folder>` in another terminal.
 - The workflow script has no access to files and cannot import anything; `Date.now()`, `Math.random()` and `new Date()` are forbidden there. Before changing it, load the reference `/workflow-authoring`.
@@ -310,4 +303,4 @@ brand/                               README banner and screenshot, social previe
 4. Commit and push to `main`. The Release workflow (`.github/workflows/release.yml`) then runs `npm test`, tags the commit `orchestre--v<version>` and opens the GitHub Release, with the `CHANGELOG.md` section of the version as notes. It fails, without a tag, when `CHANGELOG.md` has no section for the version or a test fails: fix and push again, the tag goes on the fixed commit.
 5. On each machine: `/plugin marketplace update circle`.
 
-Tags follow the convention of Claude Code, `<plugin>--v<version>`, so that a plugin which depends on orchestre with a version range can resolve it. To stay on one version, add the marketplace at its tag: `/plugin marketplace add FabienDayuse/circle-claude-plugin#orchestre--v0.13.0`. To open the Release of an older tag: *Actions* > *Release* > *Run workflow*, with the version.
+Tags follow the convention of Claude Code, `<plugin>--v<version>`, so that a plugin which depends on orchestre with a version range can resolve it. To stay on one version, add the marketplace at its tag: `/plugin marketplace add Archibald0/circle-claude-plugin#orchestre--v0.13.0`. To open the Release of an older tag: *Actions* > *Release* > *Run workflow*, with the version.

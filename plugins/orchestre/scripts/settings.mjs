@@ -19,7 +19,7 @@
 // .claude/settings.json at the root of the checkout (Claude Code reads it in the folder it starts in: run the commands from the
 // root); user, $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json.
 // Managed settings are not read. Lists merge across scopes; a scalar takes the value of the highest scope (local, then
-// project, then user). The exceptions "Read(!…)" only cancel the rule before them in the same file: Read(./.env.*) and its
+// project, then user). The exceptions "Read(!…)" only cancel the rule before them in the same file: Read(.env.*) and its
 // exceptions are checked in .claude/settings.local.json itself.
 // "settings missing" when the local file holds no rule of orchestre, of any version: the repository was never installed.
 // Rules removed: those of the scripts of another installed version of the plugin (path …/orchestre/<version>/scripts/), those
@@ -81,6 +81,15 @@ export function obsolete(rule, root, version = null) {
   if (segments[segments.length - 2] === 'orchestre' && /^\d+\.\d+\.\d+/.test(other) && other !== version && [...SCRIPTS, 'status.mjs', 'migrate.mjs'].includes(m[2])) return `orchestre ${other}`
   return null
 }
+
+// Rules of the template of orchestre 0.17 and earlier that it no longer writes (0.18.0). Removed from the local file, where the
+// install wrote them; in the project or user settings they are the user's own, and left alone
+export const REMOVED = new Map([
+  ['Bash(git -C * diff *)', 'orchestre 0.17 and earlier: a * before the subcommand also matches -c, which makes git run a program'],
+  ['Bash(git -C * log *)', 'orchestre 0.17 and earlier: a * before the subcommand also matches -c, which makes git run a program'],
+  ['Read(./.env)', 'orchestre 0.17 and earlier: the .env of the current folder only, replaced by Read(.env), at any depth'],
+  ['Read(./.env.*)', 'orchestre 0.17 and earlier: the .env.* of the current folder only, replaced by Read(.env.*), at any depth'],
+])
 
 // A rule of orchestre, of any version: the workflow or a script of the plugin
 const orchestreRule = (rule, root, version) => /^Workflow\((orchestre:[a-z-]+|executer-phase)\)$/.test(rule) || rule.includes(`${root}/scripts/`) || obsolete(rule, root, version) != null || /^Bash\(node .*\/orchestre\/[^/]+\/scripts\/[a-z-]+\.mjs(?: \*|:\*)\)$/.test(rule)
@@ -145,7 +154,7 @@ export function evaluate({ template, root, scopes, team = null, add = { allow: [
     const denied = where('deny', rule)
     if (denied) warnings.push(`${rule}: also denied in the ${denied} settings, and a deny wins: the agents will be refused this command`)
   }
-  // Deny: present in any scope, apart from Read(./.env.*) and its exceptions, which are checked in the local file
+  // Deny: present in any scope, apart from Read(.env.*) and its exceptions, which are checked in the local file
   const isException = r => r.startsWith('Read(!')
   const anchorOf = i => { for (let j = i - 1; j >= 0; j--) if (!isException(M.deny[j])) return M.deny[j]; return null }
   const anchors = new Set(M.deny.filter((r, i) => !isException(r) && isException(M.deny[i + 1] || '')))
@@ -195,7 +204,7 @@ export function evaluate({ template, root, scopes, team = null, add = { allow: [
   }
   // Rules of an older install: removed from the local file; reported elsewhere
   for (const key of ['allow', 'deny']) for (const s of ORDER) for (const rule of list(scopes[s].data, key)) {
-    const reason = obsolete(rule, root, version)
+    const reason = obsolete(rule, root, version) || (s === 'local' ? REMOVED.get(rule) : null)
     if (!reason) continue
     if (s === 'local') { remove.push({ rule, key: `permissions.${key}`, scope: s, reason }); local.remove[key].push(rule) } else warnings.push(`${rule} (${reason}): in the ${s} settings, which this script does not change; remove it by hand`)
   }

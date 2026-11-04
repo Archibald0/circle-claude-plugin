@@ -38,7 +38,7 @@ A plan written by orchestre 0.11 or earlier (French format: `taches/`, `SUIVI.md
 - No `verification` command reads real production or personal data. A rehearsal on real data (production dump) is a step for the human, written in the deployment procedure, with commands checked in the repository.
 - A test does not write into a shared database such as the development database: it uses a dedicated test database, which the test script recreates.
 - A last task of global review, on opus, read-only. It also checks that comments, DECISIONS and procedures tell the truth.
-- Ids: capital letters then digits, a suffix of letters allowed (T01, T02, T02B). Tasks added during a run take a suffix.
+- Ids: a prefix of capital letters proper to the plan, then digits, a suffix of letters allowed (T01, T02, T02B; AS01, AS02 for a plan `auth-sso` when T is taken). The branches `task/<id>` belong to the repository, not to a plan: two plans of a repository never share a prefix. `plan-lint.mjs --used-prefixes` lists the prefixes in use (other plans, branches `task/*`); `D`, `H` and `E` alone are left to the prerequisites. Tasks added during a run take a suffix.
 - One model per task, with its reason: see "Model of each task". A task takes the model of its most demanding part.
 - Token estimate per task: 0.5 × max_turns × targeted context size, plus 30 % for the verification and the evaluation. On the pilot, the actual figure was 3 to 8 times higher: an order of magnitude, not a budget.
 

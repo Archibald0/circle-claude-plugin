@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/orchestre-0.17.0-E8743B" alt="orchestre 0.17.0">
+  <img src="https://img.shields.io/badge/orchestre-0.18.0-E8743B" alt="orchestre 0.18.0">
   <img src="https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.287-1F2340" alt="Claude Code 2.1.287 or later">
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A5%2018-1F2340" alt="Node.js 18 or later">
 </p>
@@ -71,7 +71,7 @@ After two fixes by default, a task still rejected stops as blocked, with the exa
   <tr>
     <td width="33%" valign="top">
       <strong>Isolated work</strong><br>
-      Each task has its own branch, <code>task/&lt;id&gt;</code>, and its own worktree when tasks run side by side. It is merged with <code>--no-ff</code> into <code>plan/&lt;name&gt;</code>. No agent pushes, merges into <code>main</code> or deploys.
+      Each task has its own branch, <code>task/&lt;id&gt;</code>, and its own worktree when tasks run side by side. It is merged with <code>--no-ff</code> into <code>plan/&lt;name&gt;</code>. No agent is allowed to push, merge into <code>main</code> or deploy: the settings deny <code>git push</code> in its usual forms, and the workers have no MCP tools.
     </td>
     <td width="33%" valign="top">
       <strong>Evaluation on evidence</strong><br>
@@ -89,7 +89,7 @@ After two fixes by default, a task still rejected stops as blocked, with the exa
     </td>
     <td width="33%" valign="top">
       <strong>A human only when needed</strong><br>
-      Real data, secrets, production and deployment stay yours. A file the agents may not touch becomes a review to do before the pull request, without stopping the run.
+      Real data, production and deployment stay yours, and the agents are denied reading <code>.env</code> files, at any depth. A file the agents may not touch becomes a review to do before the pull request, without stopping the run.
     </td>
     <td width="33%" valign="top">
       <strong>Resume and follow</strong><br>
@@ -103,17 +103,16 @@ After two fixes by default, a task still rejected stops as blocked, with the exa
 This repository is the plugin marketplace `circle`; orchestre is its only plugin. Once per machine, in a Claude Code session:
 
 ```
-/plugin marketplace add FabienDayuse/circle-claude-plugin
+/plugin marketplace add Archibald0/circle-claude-plugin
 /plugin install orchestre@circle
 /reload-plugins
 ```
 
 <details>
-<summary><strong>Requirements</strong>: Claude Code 2.1.287 or later, <code>git</code>, Node.js 18 or later, read access to this repository</summary>
+<summary><strong>Requirements</strong>: Claude Code 2.1.287 or later, <code>git</code>, Node.js 18 or later</summary>
 
 - Claude Code 2.1.287 or later, with dynamic workflows: paid plans; on Pro, the *Dynamic workflows* line of `/config`. The commands need 2.1.271; the progress display needs 2.1.287.
 - `git` and Node.js 18 or later.
-- Read access to this GitHub repository, private for now: see [Access to the repository](docs/reference.md#access-to-the-repository).
 
 </details>
 
@@ -178,6 +177,7 @@ More:
 
 Update between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins`.
 
+- **From 0.17.** The next `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run` offers to replace four settings rules and to add the new denials of `git push`, in one agreement.
 - **From 0.12.** The next `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run` offers to replace the settings rules of 0.12, in one agreement.
 - **From 0.11.** The commands move to English (`/orchestre:lancer` becomes `/orchestre:run`, `/suivi` becomes `/progress`…). `/orchestre:ready` or `/orchestre:run` migrates each plan to the new format, after your agreement.
 
@@ -185,7 +185,6 @@ Details: [`docs/upgrading.md`](docs/upgrading.md).
 
 ---
 
-<!-- TODO(license): choose the license with Dayuse, add a LICENSE file, then replace the line below. -->
-License: not chosen yet.
+License: [MIT](LICENSE).
 
 orchestre is an independent project, not affiliated with or endorsed by Anthropic.

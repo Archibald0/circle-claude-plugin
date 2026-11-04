@@ -576,7 +576,7 @@ async function main() {
     writeFileSync(join(C.d, 'progress.json'), saved)
   })
 
-  await test('--json: same effect as standard input, text escaped as the workflow writes it; added task without a file skipped', () => {
+  await test('--json: same effect as standard input, text escaped as the workflow of 0.17 wrote it; added task without a file skipped', () => {
     const gaps = ["the option `--force` costs $5", 'quotes "double", backslash \\ and accents éèà']
     const raw = JSON.stringify({ task: 'T07', step: 'fix', rejection: { attempt: 1, by: 'evaluation', gaps } })
     // Escaping of the workflow: nothing that closes or interprets single quotes

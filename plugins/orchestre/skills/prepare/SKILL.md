@@ -108,6 +108,8 @@ Nothing that can be known before the run must be discovered during it.
 
 ## 4. Write
 
+Ids first: `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-lint.mjs --used-prefixes` lists the prefixes that the other plans of this repository and the branches `task/*` already use (the branches belong to the repository: a plan whose ids another plan used would take back its branches). Take `T` if it is not in the list; otherwise two or three capital letters from the plan's name (`auth-sso` → `AS`, `billing` → `BI`) that are not in it. Never `D`, `H` or `E` alone: the prerequisites use them. A converted plan follows the same rule; the source plan's ids stay in the notes of each task when the user refers to them.
+
 Write `plans/<name>/`: the tasks in `tasks/`, each with `model` and `model_reason`; `PROGRESS.md` (every task at `todo`); `HANDOFF.md`; `PREREQUISITES.md` (empty table if the plan expects nothing); `DISCOVERY.md` seeded with step 1; `orchestre.config.json` with `integration_branch: "plan/<name>"`, the base branch in `base_branch`, `language` (step 0), `fable` (2d), and the environment setup (`setup`, `shared_setup`, see the format) taken from the repository: simple commands, to have validated by the user. End the plan with a global review task on opus, read-only.
 
 ## 5. Validate

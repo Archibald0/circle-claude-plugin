@@ -6,13 +6,21 @@ const read = path => fs.readFileSync(new URL(path, import.meta.url), 'utf8')
 const template = JSON.parse(read('../plugins/orchestre/skills/install/settings.local.template.json'))
 const deny = template.permissions.deny
 const allow = template.permissions.allow
-for (const rule of ['Bash(git push *)', 'Bash(git -C * push *)', 'Read(./.env)', 'Read(./.env.*)']) assert.ok(deny.includes(rule), `missing denial: ${rule}`)
+// .env at any depth (0.18.0): a bare file name matches like .gitignore, Read(./.env) only the .env of the current folder
+// (code.claude.com/docs/en/permissions)
+for (const rule of ['Bash(git push *)', 'Bash(git -C * push *)', 'Read(.env)', 'Read(.env.*)']) assert.ok(deny.includes(rule), `missing denial: ${rule}`)
+// A push written another way than "git push" (0.18.0): the forms the documentation of permissions cites, and a merge through gh
+for (const rule of ['Bash(git -c * push *)', 'Bash(git --git-dir* push *)', 'Bash(git --work-tree* push *)', 'Bash(gh pr merge *)']) assert.ok(deny.includes(rule), `missing denial: ${rule}`)
+assert.equal(deny.some(r => r.startsWith('Read(./')), false, 'a .env denial anchored at the current folder: Read(.env) covers every depth')
 // A "!" exception only cancels the rules listed before it in the same file
-const envRule = deny.indexOf('Read(./.env.*)')
+const envRule = deny.indexOf('Read(.env.*)')
 for (const file of ['.env.example', '.env.sample', '.env.template', '.env.dist']) {
   const exception = deny.indexOf(`Read(!${file})`)
-  assert.ok(exception > envRule, `exception Read(!${file}) missing or placed before Read(./.env.*)`)
+  assert.ok(exception > envRule, `exception Read(!${file}) missing or placed before Read(.env.*)`)
 }
+// No wildcard between git and its subcommand in an allow rule (0.18.0): "Bash(git -C * diff *)" also matched
+// "git -C . -c core.fsmonitor=<program> diff", and git runs that program (code.claude.com/docs/en/permissions)
+for (const r of allow.filter(r => r.startsWith('Bash(git '))) assert.match(r, /^Bash\(git [a-z][a-z-]*(?: |\))/, `${r}: a git option or a wildcard before the subcommand`)
 // Branch taken back: the worker checks that it contains the integration branch before merging it in
 assert.ok(allow.includes('Bash(git merge-base *)'), 'missing permission: git merge-base')
 assert.equal(template.worktree.baseRef, 'head')
