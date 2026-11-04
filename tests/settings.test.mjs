@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { execFileSync, spawnSync } from 'node:child_process'
+import { REMOVED } from '../plugins/orchestre/scripts/settings.mjs'
 
 const REPO = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const PLUGIN = join(REPO, 'plugins', 'orchestre')
@@ -44,8 +45,8 @@ const user = r => join(r.home, 'settings.json')
 const readJson = p => JSON.parse(readFileSync(p, 'utf8'))
 const rule = (j, name) => j.rules.find(x => x.rule === name)
 const exceptions = TEMPLATE.permissions.deny.filter(r => r.startsWith('Read(!'))
-// In a deny list, each exception of the .env templates comes after Read(./.env.*)
-const placed = deny => exceptions.every(e => deny.indexOf(e) > deny.indexOf('Read(./.env.*)') && deny.indexOf('Read(./.env.*)') >= 0)
+// In a deny list, each exception of the .env templates comes after Read(.env.*)
+const placed = deny => exceptions.every(e => deny.indexOf(e) > deny.indexOf('Read(.env.*)') && deny.indexOf('Read(.env.*)') >= 0)
 
 let n = 0
 const test = (name, fn) => { fn(); n++; console.log('ok ·', name) }
@@ -74,7 +75,7 @@ try {
     const text = run(r, ['check']).out
     assert.match(text, /^✗ settings missing for orchestre \d+\.\d+\.\d+: \.claude\/settings\.local\.json, \d+ to add or change, 0 to remove\n/)
     assert.match(text, /^\+ allow Workflow\(orchestre:run-phase\)$/m)
-    assert.match(text, /^\+ deny Read\(!\.env\.example\), right after Read\(\.\/\.env\.\*\)$/m)
+    assert.match(text, /^\+ deny Read\(!\.env\.example\), right after Read\(\.env\.\*\)$/m)
     const a = json(r, ['apply'])
     assert.equal(a.code, 0, a.out)
     assert.deepEqual(a.j.written, ['.claude/settings.local.json'])
@@ -154,7 +155,7 @@ try {
 
   test('partial: rule by rule, only what is missing, wrong or misplaced is changed; the rest stays in place', () => {
     const r = newRepo()
-    const deny = ['Read(!.env.example)', 'Bash(git push *)', 'Read(./.env.*)', 'Read(!.env.sample)', 'Bash(curl *)']
+    const deny = ['Read(!.env.example)', 'Bash(git push *)', 'Read(.env.*)', 'Read(!.env.sample)', 'Bash(curl *)']
     write(local(r), { model: 'sonnet', worktree: { baseRef: 'fresh', symlinkDirectories: ['node_modules'] }, permissions: { allow: ['Bash(make *)', 'Bash(git add *)', ...OWN], deny } })
     const c = json(r, ['check'])
     assert.equal(c.code, 1)
@@ -165,10 +166,10 @@ try {
     assert.equal(rule(c.j, 'Read(!.env.example)').status, 'misplaced')
     assert.equal(rule(c.j, 'Read(!.env.sample)').status, 'ok')
     assert.equal(rule(c.j, 'Read(!.env.dist)').status, 'missing')
-    assert.equal(rule(c.j, 'Read(./.env)').status, 'missing')
+    assert.equal(rule(c.j, 'Read(.env)').status, 'missing')
     const text = run(r, ['check']).out
     assert.match(text, /^~ worktree\.baseRef: "fresh" → "head"$/m)
-    assert.match(text, /^↷ deny Read\(!\.env\.example\): moved right after Read\(\.\/\.env\.\*\)$/m)
+    assert.match(text, /^↷ deny Read\(!\.env\.example\): moved right after Read\(\.env\.\*\)$/m)
     assert.doesNotMatch(text, /Bash\(git add \*\)/)
     const a = json(r, ['apply'])
     assert.equal(a.code, 0, a.out)
@@ -181,11 +182,11 @@ try {
     assert.equal(json(r, ['check']).j.complete, true)
   })
 
-  test('exceptions of the .env templates without Read(./.env.*) in the local file: misplaced; the rule added, they follow it', () => {
+  test('exceptions of the .env templates without Read(.env.*) in the local file: misplaced; the rule added, they follow it', () => {
     const r = newRepo()
     write(local(r), { permissions: { deny: [...exceptions, 'Bash(curl *)'] } })
     const c = json(r, ['check'])
-    assert.equal(rule(c.j, 'Read(./.env.*)').status, 'missing')
+    assert.equal(rule(c.j, 'Read(.env.*)').status, 'missing')
     for (const e of exceptions) assert.equal(rule(c.j, e).status, 'misplaced', e)
     run(r, ['apply'])
     const deny = readJson(local(r)).permissions.deny
@@ -204,23 +205,51 @@ try {
     assert.equal(c.j.first_install, false)
     assert.deepEqual(c.j.remove.map(x => [x.rule, x.reason]), [
       ['Workflow(orchestre:executer-phase)', 'orchestre 0.11 and earlier'],
+      ...['Bash(git -C * diff *)', 'Bash(git -C * log *)'].map(x => [x, REMOVED.get(x)]),
       [RULE(OLD_ROOT, 'plan-lint.mjs'), 'orchestre 0.11.0'],
       [RULE(OLD_ROOT, 'suivi.mjs'), 'orchestre 0.11 and earlier'],
       [RULE(OLD_ROOT, 'worktrees.mjs'), 'orchestre 0.11.0'],
+      ...['Read(./.env)', 'Read(./.env.*)'].map(x => [x, REMOVED.get(x)]),
     ])
     for (const x of ['Workflow(orchestre:run-phase)', 'Bash(git for-each-ref *)', ...OWN]) assert.equal(rule(c.j, x).status, 'missing', x)
     assert.equal(rule(c.j, 'worktree.baseRef').status, 'ok')
     const t = run(r, ['check']).out
-    assert.match(t, /^✗ settings incomplete for orchestre \d+\.\d+\.\d+: \.claude\/settings\.local\.json, \d+ to add or change, 4 to remove\n/)
+    assert.match(t, /^✗ settings incomplete for orchestre \d+\.\d+\.\d+: \.claude\/settings\.local\.json, \d+ to add or change, 8 to remove\n/)
     assert.match(t, /^− allow Workflow\(orchestre:executer-phase\) \(orchestre 0\.11 and earlier\)$/m)
     const a = run(r, ['apply'])
     assert.equal(a.code, 0)
-    assert.match(a.out, /^✓ settings written for orchestre \d+\.\d+\.\d+: \.claude\/settings\.local\.json \(\d+ added or changed, 4 removed\)$/m)
+    assert.match(a.out, /^✓ settings written for orchestre \d+\.\d+\.\d+: \.claude\/settings\.local\.json \(\d+ added or changed, 8 removed\)$/m)
     assert.match(a.out, /^− allow Workflow\(orchestre:executer-phase\) \(orchestre 0\.11 and earlier\)$/m)
     const s = readJson(local(r))
     assert.equal(s.permissions.allow.some(x => /executer-phase|suivi\.mjs|0\.11\.0/.test(x)), false)
     assert.ok(s.permissions.allow.includes('Bash(pnpm test *)') && s.permissions.deny.includes('Bash(railway *)'), 'rules of the project kept')
     assert.equal(s.autoContinueAtUsageLimit, true, 'a key of the user left in place')
+    assert.equal(json(r, ['check']).j.complete, true)
+  })
+
+  test('install of orchestre 0.17 (0.18.0): git -C * diff/log and the root-only .env denials removed, Read(.env) and Read(.env.*) in their place, the exceptions after them', () => {
+    const r = newRepo()
+    const old = JSON.parse(JSON.stringify(TEMPLATE))
+    old.permissions.allow = [...old.permissions.allow, 'Bash(git -C * diff *)', 'Bash(git -C * log *)', ...OWN]
+    old.permissions.deny = old.permissions.deny.map(x => ({ 'Read(.env)': 'Read(./.env)', 'Read(.env.*)': 'Read(./.env.*)' })[x] || x)
+    write(local(r), old)
+    // In the user settings, the same rules are the user's own: neither removed nor reported
+    write(user(r), { permissions: { allow: ['Bash(git -C * log *)'], deny: ['Read(./.env)'] } })
+    const c = json(r, ['check'])
+    assert.equal(c.code, 1)
+    assert.equal(c.j.first_install, false)
+    assert.deepEqual(c.j.remove.map(x => [x.rule, x.reason, x.scope]), [...REMOVED.keys()].map(x => [x, REMOVED.get(x), 'local']))
+    for (const x of c.j.remove) assert.match(x.reason, /^orchestre 0\.17 and earlier: /)
+    assert.equal(c.j.warnings.some(w => /git -C \* log|\.\/\.env/.test(w)), false, c.j.warnings.join('\n'))
+    assert.equal(rule(c.j, 'Read(.env)').status, 'missing')
+    assert.equal(rule(c.j, 'Read(.env.*)').status, 'missing')
+    for (const e of exceptions) assert.equal(rule(c.j, e).status, 'misplaced', e)
+    assert.equal(run(r, ['apply']).code, 0)
+    const s = readJson(local(r))
+    assert.equal(s.permissions.allow.some(x => x.startsWith('Bash(git -C * ')), false, JSON.stringify(s.permissions.allow))
+    assert.equal(s.permissions.deny.some(x => x.startsWith('Read(./')), false, JSON.stringify(s.permissions.deny))
+    assert.ok(placed(s.permissions.deny), JSON.stringify(s.permissions.deny))
+    assert.equal(s.permissions.deny.filter(x => x.startsWith('Read(!')).length, exceptions.length, 'no duplicate')
     assert.equal(json(r, ['check']).j.complete, true)
   })
 
@@ -357,19 +386,19 @@ try {
 
   test('scopes: rules of the user or project settings count, a scalar takes the highest scope, a deny elsewhere is reported', () => {
     const r = newRepo()
-    write(user(r), { autoContinueAtUsageLimit: false, permissions: { allow: TEMPLATE.permissions.allow, deny: ['Bash(git commit *)', 'Read(./.env.*)', RULE(OLD_ROOT, 'suivi.mjs')] } })
-    write(project(r), { worktree: { baseRef: 'fresh' }, permissions: { deny: ['Read(./.env.*)'] } })
+    write(user(r), { autoContinueAtUsageLimit: false, permissions: { allow: TEMPLATE.permissions.allow, deny: ['Bash(git commit *)', 'Read(.env.*)', RULE(OLD_ROOT, 'suivi.mjs')] } })
+    write(project(r), { worktree: { baseRef: 'fresh' }, permissions: { deny: ['Read(.env.*)'] } })
     const c = json(r, ['check'])
     assert.equal(rule(c.j, 'Bash(git add *)').scope, 'user')
     assert.deepEqual(rule(c.j, 'worktree.baseRef'), { rule: 'worktree.baseRef', key: 'worktree.baseRef', expected: 'head', found: 'fresh', status: 'wrong', scope: 'project' })
     assert.equal(c.j.writes.length, 1)
     assert.deepEqual(c.j.writes[0].add['permissions.allow'], OWN, 'only what no scope has')
-    // Read(./.env.*) and its exceptions in the local file itself, even when the user settings deny it
-    assert.equal(rule(c.j, 'Read(./.env.*)').status, 'missing')
+    // Read(.env.*) and its exceptions in the local file itself, even when the user settings deny it
+    assert.equal(rule(c.j, 'Read(.env.*)').status, 'missing')
     const w = c.j.warnings.join('\n')
     assert.match(w, /Bash\(git commit \*\): also denied in the user settings/)
-    assert.match(w, /Read\(\.\/\.env\.\*\): also denied in the user settings/)
-    assert.match(w, /Read\(\.\/\.env\.\*\): also denied in the project settings/)
+    assert.match(w, /Read\(\.env\.\*\): also denied in the user settings/)
+    assert.match(w, /Read\(\.env\.\*\): also denied in the project settings/)
     assert.match(w, /autoContinueAtUsageLimit is false in the user settings/)
     assert.match(w, /suivi\.mjs \*\) \(orchestre 0\.11 and earlier\): in the user settings, which this script does not change/)
     assert.deepEqual(c.j.remove, [], 'nothing removed outside the local file')

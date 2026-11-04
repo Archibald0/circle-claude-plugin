@@ -16,16 +16,14 @@
       "Bash(git status *)",
       "Bash(git rev-parse *)",
       "Bash(git checkout HEAD -- *)",
-      "Bash(git -C * diff *)",
-      "Bash(git -C * log *)",
       "Bash(date *)",
       "Bash(test -e *)"
     ],
     "deny": [
       "Bash(git push *)",
       "Bash(git -C * push *)",
-      "Read(./.env)",
-      "Read(./.env.*)",
+      "Read(.env)",
+      "Read(.env.*)",
       "Read(!.env.example)",
       "Read(!.env.sample)",
       "Read(!.env.template)",

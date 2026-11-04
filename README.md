@@ -89,7 +89,7 @@ After two fixes by default, a task still rejected stops as blocked, with the exa
     </td>
     <td width="33%" valign="top">
       <strong>A human only when needed</strong><br>
-      Real data, secrets, production and deployment stay yours. A file the agents may not touch becomes a review to do before the pull request, without stopping the run.
+      Real data, production and deployment stay yours, and the agents are denied reading <code>.env</code> files, at any depth. A file the agents may not touch becomes a review to do before the pull request, without stopping the run.
     </td>
     <td width="33%" valign="top">
       <strong>Resume and follow</strong><br>

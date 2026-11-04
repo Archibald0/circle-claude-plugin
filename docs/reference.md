@@ -232,13 +232,11 @@ Each task carries its model and the reason for it, chosen by opus when the plan 
 - A ban that the worker reports as an ordinary deviation is only reclassified as a review if its description cites neither a database, nor production, nor a secret (`DATABASE_URL`, `JWT_SECRET`…). Otherwise the run stops for a human.
 - `/orchestre:ready` spots the "safe" commands on the strength of the configuration and of `DISCOVERY.md`. When in doubt, it asks you to run them yourself with `!`.
 - The settings (worktree, permissions) cannot come from a plugin: `scripts/settings.mjs` writes them into each project, from `/orchestre:install`, `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run`. Its check does not read the managed settings of an organization. Claude Code reloads the permission rules during the session; for `worktree.baseRef`, its documentation does not say, hence a run in a new session. If the Bash sandbox is on, it refuses the writes of the script into the settings files: the command gives the line to run yourself at the prompt with `!`, which runs outside the sandbox.
-- The denials of the template cover `.env` and `.env.*` at the root of the repository only. `Read(./.env)` matches the file in the current folder (code.claude.com/docs/en/permissions), so a `.env` in a subfolder (`apps/api/.env`) can be read by the agents. Add a rule for it with `/orchestre:install`, or a `Read(.env)` without `./`, which matches at any depth.
+- The denials of the template, `Read(.env)` and `Read(.env.*)`, match at any depth (`apps/api/.env` included) and bind the file tools of Claude Code (code.claude.com/docs/en/permissions). They do not reach a script or a test that opens the file itself: a guarantee at the level of the system takes the Bash sandbox of Claude Code.
 - The actual tokens are not collected automatically: read them in `/workflows`, task by task. On the pilot, the actual figure was 3 to 8 times the estimate.
 - In autonomous mode, the auto-decisions are only reviewed at the PR. The circuit breaker caps their number, not their quality.
 - Sensitive deviations are spotted by keywords (data, database, production, secret…, in English and in French). The filter catches wide, but does not see a risk worded otherwise.
 - Two tasks that share a database or a port run one after the other.
-- Claude Code may report at startup the permission rules `Bash(git -C * diff *)` and `Bash(git -C * log *)` (wildcard before the subcommand): the evaluator uses them to read the diff of a worktree.
-
 ## Development
 
 ### Repository content
