@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/orchestre-0.17.0-E8743B" alt="orchestre 0.17.0">
+  <img src="https://img.shields.io/badge/orchestre-0.18.0-E8743B" alt="orchestre 0.18.0">
   <img src="https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.287-1F2340" alt="Claude Code 2.1.287 or later">
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A5%2018-1F2340" alt="Node.js 18 or later">
 </p>
@@ -177,6 +177,7 @@ More:
 
 Update between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins`.
 
+- **From 0.17.** The next `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run` offers to replace four settings rules and to add the new denials of `git push`, in one agreement.
 - **From 0.12.** The next `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run` offers to replace the settings rules of 0.12, in one agreement.
 - **From 0.11.** The commands move to English (`/orchestre:lancer` becomes `/orchestre:run`, `/suivi` becomes `/progress`…). `/orchestre:ready` or `/orchestre:run` migrates each plan to the new format, after your agreement.
 

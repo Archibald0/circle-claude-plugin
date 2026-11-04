@@ -286,10 +286,10 @@ brand/                               README banner and screenshot, social previe
 
 - Try a change without installing it: `claude --plugin-dir plugins/orchestre`, then `/reload-plugins` after each change.
 - Tests: `npm test` runs four groups, which can also be run alone:
-  - `npm run test:scripts`: 24 cases of `plan-lint`, 10 of `/orchestre:status`, 30 of `progress.mjs`, 4 of `worktrees.mjs`, 21 of `migrate.mjs` and 21 of `settings.mjs`, in temporary git repositories;
-  - `npm run test:workflow`: 103 scenarios of the workflow, with simulated agents, 6 of which run the real `progress.mjs` and `worktrees.mjs` in a temporary repository;
-  - `npm run test:commands`: the settings template, and 17 tests of the contract between the skills and the rest of the plugin;
-  - `npm run test:mod`: 31 cases of the mod's view model on `progress.json` files written by `progress.mjs`, `/progress demo` compared with the real `progress.mjs` included.
+  - `npm run test:scripts`: 26 cases of `plan-lint`, 10 of `/orchestre:status`, 30 of `progress.mjs`, 4 of `worktrees.mjs`, 21 of `migrate.mjs` and 22 of `settings.mjs`, in temporary git repositories;
+  - `npm run test:workflow`: 104 scenarios of the workflow, with simulated agents, 6 of which run the real `progress.mjs` and `worktrees.mjs` in a temporary repository;
+  - `npm run test:commands`: the settings template, and 18 tests of the contract between the skills and the rest of the plugin;
+  - `npm run test:mod`: 32 cases of the mod's view model on `progress.json` files written by `progress.mjs`, `/progress demo` compared with the real `progress.mjs` included.
 - Validation: `npm run validate` (`claude plugin validate` on the plugin and on the marketplace, then `claude plugin test` of the plugin, which runs the 30 tests of the mod under the engine).
 - Try the mod without installing it: `claude --plugin-dir plugins/orchestre`, then `/progress demo`; or, on a real `progress.json`, `node tests/demo-progress.mjs <folder>` in another terminal.
 - The workflow script has no access to files and cannot import anything; `Date.now()`, `Math.random()` and `new Date()` are forbidden there. Before changing it, load the reference `/workflow-authoring`.

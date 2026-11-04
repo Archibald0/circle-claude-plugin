@@ -2,6 +2,25 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.18.0 — 2026-11-04: public release, safeguards that hold
+
+The first public version. An adversarial review before the release found promises of the README that the code did not keep, and a repository presented as private under another name. Each one is now held by the code, or said as it is.
+
+- License: MIT (`LICENSE`, `"license"` in `plugin.json`).
+- The repository is public, under `Archibald0/circle-claude-plugin`: install commands, first try (clone over HTTPS), `repository` of `plugin.json` (which `/orchestre:install --team` writes into `.claude/settings.json`), tag pinning. The section "Access to the repository" is gone.
+- Settings (`settings.local.template.json`, `settings.mjs`):
+  - `Bash(git -C * diff *)` and `Bash(git -C * log *)` are no longer written: a `*` before the subcommand also matches `-c`, so `git -C . -c core.fsmonitor=<program> diff` ran a program without asking. The evaluator reads `git diff <integration>...<branch>` from the main checkout.
+  - `Read(./.env)` and `Read(./.env.*)` become `Read(.env)` and `Read(.env.*)`, at any depth; the exceptions of the templates follow them.
+  - New denials: `git -c * push *`, `git --git-dir* push *`, `git --work-tree* push *`, `gh pr merge *`.
+  - `settings.mjs` lists the four rules of 0.17 it no longer writes (`REMOVED`): `check` reports them in the local file and `apply` replaces them, in the agreement `/prepare`, `/ready` and `/run` already ask. In the project or user settings, they are the user's own and left alone.
+- Agents: `worker` and `isolated-worker` carry `disallowedTools: "mcp__*"`; they no longer inherit the MCP servers of the session. The other agents already list their tools.
+- Workflow:
+  - The integrator removes the worktree of a parallel task without `--force`. When git refuses (uncommitted work), the worktree stays, `worktree_kept` says why, and a review before the PR names it.
+  - The verifier first runs `git status --porcelain --untracked-files=all` in the task's folder: a file of the task left uncommitted is a failure, another one is logged.
+- Plans: the branches `task/<id>` belong to the repository, and two plans numbered their tasks from T01. `plan-lint`, with `--integration`, refuses a plan that has never run while a branch `task/<id>` of one of its ids exists, and names the plan that holds that id (folders next to it, plans on the local branches `plan/*`). `plan-lint --used-prefixes` lists the prefixes in use; `/orchestre:prepare` gives a new plan a free one (`T`, otherwise letters of its name), `/orchestre:ready` offers one when `plan-lint` refuses.
+- Docs: the safeguards of the README and of `docs/reference.md` say what holds them (rules, tools, instructions) and where a permission rule stops; the Bash sandbox is named for a guarantee at the level of the system. `docs/upgrading.md`: from 0.17 to 0.18.
+- Tests: `settings.mjs` (an install of 0.17, the install of 0.11 with its four extra removals), the template (no option nor wildcard between `git` and its subcommand, no `.env` denial anchored at `./`, the new denials), the agents (no MCP tool), the workflow (scenario W11: worktree kept, uncommitted work; no `remove --force` in the source), `plan-lint` (ids across plans, `--used-prefixes`).
+
 ## 0.17.0 — 2026-11-03: when and where in the detail card of "Your turn"
 
 The detail card of a line of "Your turn" said what an item was, not when nor where to act on it. A prerequisite read "H1 (manual) open, blocks T09", with nothing about what there was to do, although the Prerequisite column of PREREQUISITES.md reached `progress.json`: `normalize()` dropped it. And the prompt of a review repeated its whole text under it. Asked by Fabien on 2026-11-03 (more description for the H prerequisites, a "when" that says the moment to launch the step, a "where" that says whether it is in this session or not); the layout was chosen among three on a page of mock-ups (B, when and where on top, aired), with the wording of each line.
