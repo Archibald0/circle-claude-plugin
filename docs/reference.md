@@ -221,6 +221,7 @@ Each task carries its model and the reason for it, chosen by opus when the plan 
 - No agent gets around a read or write ban: the file concerned goes to human review before the PR.
 - No agent rewrites history (rebase, reset): a branch taken back receives the integration branch by a merge.
 - A worktree that holds uncommitted work is never removed.
+- Two plans of a repository never share a task id: the branches `task/<id>` belong to the repository. `/orchestre:prepare` gives a new plan a free prefix, and `plan-lint` refuses a plan that has never run while a branch `task/<id>` of one of its ids exists.
 - An interrupted run is not resumed: a new one is launched, and the tasks already merged are skipped.
 
 **Origin.** The orchestration was worked out on a pilot of 15 tasks in 4 phases (SPACE-Platform, plan `acces-par-metier`). Version history: [`CHANGELOG.md`](../CHANGELOG.md).

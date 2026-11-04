@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // plan-lint (orchestre plugin 0.12.0): validates a plan folder and compiles it to JSON. Node 18 or later, no dependencies.
 // Usage: node <plugin root>/scripts/plan-lint.mjs <plan-dir> [--json] [--phase N] [--integration <branch>] [--base <branch>]
+//        node <plugin root>/scripts/plan-lint.mjs --used-prefixes [<plans folder>]
 // With --integration, a task whose merge commit "task <id>: " is on the integration branch, and not on the base branch
 // (--base, else main, else master), counts as merged: git is the source of truth. The base excludes merges of earlier plans
 // already in main. Commits "tâche <id> : " of orchestre 0.11 and earlier count too: git history is never rewritten.
@@ -18,13 +19,28 @@
 // of the free text written during a run ("en" by default).
 // A plan in the French format of orchestre 0.11 and earlier (taches/, SUIVI.md, French keys) is refused: scripts/migrate.mjs
 // converts it once.
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+// Task ids across plans (0.18.0): the branches task/<id> belong to the repository, not to a plan. With --integration, a plan
+// that has never run is refused while a branch task/<id> of one of its ids already exists: its worker would take that
+// branch back and build on the work of another plan. "used_prefixes" lists the prefixes of the other plans (the folders next
+// to this one, and the plans committed on the local branches plan/*, where a plan lives until its pull request is merged)
+// and of the existing branches task/*. Usage without a plan: plan-lint.mjs --used-prefixes [<plans folder>], for
+// /orchestre:prepare, which gives a new plan a free prefix.
+import { readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs'
+import { join, dirname, resolve, relative, basename, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const MIGRATE = join(dirname(fileURLToPath(import.meta.url)), 'migrate.mjs')
 const argv = process.argv.slice(2)
+if (argv[0] === '--used-prefixes') {
+  const plansDir = argv[1] || 'plans'
+  const others = [...folderPlans(plansDir, null), ...branchPlans(plansDir, null, null)]
+  const branches = taskBranchIds()
+  const byPlan = new Map()
+  for (const o of others) byPlan.set(o.where, [...new Set([...(byPlan.get(o.where) || []), prefixOf(o.id)])].sort())
+  console.log(JSON.stringify({ used_prefixes: [...new Set([...others.map(o => prefixOf(o.id)), ...branches.map(prefixOf)])].filter(Boolean).sort(), plans: [...byPlan].map(([plan, prefixes]) => ({ plan, prefixes })), task_branches: [...new Set(branches)].sort() }))
+  process.exit(0)
+}
 const dir = argv.find((a, i) => !a.startsWith('--') && !['--phase', '--integration', '--base'].includes(argv[i - 1]))
 const ii = argv.indexOf('--integration')
 const integ = ii >= 0 ? argv[ii + 1] : null
@@ -33,7 +49,7 @@ const baseArg = bi >= 0 ? argv[bi + 1] : null
 const asJson = argv.includes('--json')
 const pi = argv.indexOf('--phase')
 const phaseF = pi >= 0 ? Number(argv[pi + 1]) : null
-if (!dir) { console.error('usage: plan-lint <plan-dir> [--json] [--phase N] [--integration <branch>] [--base <branch>]'); process.exit(2) }
+if (!dir) { console.error('usage: plan-lint <plan-dir> [--json] [--phase N] [--integration <branch>] [--base <branch>] | plan-lint --used-prefixes [<plans folder>]'); process.exit(2) }
 // A branch name never starts with "-": git would read it as an option (--output=… would write a file)
 for (const [name, b] of [['integration', integ], ['base', baseArg]]) if (b != null && (!b || b.startsWith('-'))) { console.error(`invalid ${name} branch: ${b}`); process.exit(2) }
 if (!existsSync(join(dir, 'tasks'))) {
@@ -125,6 +141,51 @@ function statuses() {
   }
   return map
 }
+// ─── Other plans of the repository (0.18.0) ───
+function gitIn(cwd, args) { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 1 << 26 }) }
+function repoTop() { try { return gitIn(process.cwd(), ['rev-parse', '--show-toplevel']).trim() } catch { return null } }
+function idOf(text) { const fm = frontmatter(text); return fm && typeof fm.id === 'string' && fm.id ? fm.id : null }
+function prefixOf(id) { return (String(id).match(/^[A-Z]+/) || [''])[0] }
+// Plans in the folders next to this one (own: the name of this plan's folder, left out): [{ id, where }]
+function folderPlans(plansDir, own) {
+  const found = []
+  let names = []
+  try { names = readdirSync(plansDir).sort() } catch { return found }
+  for (const name of names) {
+    if (name === own) continue
+    let files = []
+    try { files = readdirSync(join(plansDir, name, 'tasks')).filter(f => f.endsWith('.md')).sort() } catch { continue }
+    for (const f of files) { try { const id = idOf(readFileSync(join(plansDir, name, 'tasks', f), 'utf8')); if (id) found.push({ id, where: join(plansDir, name) }) } catch {} }
+  }
+  return found
+}
+// Plans committed on the local branches plan/* (ownInteg, this plan's integration branch, left out; so is a folder named own)
+function branchPlans(plansDir, own, ownInteg) {
+  const found = [], top = repoTop()
+  if (!top) return found
+  let rel
+  try { rel = relative(realpathSync(top), realpathSync(resolve(plansDir))).split(sep).join('/') } catch { return found }
+  if (rel.startsWith('..')) return found
+  const prefix = rel ? `${rel}/` : ''
+  let branches = []
+  try { branches = gitIn(top, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/plan/']).split('\n').filter(Boolean) } catch { return found }
+  for (const b of branches) {
+    if (b === ownInteg) continue
+    let paths = []
+    try { paths = gitIn(top, ['ls-tree', '-r', '--name-only', b, '--', prefix || '.']).split('\n') } catch { continue }
+    for (const p of paths) {
+      const m = p.slice(prefix.length).match(/^([^/]+)\/tasks\/[^/]+\.md$/)
+      if (!p.startsWith(prefix) || !m || m[1] === own) continue
+      try { const id = idOf(gitIn(top, ['show', `${b}:${p}`])); if (id) found.push({ id, where: `${prefix}${m[1]} on ${b}` }) } catch {}
+    }
+  }
+  return found
+}
+// Ids of the local branches task/<id> and task/<id>-r<n> (tache/ of 0.11 too)
+function taskBranchIds() {
+  try { return gitIn(process.cwd(), ['for-each-ref', '--format=%(refname:short)', 'refs/heads/task/', 'refs/heads/tache/']).split('\n').filter(Boolean).map(r => r.replace(/^(?:task|tache)\//, '').replace(/-r\d+$/, '')) } catch { return [] }
+}
+
 // "1.0M", "1.0 M", and "1,0 M" written by orchestre 0.11 and earlier
 const tokens = s => { const m = String(s || '').match(/([\d.,]+)\s*M/i); return m ? Number(m[1].replace(',', '.')) : 0 }
 const norm = s => String(s || '').trim().toLowerCase()
@@ -199,6 +260,19 @@ if (integ) {
     for (const m of log.matchAll(/^(?:task (\S+):|tâche (\S+) :)/gm)) st[m[1] || m[2]] = 'merged'
   } catch { errors.push(`integration branch not found: ${integ}`) }
 }
+// Ids across plans (0.18.0): a branch task/<id> that already exists while this plan has never run belongs to another plan
+// or to an older attempt; the worker would take it back. A plan that has run (a run in progress.json, or a task that is no
+// longer todo) keeps its own branches
+const plansDir = dirname(resolve(dir)), ownName = basename(resolve(dir))
+const others = [...folderPlans(plansDir, ownName), ...(integ ? branchPlans(plansDir, ownName, integ) : [])]
+const ranRuns = (() => { try { const j = JSON.parse(readFileSync(join(dir, 'progress.json'), 'utf8')); return Array.isArray(j.runs) ? j.runs.length : 0 } catch { return 0 } })()
+const launched = ranRuns > 0 || [...T.keys()].some(id => (st[id] || 'todo') !== 'todo')
+const branchIds = integ ? taskBranchIds() : []
+if (integ && !launched) for (const id of [...new Set(branchIds)].filter(id => T.has(id)).sort()) {
+  const where = [...new Set(others.filter(o => o.id === id).map(o => o.where))]
+  errors.push(`${id}: a branch task/${id} already exists and this plan has never run: its worker would take it back and build on it (${where.length ? `the task ${id} of ${where.join(', ')}` : 'a task of a plan no longer here, or an older attempt'}). Give this plan its own prefix (/orchestre:prepare picks a free one: node plan-lint.mjs --used-prefixes), or delete the branch if its work is no longer needed (git branch -D task/${id})`)
+}
+const usedPrefixes = [...new Set([...others.map(o => prefixOf(o.id)), ...branchIds.filter(id => !T.has(id)).map(prefixOf)])].filter(Boolean).sort()
 for (const t of T.values()) {
   if (!t.phase) errors.push(`${t.id}: missing phase`)
   // Model absent (nothing, "model:", "model: \"\""): warning below (the worker will run on sonnet, then the escalation
@@ -326,7 +400,7 @@ const language = config && config.language !== undefined ? config.language : 'en
 if (typeof language !== 'string' || !language.trim()) errors.push('orchestre.config.json: "language" must be a non-empty text, like "en" or "fr"')
 const readyShown = ready.filter(p => phaseF == null || p.phase === phaseF)
 // JSON on one line: read by scripts and agents, it thus stays under the Bash tool's display thresholds longer (0.8.1)
-if (asJson) console.log(JSON.stringify({ ok: errors.length === 0, errors, warnings, tasks, all, max_phase: maxPhase, prerequisites: prereqs, ready: readyShown, fable: typeof fable === 'boolean' ? fable : null, language: typeof language === 'string' && language.trim() ? language.trim() : 'en' }))
+if (asJson) console.log(JSON.stringify({ ok: errors.length === 0, errors, warnings, tasks, all, max_phase: maxPhase, prerequisites: prereqs, ready: readyShown, fable: typeof fable === 'boolean' ? fable : null, language: typeof language === 'string' && language.trim() ? language.trim() : 'en', used_prefixes: usedPrefixes }))
 else {
   if (errors.length) console.log(errors.map(e => '✗ ' + e).join('\n'))
   else {

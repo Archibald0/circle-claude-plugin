@@ -55,7 +55,7 @@ try {
   test('valid plan: full JSON (tasks, all, max_phase, language), readable estimate', () => {
     const r = lint(p, '--json')
     assert.equal(r.code, 0, r.out + r.err); assert.equal(r.json.ok, true)
-    assert.deepEqual(Object.keys(r.json), ['ok', 'errors', 'warnings', 'tasks', 'all', 'max_phase', 'prerequisites', 'ready', 'fable', 'language'])
+    assert.deepEqual(Object.keys(r.json), ['ok', 'errors', 'warnings', 'tasks', 'all', 'max_phase', 'prerequisites', 'ready', 'fable', 'language', 'used_prefixes'])
     assert.equal(r.json.max_phase, 2); assert.equal(r.json.all.length, 4); assert.equal(r.json.tasks.length, 4); assert.equal(r.json.language, 'en')
     const t02b = r.json.tasks.find(t => t.id === 'T02B')
     assert.deepEqual(Object.keys(t02b), ['id', 'title', 'file', 'phase', 'model', 'model_reason', 'effort', 'depends_on', 'resources', 'status', 'verification', 'token_estimate', 'open_prerequisites'])
@@ -417,6 +417,49 @@ Checked by /orchestre:ready on 2026-11-03: not ready.
     for (const f of ['SUIVI.md', 'PREREQUIS.md', 'suivi.json']) rmSync(join(root, d, f))
     writeFileSync(join(root, d, 'orchestre.config.json'), JSON.stringify({ default_mode: 'deviation', evaluator: 'always' }))
     const ok = lint(d, '--json'); assert.equal(ok.code, 0); assert.deepEqual(ok.json.warnings, [])
+  })
+
+  test('ids across plans (0.18.0): a branch task/<id> left by another plan refuses a plan that never ran; used_prefixes; --used-prefixes', () => {
+    // Plan alpha: committed on its branch only (pull request not merged), it ran T21 (branch task/T21)
+    git('switch', '-q', 'main'); git('switch', '-qc', 'plan/alpha')
+    plan('alpha', { T21: task('T21'), T22: task('T22') }); git('add', 'plans/alpha'); git('commit', '-qm', 'plan alpha')
+    git('switch', '-qc', 'task/T21'); git('commit', '-q', '--allow-empty', '-m', 'work of alpha'); git('switch', '-q', 'main')
+    assert.ok(!existsSync(join(root, 'plans', 'alpha')), 'alpha lives on its branch only')
+    // Plan beta, prepared from main with the same ids
+    git('switch', '-qc', 'plan/beta'); const b = plan('beta', { T21: task('T21'), T23: task('T23') }); git('add', b); git('commit', '-qm', 'plan beta')
+    const r = lint(b, '--json', '--integration', 'plan/beta')
+    assert.equal(r.code, 1, r.out)
+    const e = r.json.errors.filter(x => x.startsWith('T21: '))
+    assert.equal(e.length, 1, JSON.stringify(r.json.errors))
+    assert.ok(e[0].startsWith('T21: a branch task/T21 already exists and this plan has never run: its worker would take it back'), e[0])
+    assert.ok(e[0].includes('the task T21 of plans/alpha on plan/alpha') && e[0].includes('git branch -D task/T21'), e[0])
+    assert.ok(!r.json.errors.some(x => x.startsWith('T23')), 'T23: no branch, no error')
+    assert.ok(r.json.used_prefixes.includes('T'))
+    // Without --integration, git is not read: no error
+    assert.equal(lint(b, '--json').json.ok, true)
+    // A plan that has run keeps its branches: a run in progress.json, or a task no longer todo
+    writeFileSync(join(root, b, 'progress.json'), JSON.stringify({ runs: [{ number: 1 }] }))
+    assert.equal(lint(b, '--json', '--integration', 'plan/beta').json.ok, true)
+    rmSync(join(root, b, 'progress.json'))
+    writeFileSync(join(root, b, 'PROGRESS.md'), PROGRESS([['T21', 'blocked'], ['T23', 'todo']]))
+    assert.ok(!lint(b, '--json', '--integration', 'plan/beta').json.errors.some(x => x.startsWith('T21: a branch')))
+    writeFileSync(join(root, b, 'PROGRESS.md'), PROGRESS([['T21', 'todo'], ['T23', 'todo']]))
+    // A branch of no plan found: refused too, without a plan to name
+    git('branch', 'task/T23-r2', 'main')
+    const o = lint(b, '--json', '--integration', 'plan/beta').json.errors.find(x => x.startsWith('T23: '))
+    assert.ok(o && o.includes('(a task of a plan no longer here, or an older attempt)'), o)
+    git('branch', '-q', '-D', 'task/T23-r2')
+    // Without a plan: the prefixes in use, for /orchestre:prepare
+    const u = JSON.parse(spawnSync('node', [LINT, '--used-prefixes'], { cwd: root, encoding: 'utf8' }).stdout)
+    assert.ok(u.used_prefixes.includes('T'))
+    assert.deepEqual(u.plans.find(x => x.plan === 'plans/alpha on plan/alpha'), { plan: 'plans/alpha on plan/alpha', prefixes: ['T'] })
+    assert.ok(u.task_branches.includes('T21'))
+    // A plan with its own prefix: neither the branch task/T21 nor plan alpha concern it
+    git('switch', '-q', 'main'); git('switch', '-qc', 'plan/gamma'); const g = plan('gamma', { GA01: task('GA01'), GA02: task('GA02', { depends_on: '[GA01]' }) }); git('add', g); git('commit', '-qm', 'plan gamma')
+    const gr = lint(g, '--json', '--integration', 'plan/gamma')
+    assert.equal(gr.json.ok, true, JSON.stringify(gr.json.errors)); assert.deepEqual(gr.json.tasks.map(t => t.id), ['GA01', 'GA02'])
+    git('switch', '-q', 'plan/ok')
+    for (const x of ['task/T21', 'plan/alpha', 'plan/beta', 'plan/gamma']) git('branch', '-q', '-D', x)
   })
 
   console.log(`plan-lint: ALL GREEN (${n} tests)`)
