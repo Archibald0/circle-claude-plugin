@@ -6,8 +6,9 @@
 // converted in memory; the first write turns it into /3. scripts/migrate.mjs converts it the same way (convertLegacy).
 //
 // Usage: node <plugin root>/scripts/progress.mjs <command> [<plan-dir>] [options]
-// Writes read a JSON object on standard input, or in the option --json '<object>' (a single command to allow,
-// without heredoc or pipe: this is the form the workflow gives its agents). Without a folder, the only plan in plans/.
+// Writes read a JSON object on standard input, or in the option --json '<object>'. The workflow gives its agents a heredoc
+// whose delimiter is quoted (0.18.0): --json '…' needed \u escapes for ' ` $, which the Bash tool of Claude Code decodes
+// before the shell reads the command. Without a folder, the only plan in plans/.
 //   run-start  { phase, mode, parallelism, max_fixes, max_auto_decisions, run_id? }
 //              once per run, by its first agent: rereads the plan (plan-lint), turns a run left in progress into "interrupted"
 //   step       { task, step, isolated?, rejection?, model?, change? }      step: worker, verification, evaluation, fix, merge,

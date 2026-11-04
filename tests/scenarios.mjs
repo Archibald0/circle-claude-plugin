@@ -639,9 +639,14 @@ const AP = { progress: PROG }
 const withProgress = x => ({ ...x, progress_ok: true })
 const planOpened = (...ts) => ({ ...plan(...ts), run_start_ok: true })
 const COK = { progress_ok: true, commit: 'g1', detail: '' }
-// Progress commands of an instruction: between backticks, JSON object in single quotes (neither ' nor ` inside)
-const progressCommands = prompt => [...prompt.matchAll(/`(node "?[^`"]*progress\.mjs"? [^`]*)`/g)].map(m => m[1])
-const parse = c => { const m = c.match(/progress\.mjs"? (\S+) (\S+) --json '([^']*)'$/); assert.ok(m, 'malformed progress command: ' + c); return { cmd: m[1], plan: m[2], E: JSON.parse(m[3]) } }
+// Progress commands of an instruction (0.18.0): a block between ~~~ lines, the JSON object on its own line in a heredoc
+// whose delimiter is quoted
+const progressCommands = prompt => [...prompt.matchAll(/~~~sh\n(node "?[^\n"]*progress\.mjs"? [^\n]*<<'ORCHESTRE_JSON'\n[^\n]*\nORCHESTRE_JSON)\n~~~/g)].map(m => m[1])
+const parse = c => { const m = c.match(/progress\.mjs"? (\S+) ("[^"]*"|\S+) <<'ORCHESTRE_JSON'\n([^\n]*)\nORCHESTRE_JSON$/); assert.ok(m, 'malformed progress command: ' + c); return { cmd: m[1], plan: m[2], E: JSON.parse(m[3]) } }
+// The Bash tool of Claude Code decodes the \uXXXX sequences of a command before the shell reads it (issue #1); the agents
+// played by play() go through the same decoding when BASH_TOOL.decodes is on
+const BASH_TOOL = { decodes: false }
+const bashTool = c => (BASH_TOOL.decodes ? c.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16))) : c)
 const progressOf = (calls, label, i = 0) => progressCommands(byLabel(calls, label)[i].prompt).map(parse)
 const HEADER = 'Plan progress: your first command, before any other'
 const s00 = (extra = {}) => ({ 'T00 · worker': [withProgress(report(0))], 'T00 · verification': [withProgress(ok(1))], 'T00 · evaluation': [withProgress({ verdict: 'pass' })], 'T00 · merge': [withProgress(MOK)], 'T00 · progress': [withProgress(SOK)], ...extra })
@@ -686,8 +691,8 @@ await test('V2: progress — fix and its rejection, escaped text; full close in 
   const fix = byLabel(calls, 'T00 · fix 1')[0].prompt
   assert.deepEqual(progressOf(calls, 'T00 · fix 1'), [{ cmd: 'step', plan: 'plans/p', E: { task: 'T00', step: 'fix', rejection: { attempt: 1, by: 'evaluation', gaps: [M, LONG1] }, model: 'sonnet' } }], 'long text on one line and cut')
   assert.ok(fix.includes(LONG), 'the fix worker gets the whole gap')
-  assert.ok(progressCommands(fix).every(c => !c.includes('\n')), 'command on one line')
-  assert.ok(fix.includes('the option\\u0027s \\u0060--force\\u0060 costs \\u00245'), 'apostrophe, backtick and dollar escaped')
+  assert.ok(progressCommands(fix).every(c => c.split('\n').length === 3), 'the JSON on one line, between the command and the delimiter')
+  assert.ok(fix.includes("the option's `--force` costs $5") && !fix.includes('\\u0027'), 'apostrophe, backtick and dollar as they are, in the quoted heredoc')
   const D = { task: 'T00', title: 'UpdateUserSchema contract', option: 'A', description: 'Keep optional and test rule (d)' }
   assert.deepEqual(progressOf(calls, 'T00 · progress')[1].E, {
     task: 'T00', status: 'merged', attempts: 2, branch: 'task/T00', rejections: [{ attempt: 1, by: 'evaluation', gaps: [M, LONG1] }], auto_decisions: [D],
@@ -712,7 +717,7 @@ await test('V3: progress — parallel tasks → worker step with isolated=true; 
   assert.equal(res.status, 'finished')
   assert.deepEqual(progressOf(calls, 'plan-reader')[0].E, { phase: 1, mode: 'phase', parallelism: 4, max_fixes: 2, max_auto_decisions: 0 })
   for (const id of ['T02', 'T03']) assert.deepEqual(progressOf(calls, `${id} · worker`)[0].E, { task: id, step: 'worker', isolated: true, model: 'sonnet' })
-  assert.ok(byLabel(calls, 'T02 · worker')[0].prompt.includes(`\`node "${PROG_SPACE}" step plans/p --json '`))
+  assert.ok(byLabel(calls, 'T02 · worker')[0].prompt.includes(`~~~sh\nnode "${PROG_SPACE}" step plans/p <<'ORCHESTRE_JSON'\n`))
   drained('V3', q)
 })
 await test('V4: progress — issues of the close passed without their actions; the stop issue goes to the clerk', async () => {
@@ -877,7 +882,7 @@ async function play(name, D, q, args = {}) {
     const v0 = q[k].shift(), cs = progressCommands(prompt)
     // { before, answer }: what the agent does before its progress commands (the scribe writes the created tasks)
     const v = v0 && typeof v0 === 'object' && 'before' in v0 ? (v0.before(), v0.answer) : v0
-    const codes = cs.map(c => { const r = spawnSync('sh', ['-c', c], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.status })
+    const codes = cs.map(c => { const r = spawnSync('sh', ['-c', bashTool(c)], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.status })
     const answer = typeof v === 'function' ? v(prompt, opts) : v
     // The clerk also runs the cleaning of the worktrees: its last line goes in "worktrees"
     const wt = [...prompt.matchAll(/`(node "?[^`"]*worktrees\.mjs"? clean [^`]*)`/g)].map(m => m[1])
@@ -917,6 +922,36 @@ await test('V11: real progress.mjs — T00 merged after a rejection, T01 blocked
     assert.equal(launched[launched.length - 1].out, 'worktrees plans/p: 0 removed, 0 kept')
     assert.equal(spawnSync(process.execPath, [PROGRESS_SCRIPT, 'validate', 'plans/p'], { cwd: D.root }).status, 0)
   } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('V11b (issue #1): real progress.mjs through the Bash tool that decodes \\uXXXX — apostrophes, backticks, $, globs and a literal \\u0027 reach progress.json as written', async () => {
+  const D = toyRepo()
+  BASH_TOOL.decodes = true
+  try {
+    // The texts of the issue: French free text, code names in Markdown, a variable, an issue title
+    const GAP = "l'hôte de `bodyStrippedPathPrefixes` ignore $bodyStrippedPathPrefixes (phase 3), *.ts, et le texte \\u0027 tel quel"
+    const REVIEW = "relire `src/l'hôte.ts` d'un œil (phase 3), $HOME"
+    const BLOCKER = "d'un `run-end` qui casse : $(echo boom) (phase 3), *"
+    const { res, launched } = await play('V11b', D, {
+      'plan-reader': [plan(T0, T1)], 'T00 · worker': [report(0, { deviations: [{ type: 'review', description: REVIEW }] })], 'T00 · verification': [ok(1), ok(2)],
+      'T00 · evaluation': [{ verdict: 'fail', gaps: [GAP] }, { verdict: 'pass' }], 'T00 · fix 1': [report(1)], 'T00 · merge': [MOK], 'T00 · replanning': [NOTHING], 'T00 · progress': [SOK],
+      'T01 · worker': [{ status: 'blocked', summary: 'blocked', branch: 'task/T01', path: D.root, blocker: BLOCKER }], 'T01 · replanning': [NOTHING], 'T01 · progress': [SOK],
+      'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [], 'every progress command passes the decoding')
+    assert.deepEqual(res.progress_failures, [])
+    const doc = D.doc(), t = id => doc.tasks.find(x => x.id === id)
+    assert.deepEqual(t('T00').rejections, [{ attempt: 1, by: 'evaluation', gaps: [GAP] }], 'the gap as written, its literal \\u0027 included')
+    assert.ok(doc.reviews.some(r => r.task === 'T00' && r.text === REVIEW), JSON.stringify(doc.reviews))
+    assert.deepEqual(t('T01').blocker, [BLOCKER])
+    assert.equal(doc.runs[0].status, 'partial', 'run-end written: the run no longer stays in progress')
+    // The form of 0.17, through the same decoding: the \u0027 becomes a quote again and the shell breaks
+    const E = { task: 'T01', status: 'cancelled', reason: "l'hôte `x` $y" }
+    const old = `"${process.execPath}" "${PROGRESS_SCRIPT}" pilot plans/p --json '${JSON.stringify(E).replace(/'/g, '\\u0027').replace(/`/g, '\\u0060').replace(/\$/g, '\\u0024')}'`
+    assert.notEqual(spawnSync('sh', ['-c', bashTool(old)], { cwd: D.root, encoding: 'utf8' }).status, 0, 'the 0.17 form breaks under the decoding')
+    const now = `"${process.execPath}" "${PROGRESS_SCRIPT}" pilot plans/p <<'ORCHESTRE_JSON'\n${JSON.stringify(E)}\nORCHESTRE_JSON`
+    const r = spawnSync('sh', ['-c', bashTool(now)], { cwd: D.root, encoding: 'utf8' })
+    assert.equal(r.status, 0, r.stderr)
+    assert.ok(D.doc().log.some(e => e.kind === 'pilot' && e.text.includes("l'hôte `x` $y")))
+  } finally { BASH_TOOL.decodes = false; fs.rmSync(D.root, { recursive: true, force: true }) }
 })
 await test('V12: real progress.mjs — exception of a task: run-end closes it as failed and regenerates PROGRESS.md, which the clerk will commit', async () => {
   const D = toyRepo()

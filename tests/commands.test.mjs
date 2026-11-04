@@ -331,20 +331,20 @@ try {
     assert.equal(node([join(SCRIPTS, 'worktrees.mjs'), 'clean', 'plans/demo', '--dry-run'], d).code, 0)
     assert.match(node([join(SCRIPTS, 'status.mjs'), 'plans/demo'], d).out, /^## demo — 0\/1 task/)
     assert.equal(node([join(SCRIPTS, 'progress.mjs'), 'status', 'plans/demo'], d).code, 0)
-    // The pilot's action, with the JSON of /orchestre:run
-    const pilot = text.run.match(/progress\.mjs pilot <plan> --json '(\{[^']+\})'/)
+    // The pilot's action, with the JSON of /orchestre:run: a heredoc whose delimiter is quoted (0.18.0)
+    const pilot = text.run.match(/progress\.mjs pilot <plan> <<'ORCHESTRE_JSON'\n\s*(\{[^\n]+\})\n\s*ORCHESTRE_JSON\n/)
     assert.ok(pilot, 'pilot command not found')
     const json = pilot[1].replace('<id>', 'T01').replace('<reason>', 'merged by hand in the test')
     assert.deepEqual(Object.keys(JSON.parse(json)), ['task', 'status', 'reason'])
     const p = node([join(SCRIPTS, 'progress.mjs'), 'pilot', 'plans/demo', '--json', json], d)
     assert.equal(p.code, 0, p.out)
     assert.match(read(join(d, 'plans', 'demo', 'PROGRESS.md')), /\| T01 \| Hello script \|.*\| merged \|/)
-    // An apostrophe in the reason, written \u0027 as the skill says, through the shell's single quotes
-    assert.ok(text.run.includes('No apostrophe in the reason, or written `\\u0027`.'))
-    const quoted = pilot[1].replace('<id>', 'T01').replace('"merged"', '"cancelled"').replace('<reason>', 'the user\\u0027s choice')
-    const sh = spawnSync('sh', ['-c', `node "${join(SCRIPTS, 'progress.mjs')}" pilot plans/demo --json '${quoted}'`], { cwd: d, encoding: 'utf8' })
+    // An apostrophe, a backtick and a dollar in the reason, as they are, through the shell, in the heredoc of the skill
+    assert.ok(!text.run.includes("--json '{") && !text.done.includes("--json '<object>'"), 'no JSON in single quotes left in /run or /done')
+    const raw = pilot[1].replace('<id>', 'T01').replace('"merged"', '"cancelled"').replace('<reason>', "the user's choice, `x` for $HOME")
+    const sh = spawnSync('sh', ['-c', `node "${join(SCRIPTS, 'progress.mjs')}" pilot plans/demo <<'ORCHESTRE_JSON'\n${raw}\nORCHESTRE_JSON`], { cwd: d, encoding: 'utf8' })
     assert.equal(sh.status, 0, sh.stderr)
-    assert.ok(JSON.parse(read(join(d, 'plans', 'demo', 'progress.json'))).log.some(e => e.kind === 'pilot' && e.text.includes("the user's choice")))
+    assert.ok(JSON.parse(read(join(d, 'plans', 'demo', 'progress.json'))).log.some(e => e.kind === 'pilot' && e.text.includes("the user's choice, `x` for $HOME")))
   })
 
   test('a plan of 0.11: the skills detect what plan-lint refuses; migrate.mjs, as they run it, converts it and keeps tache/*', () => {
