@@ -58,7 +58,7 @@ If there are some: explain that they duplicate the plugin (the project's `/lance
 
 ## 6. Sharing with the team (only with `--team`)
 
-So that the people who open this repository are offered the plugin, `settings.mjs` with `--team` also declares, in `.claude/settings.json` (versioned), the marketplace `circle` (`extraKnownMarketplaces`, the GitHub repository of the plugin) and the plugin (`enabledPlugins`), keeping the rest of the file; the permission rules stay in the personal file. This write goes with those of section 2: show the result, then commit `.claude/settings.json` with the user's agreement. Warn that everyone needs read access to the private GitHub repository; at their first `/orchestre:prepare`, the plugin offers each of them their own settings (or `/orchestre:install`).
+So that the people who open this repository are offered the plugin, `settings.mjs` with `--team` also declares, in `.claude/settings.json` (versioned), the marketplace `circle` (`extraKnownMarketplaces`, the GitHub repository of the plugin) and the plugin (`enabledPlugins`), keeping the rest of the file; the permission rules stay in the personal file. This write goes with those of section 2: show the result, then commit `.claude/settings.json` with the user's agreement. At their first `/orchestre:prepare`, the plugin offers each of them their own settings (or `/orchestre:install`).
 
 ## 7. Summary
 

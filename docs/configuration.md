@@ -30,7 +30,6 @@ Limits of these settings (managed settings, Bash sandbox, `.env` in subfolders):
 
 `/orchestre:install --team` declares the marketplace and the plugin in `.claude/settings.json` (versioned). The people who open the repository are offered the plugin after accepting the trust of the folder.
 
-- Each of them needs read access to this GitHub repository: [Access to the repository](reference.md#access-to-the-repository).
 - Their first `/orchestre:prepare` offers their own settings, or `/orchestre:install` writes them.
 - The permission rules stay in each person's `.claude/settings.local.json`. The paths of the scripts differ from one machine to the next, and a denial of `git push` in the versioned file would hold for the whole team.
 

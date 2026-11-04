@@ -19,19 +19,12 @@ This repository is the Claude Code plugin marketplace `circle` ([Claude Code plu
 - The progress display (banner, `/progress`) is a mod, made of function hooks: it needs Claude Code 2.1.287 or later (`claude --version`), the version from which mods are on by default ([mods documentation](https://code.claude.com/docs/en/plugins/mods/overview)).
 - `git` and Node.js 18 or later on the machine: the plan check (`plan-lint`) and the progress are Node scripts without dependencies.
 
-### Access to the repository
-
-The repository is private for now. Claude Code clones it with the machine's `git`, so read access must work without a prompt:
-
-- either a GitHub SSH key loaded in `ssh-agent`;
-- or `gh auth login` then `gh auth setup-git`, and `export CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` to clone over HTTPS.
-
 ### Install
 
 Once per machine, in a Claude Code session:
 
 ```
-/plugin marketplace add FabienDayuse/circle-claude-plugin
+/plugin marketplace add Archibald0/circle-claude-plugin
 /plugin install orchestre@circle
 /reload-plugins
 ```
@@ -39,7 +32,7 @@ Once per machine, in a Claude Code session:
 Or from a terminal:
 
 ```sh
-claude plugin marketplace add FabienDayuse/circle-claude-plugin
+claude plugin marketplace add Archibald0/circle-claude-plugin
 claude plugin install orchestre@circle
 ```
 
@@ -57,7 +50,7 @@ Between two runs, never during one:
 Or from a terminal: `claude plugin update orchestre@circle`, then a new session.
 
 - An update only arrives if the version in `plugins/orchestre/.claude-plugin/plugin.json` changed. Otherwise, the command answers that the plugin is already up to date.
-- Automatic update: `/plugin` → *Marketplaces* → `circle` → *Enable auto-update*. For a private repository, it needs a git credential already saved (SSH key in `ssh-agent`, or `gh auth setup-git`). Otherwise it fails silently and keeps the version in place.
+- Automatic update: `/plugin` → *Marketplaces* → `circle` → *Enable auto-update*.
 - The path of the plugin's scripts contains the version number. After an update, `scripts/settings.mjs` finds the rules of the older version, and `/orchestre:prepare`, `/orchestre:ready` and `/orchestre:run` offer to replace them, in one agreement.
 - Installed version: `claude plugin list`.
 
@@ -68,7 +61,7 @@ Version notes: [`upgrading.md`](upgrading.md).
 A toy repository with one task checks the install end to end in a few minutes:
 
 ```sh
-git clone git@github.com:FabienDayuse/circle-claude-plugin.git && cd circle-claude-plugin
+git clone https://github.com/Archibald0/circle-claude-plugin.git && cd circle-claude-plugin
 sh tests/toy-repo.sh ~/tmp/orchestre-toy
 cd ~/tmp/orchestre-toy && claude
 ```
@@ -310,4 +303,4 @@ brand/                               README banner and screenshot, social previe
 4. Commit and push to `main`. The Release workflow (`.github/workflows/release.yml`) then runs `npm test`, tags the commit `orchestre--v<version>` and opens the GitHub Release, with the `CHANGELOG.md` section of the version as notes. It fails, without a tag, when `CHANGELOG.md` has no section for the version or a test fails: fix and push again, the tag goes on the fixed commit.
 5. On each machine: `/plugin marketplace update circle`.
 
-Tags follow the convention of Claude Code, `<plugin>--v<version>`, so that a plugin which depends on orchestre with a version range can resolve it. To stay on one version, add the marketplace at its tag: `/plugin marketplace add FabienDayuse/circle-claude-plugin#orchestre--v0.13.0`. To open the Release of an older tag: *Actions* > *Release* > *Run workflow*, with the version.
+Tags follow the convention of Claude Code, `<plugin>--v<version>`, so that a plugin which depends on orchestre with a version range can resolve it. To stay on one version, add the marketplace at its tag: `/plugin marketplace add Archibald0/circle-claude-plugin#orchestre--v0.13.0`. To open the Release of an older tag: *Actions* > *Release* > *Run workflow*, with the version.

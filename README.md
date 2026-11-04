@@ -103,17 +103,16 @@ After two fixes by default, a task still rejected stops as blocked, with the exa
 This repository is the plugin marketplace `circle`; orchestre is its only plugin. Once per machine, in a Claude Code session:
 
 ```
-/plugin marketplace add FabienDayuse/circle-claude-plugin
+/plugin marketplace add Archibald0/circle-claude-plugin
 /plugin install orchestre@circle
 /reload-plugins
 ```
 
 <details>
-<summary><strong>Requirements</strong>: Claude Code 2.1.287 or later, <code>git</code>, Node.js 18 or later, read access to this repository</summary>
+<summary><strong>Requirements</strong>: Claude Code 2.1.287 or later, <code>git</code>, Node.js 18 or later</summary>
 
 - Claude Code 2.1.287 or later, with dynamic workflows: paid plans; on Pro, the *Dynamic workflows* line of `/config`. The commands need 2.1.271; the progress display needs 2.1.287.
 - `git` and Node.js 18 or later.
-- Read access to this GitHub repository, private for now: see [Access to the repository](docs/reference.md#access-to-the-repository).
 
 </details>
 
