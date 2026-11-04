@@ -2,6 +2,15 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.18.1 — 2026-11-04: the plan-reader's copy checked against plan-lint
+
+The plan-reader, on haiku, ran `plan-lint --json` and retyped its output into the schema of the workflow, which runs no command itself. Nothing compared that copy with what plan-lint printed, and `--json` holds much more than the workflow reads (warnings, prerequisites and their steps, `ready`, `used_prefixes`…): the agent had to sort, and it rephrased. A real run on 0.17.0 went wrong because of it (run 6, reported on 2026-11-04). Everything a run does comes from that copy: statuses, dependencies, verification commands, prerequisites, last phase.
+
+- `plan-lint --reader`: the JSON of the workflow and nothing else, on one line: `ok`, `errors`, the tasks of the phase with the twelve fields the workflow reads, `all`, `max_phase`, and `digest`, a fingerprint of these fields (FNV-1a on 32 bits, 8 hexadecimal digits; a field left out, empty or null reads alike). `--json` does not change: `/orchestre:ready`, `/orchestre:run` and `/orchestre:prepare` read it.
+- Workflow: the plan-reader runs `--reader` and returns its JSON exactly as printed, `digest` included (required by the schema); the workflow computes the digest again on the copy. When it does not match, a second reading, which does not run `run-start` again (the run is open); when the second one does not match either, the run stops in `error` before any task, and the clerk closes it in progress. The digest covers `ok`: a copy that turns a plan in error into a valid one is caught.
+- `planDigest` is written twice, to the character, in `scripts/plan-lint.mjs` and in `workflows/run-phase.js`, which can load no module; `tests/commands.test.mjs` compares them.
+- Tests: `plan-lint` (`--reader`: its fields, one line, the digest, a status that changes it, a plan in error printed with its digest); scenarios R1 to R5 (a wrong copy then a faithful one; two wrong copies with progress: `error`, a single `run-start`, no worker; a copy that makes a plan in error valid; the digest field by field; the real `plan-lint.mjs` read through `play()`, the same digest on both sides); commands (the same `planDigest`, the skills keep `--json`). The fake answers of the plan-reader get the right digest unless a scenario says otherwise. Five mutations of the check, all caught.
+
 ## 0.18.0 — 2026-11-04: public release, safeguards that hold
 
 The first public version. An adversarial review before the release found promises of the README that the code did not keep, and a repository presented as private under another name. Each one is now held by the code, or said as it is.

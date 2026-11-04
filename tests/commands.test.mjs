@@ -479,6 +479,21 @@ try {
     assert.ok(['worker', 'isolated-worker'].every(a => AGENTS.includes(a)))
   })
 
+  test('digest of the plan (0.18.1): the same planDigest in plan-lint and in the workflow, which reads plan-lint --reader; the plan-reader copies it', () => {
+    const fn = t => (t.match(/\nfunction planDigest\(p\) \{\n[\s\S]*?\n\}/) || [''])[0]
+    assert.ok(fn(WF).length > 100, 'planDigest missing from run-phase.js')
+    assert.equal(fn(SRC['plan-lint']), fn(WF), 'planDigest differs between scripts/plan-lint.mjs and workflows/run-phase.js')
+    assert.ok(WF.includes('--reader --phase ${PHASE}') && !/plan-lint[^\n]*--json/.test(WF.replace(/\/\/[^\n]*/g, '')), 'the workflow reads plan-lint --reader, not --json')
+    // The fields the workflow requires of the copy: those --reader prints, digest included
+    const schema = WF.match(/const PLAN_S = S\(\{([\s\S]*?)\n/)[1]
+    for (const k of ['ok', 'errors', 'tasks', 'all', 'max_phase', 'digest']) assert.ok(schema.includes(`${k}: `), `PLAN_S: ${k}`)
+    const reader = read(join(PLUGIN, 'agents', 'plan-reader.md'))
+    assert.ok(reader.includes('`digest` included, character for character') && reader.includes('plan-lint --reader'), 'plan-reader.md')
+    // The skills keep --json, which does not change
+    for (const s of ['ready']) assert.ok(text[s].includes('--json --integration'), s)
+    assert.ok(!SKILLS.some(s => text[s].includes('--reader')), 'a skill reads --reader: it is the JSON of the workflow')
+  })
+
   console.log(`commands: ALL GREEN (${n} tests)`)
 } finally {
   for (const d of tmp) rmSync(d, { recursive: true, force: true })

@@ -198,7 +198,7 @@ The plugin runs a dev plan split into tasks (`plans/<name>/`, one file per task)
 
 | Step | Agent | Model | Role |
 | :- | :- | :- | :- |
-| Reading | `plan-reader` | haiku | `plan-lint` as JSON: tasks of the phase, statuses, dependencies |
+| Reading | `plan-reader` | haiku | `plan-lint --reader` as JSON: tasks of the phase, statuses, dependencies; the workflow checks the copy against its digest, reads the plan a second time when it does not match, then stops before any task |
 | Work | `worker`, or `isolated-worker` in a worktree if tasks run in parallel | the task's model, as is (sonnet if it has none) | carries out the task on `task/<id>`, runs its verifications, returns a report |
 | Verification | `verifier` | sonnet | checks that the task's files are committed (a file of the task left uncommitted is a failure), then replays the verification commands: exit code and excerpt of each |
 | Evaluation | `evaluator` | opus | judges each criterion of done on evidence (diff, results of the verifier) |
@@ -287,13 +287,13 @@ brand/                               README banner and screenshot, social previe
 
 - Try a change without installing it: `claude --plugin-dir plugins/orchestre`, then `/reload-plugins` after each change.
 - Tests: `npm test` runs four groups, which can also be run alone:
-  - `npm run test:scripts`: 26 cases of `plan-lint`, 10 of `/orchestre:status`, 30 of `progress.mjs`, 4 of `worktrees.mjs`, 21 of `migrate.mjs` and 22 of `settings.mjs`, in temporary git repositories;
-  - `npm run test:workflow`: 105 scenarios of the workflow, with simulated agents, 6 of which run the real `progress.mjs` and `worktrees.mjs` in a temporary repository;
-  - `npm run test:commands`: the settings template, and 18 tests of the contract between the skills and the rest of the plugin;
+  - `npm run test:scripts`: 27 cases of `plan-lint`, 10 of `/orchestre:status`, 30 of `progress.mjs`, 4 of `worktrees.mjs`, 21 of `migrate.mjs` and 22 of `settings.mjs`, in temporary git repositories;
+  - `npm run test:workflow`: 110 scenarios of the workflow, with simulated agents, 7 of which run the real `progress.mjs` and `worktrees.mjs` (and one the real `plan-lint.mjs`) in a temporary repository;
+  - `npm run test:commands`: the settings template, and 19 tests of the contract between the skills and the rest of the plugin;
   - `npm run test:mod`: 32 cases of the mod's view model on `progress.json` files written by `progress.mjs`, `/progress demo` compared with the real `progress.mjs` included.
 - Validation: `npm run validate` (`claude plugin validate` on the plugin and on the marketplace, then `claude plugin test` of the plugin, which runs the 30 tests of the mod under the engine).
 - Try the mod without installing it: `claude --plugin-dir plugins/orchestre`, then `/progress demo`; or, on a real `progress.json`, `node tests/demo-progress.mjs <folder>` in another terminal.
-- The workflow script has no access to files and cannot import anything; `Date.now()`, `Math.random()` and `new Date()` are forbidden there. Before changing it, load the reference `/workflow-authoring`.
+- The workflow script has no access to files and cannot import anything; `Date.now()`, `Math.random()` and `new Date()` are forbidden there. `planDigest` is therefore written twice, in `scripts/plan-lint.mjs` and in `workflows/run-phase.js`: change both, `tests/commands.test.mjs` checks they are the same. Before changing it, load the reference `/workflow-authoring`.
 
 ### Publish a version
 
