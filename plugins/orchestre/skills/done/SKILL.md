@@ -6,7 +6,15 @@ disable-model-invocation: true
 allowed-tools:
   - Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/progress.mjs *)
 ---
-You close, in the progress of an orchestre plan, the reviews before the PR and the auto-decisions that `$ARGUMENTS` names or that the user picks. You change nothing else: no plan file, no HANDOFF.md, no code. Each write goes through `node ${CLAUDE_PLUGIN_ROOT}/scripts/progress.mjs ack <plan-dir> --json '<object>'`, or `ticket` in place of `ack`; an apostrophe of a text is written `\u0027` in the JSON, so that the single quotes around it hold. The script is safe during a run: it takes the lock of the progress file.
+You close, in the progress of an orchestre plan, the reviews before the PR and the auto-decisions that `$ARGUMENTS` names or that the user picks. You change nothing else: no plan file, no HANDOFF.md, no code. Each write goes through `progress.mjs ack`, or `ticket` in place of `ack`, its JSON object on one line in a heredoc whose delimiter is quoted, the whole block in a single call:
+
+~~~sh
+node ${CLAUDE_PLUGIN_ROOT}/scripts/progress.mjs ack <plan-dir> <<'ORCHESTRE_JSON'
+<object>
+ORCHESTRE_JSON
+~~~
+
+The texts go in as they are, apostrophes, backticks and `$` included: nothing in a quoted heredoc is read by the shell. Never `--json '…'` with a `\u0027`: the Bash tool of Claude Code turns it back into a quote, which ends the argument. The script is safe during a run: it takes the lock of the progress file.
 
 The arguments, in order: the plan folder (`plans/<name>`); then, optionally, `ticket`; then the kind (`review` for a review before the PR, `decision` for an auto-decision), the task id (`-` for the source plan), then all the rest, which is the text of the review or the title of the decision, as written.
 
