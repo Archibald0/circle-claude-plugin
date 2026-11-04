@@ -200,11 +200,11 @@ The plugin runs a dev plan split into tasks (`plans/<name>/`, one file per task)
 | :- | :- | :- | :- |
 | Reading | `plan-reader` | haiku | `plan-lint` as JSON: tasks of the phase, statuses, dependencies |
 | Work | `worker`, or `isolated-worker` in a worktree if tasks run in parallel | the task's model, as is (sonnet if it has none) | carries out the task on `task/<id>`, runs its verifications, returns a report |
-| Verification | `verifier` | sonnet | replays the verification commands: exit code and excerpt of each |
+| Verification | `verifier` | sonnet | checks that the task's files are committed (a file of the task left uncommitted is a failure), then replays the verification commands: exit code and excerpt of each |
 | Evaluation | `evaluator` | opus | judges each criterion of done on evidence (diff, results of the verifier) |
 | Model choice | `replanner` | opus | after a rejected attempt, chooses the model of the fix from the rejection; the task's model is the floor; without a valid answer, the `escalation` ladder |
 | Fixes | `worker` | model chosen; without a model in the plan: sonnet then opus (`escalation`) | 2 fixes at most (`max_fixes`), on the gaps found |
-| Merge | `integrator` | sonnet | `--no-ff` into `plan/<name>`, then the post-merge check |
+| Merge | `integrator` | sonnet | `--no-ff` into `plan/<name>`, then the post-merge check; removes the task's worktree without force, and keeps it, as a review, when git finds uncommitted work there |
 | Replanning | `replanner` | opus | rates the deviations, prepares the issues to settle with their options |
 | Progress | `scribe` | sonnet | the only one to write `HANDOFF.md`, `DISCOVERY.md` and the tasks created or amended; closes the task through `progress.mjs`, which regenerates `PROGRESS.md` |
 | End of run | `clerk` | haiku | closes the run with `progress.mjs run-end`, commits `PROGRESS.md` if it changed, removes the clean worktrees of the tasks (`worktrees.mjs`) |

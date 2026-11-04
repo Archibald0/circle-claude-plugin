@@ -1278,4 +1278,24 @@ await test('W10: blank lint → error; language cut at 40 characters; a forbidde
   assert.ok(byLabel(f.calls, 'T00 · merge')[0].prompt.includes('this check command, without a pipe (add `; echo "code=$?"`): sh scripts/e2e-local.sh.'))
   drained('W10 forbidden', f.q)
 })
+await test('W11: a worktree is never removed by force (0.18.0) — kept by git, a review; uncommitted work seen by the verifier', async () => {
+  assert.ok(!src.includes('remove --force'), 'run-phase.js asks for a forced removal of a worktree')
+  const T02 = { ...T00, id: 'T02', title: 'Other', file: 'plans/p/tasks/T02.md', resources: [] }
+  const T03 = { ...T00, id: 'T03', title: 'Again', file: 'plans/p/tasks/T03.md', resources: [] }
+  const KEPT = "fatal: '/wt/T02' contains modified or untracked files, use --force to delete it"
+  const tt = (id, verif = ok(id), merge = MOK) => ({ [`${id} · worker`]: [report(id, { branch: `task/${id}`, path: `/wt/${id}` })], [`${id} · verification`]: [verif], [`${id} · evaluation`]: [{ verdict: 'pass' }], [`${id} · merge`]: [merge], [`${id} · progress`]: [SOK] })
+  const { res, calls, logs, q } = await scenario('W11', { 'plan-reader': [plan(T02, T03)], ...tt('T02', ok('T02'), { ...MOK, worktree_kept: KEPT }), ...tt('T03', { ...ok('T03'), uncommitted: ['dist/bundle.js'] }) })
+  assert.equal(res.status, 'finished')
+  const mg = byLabel(calls, 'T02 · merge')[0].prompt
+  assert.ok(mg.includes('`git worktree remove "/wt/T02"`') && mg.includes('never with --force') && mg.includes('worktree_kept'), 'merge: removal without force')
+  const vf = byLabel(calls, 'T02 · verification')[0].prompt
+  assert.ok(vf.includes('`cd "/wt/T02" && git status --porcelain --untracked-files=all`') && vf.includes('owned_files, in plans/p/tasks/T02.md') && vf.includes('"uncommitted"'), 'verification: uncommitted work first')
+  assert.deepEqual(res.reviews.map(x => x.task), ['T02'])
+  assert.ok(res.reviews[0].review.startsWith(`worktree /wt/T02 kept after the merge of T02 (${KEPT})`), res.reviews[0].review)
+  assert.ok(byLabel(calls, 'T02 · progress')[0].prompt.includes('worktree /wt/T02 kept after the merge'), 'scribe: the review in HANDOFF.md')
+  assert.ok(logs.some(l => l === 'T02: worktree /wt/T02 kept, uncommitted work'))
+  assert.ok(logs.some(l => l === "T03: uncommitted in /wt/T03, outside the task's files: dist/bundle.js"))
+  assert.ok(!byLabel(calls, 'T03 · progress')[0].prompt.includes('kept after the merge'), 'T03: no review')
+  drained('W11', q)
+})
 console.log(`scenarios: ALL GREEN (${n} cases)`)

@@ -94,9 +94,9 @@ const REPORT_S = S({
   findings: { type: 'array', items: S({ category: str, content: str }, ['category', 'content']) }, blocker: str, ...PROGRESS_P,
 }, ['status', 'summary', 'branch', 'path'])
 const RESULT_S = S({ command: str, code: { type: 'integer' }, excerpt: str }, ['command', 'code', 'excerpt'])
-const VERIF_S = S({ ok: bool, results: { type: 'array', items: RESULT_S }, failures: { type: 'array', items: S({ command: str, excerpt: str }, ['command']) }, flaky: strs, forbidden: strs, ...PROGRESS_P }, ['ok', 'results'])
+const VERIF_S = S({ ok: bool, results: { type: 'array', items: RESULT_S }, failures: { type: 'array', items: S({ command: str, excerpt: str }, ['command']) }, flaky: strs, forbidden: strs, uncommitted: strs, ...PROGRESS_P }, ['ok', 'results'])
 const EVAL_S = S({ verdict: { type: 'string', enum: ['pass', 'fail'] }, gaps: strs, unverifiable: strs, unreadable: strs, ...PROGRESS_P }, ['verdict'])
-const INTEG_S = S({ ok: bool, merged: bool, check_ok: bool, conflict: bool, commit: str, detail: str, ...PROGRESS_P }, ['ok', 'merged'])
+const INTEG_S = S({ ok: bool, merged: bool, check_ok: bool, conflict: bool, commit: str, detail: str, worktree_kept: str, ...PROGRESS_P }, ['ok', 'merged'])
 const SCRIBE_S = S({ ok: bool, commit: str, rejected: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }, discarded: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }, ...PROGRESS_P, run_start_ok: bool }, ['ok'])
 const CLERK_S = S({ progress_ok: bool, progress_error: str, commit: str, detail: str, worktrees: str }, ['progress_ok'])
 // Choice of a fix's model (0.11.0): haiku, sonnet or opus; fable only comes from a task the user put on it
@@ -159,7 +159,8 @@ Decisions taken: ${JSON.stringify(runDecisions())}.
 A file your permissions forbid you to read or change (organization or project settings): never get around the ban, by any command or script; describe the expected change in a deviation of type "review", the human will make it before the PR.
 Run the task's verification commands before handing back.
 Report: status, summary, branch, last commit, absolute path of the working folder (pwd), changed files, deviations from the plan, findings useful to the following tasks.${pLanguage}`
-const pVerif = (t, r) => `${pStep(t.id, 'verification')}Verify the task ${t.id}, branch ${r.branch}. Run one by one, without changing anything, each command below, prefixed with \`cd "${r.path}" &&\`:
+const pVerif = (t, r) => `${pStep(t.id, 'verification')}Verify the task ${t.id}, branch ${r.branch}. First, without changing anything, \`cd "${r.path}" && git status --porcelain --untracked-files=all\`: a file it lists that the task owns (its owned_files, in ${t.file}) is work left uncommitted, which the merge would not take: count it as a failure, with the command \`git status\` and the excerpt "uncommitted: " followed by the files. A file it lists that the task does not own is not a failure: cite it in "uncommitted".
+Then run one by one, without changing anything, each command below, prefixed with \`cd "${r.path}" &&\`:
 ${bullets(t.verification)}
 The failures listed as pre-existing in ${PLAN}/DISCOVERY.md do not count. A command your permissions refuse (organization or project settings): never get around it, by any other command or script, and do not count it as a failure; cite it in "forbidden", as it appears in the list above, without the \`cd\` prefix; the human will run it before the PR. If a test command fails, run it again once only: if it passes, the verification passes, but cite each test that failed then passed in "flaky". To read an exit code, do not pipe the command: add \`; echo "code=$?"\`. Return ok; in "results", for each command, even a successful one, the command, its exit code (that of the second run if there was one) and the excerpt that proves it (summary line, 10 lines at most); in "failures", for each failure that counts, the command and a useful excerpt of its output (30 lines at most). Never run a command that reads real production or personal data (production dump, production database or a copy of it): count it as a failure, with the excerpt "needs-human: real data, an action reserved to the human".`
 const pEval = (t, r, v) => `${pStep(t.id, 'evaluation')}Evaluate the task ${t.id}. Read the definition of done in ${t.file}, then the diff \`git diff ${INTEG}...${r.branch}\`.
@@ -177,7 +178,7 @@ const pMerge = (t, r, isolated, check) => `${pStep(t.id, 'merge')}Merge the task
 On a conflict: \`git merge --abort\`, then return ok=false, merged=false, conflict=true and the files involved.
 Otherwise, return merged=true.${pSetup(t, `on ${INTEG}, after the merge and before the check`, 'If one fails, do not run the check: return check_ok=false, with "setup:" followed by the command and an excerpt of its output in detail. After them, `git status --porcelain` must be empty: a setup changes no tracked file and leaves no file that is not ignored; otherwise, do not run the check and return check_ok=false, with "setup: changed files" and their list in detail.')}
 Then run on ${INTEG} this check command, without a pipe (add \`; echo "code=$?"\`): ${check}. Return check_ok according to its exit code, a useful excerpt in detail on a failure, and ok=true only if the merge and the check succeeded.${isolated ? `
-Then remove the worktree: \`git worktree unlock "${r.path}"\` (ignore the error), then \`git worktree remove --force "${r.path}"\`. Keep the branch.` : ''}`
+Then remove the worktree, never by force: \`git worktree unlock "${r.path}"\` (ignore the error), then \`git worktree remove "${r.path}"\`. If git refuses (modified or untracked files: work that was not committed), leave the worktree as it is, never with --force nor by deleting its folder, and return the first line of git's message in worktree_kept; the merge and the check keep their result. Keep the branch.` : ''}`
 // Choice of the model of the next fix (0.11.0): the attempt's rejection, the earlier rejections and their models
 const pChoice = (t, rejection, before, previous) => `Choice of the model of fix ${rejection.attempt} of the task ${t.id} (${t.file}). Model planned by the plan: ${t.model}${t.model_reason ? ` ("${oneLine(t.model_reason)}")` : ''}; it is a floor: the fix will never run on a weaker model. Attempt ${rejection.attempt}, on ${before}, was rejected by ${rejection.by === 'verification' ? 'the verification' : 'the evaluation'}. Gaps: ${JSON.stringify(rejection.gaps)}.${previous.length ? ` Attempts rejected before it: ${JSON.stringify(previous)}.` : ''}
 Return model (haiku, sonnet or opus) and reason, on one line: haiku for a mechanical gap (text, format, renaming, configuration), sonnet for an implementation gap, opus for a gap of architecture, ambiguous, that touches several modules, or that comes back after a fix on the same model. You may read the task file. Rate no deviation, prepare no issue and change nothing.${pLanguage}`
@@ -386,6 +387,8 @@ async function closeTask(t, status, attempts, r, gaps = [], trace = {}) {
   }
   // File unreadable for the evaluator: a generic entry, unless a review already cites it
   reviews.push(...(trace.unreadable || []).filter(f => !reviews.some(d => cite(d, f))).map(f => `${f}: unreadable by the agents, to review by the human before the PR`))
+  // Worktree that git refused to remove after the merge (0.18.0): uncommitted work, never removed by force
+  reviews.push(...(trace.kept || []))
   const allReviews = [...new Set(reviews)]
   updates.entries.push(...allReviews.map(d => ({ type: 'review', severity: 'major', description: d })))
   const needs = deviations.filter(e => e.type === 'needs-human')
@@ -454,6 +457,7 @@ async function runTask(t, isolated) {
       const v = await agent(pVerif(t, r), { label: `${t.id} · verification`, agentType: AG('verifier'), model: 'sonnet', schema: VERIF_S })
       noteProgress(t.id, 'verification', v)
       if (v && (v.flaky || []).length) trace.flaky.push(...v.flaky)
+      if (v && (v.uncommitted || []).length) log(`${t.id}: uncommitted in ${r.path}, outside the task's files: ${short(v.uncommitted.join(', '), 300)}`)
       // Commands refused by permissions: only the task's count as forbidden; another one is a failure
       // Progress command cited among the refused ones (authorization rule missing): neither a task command nor a failure
       const refused = ((v && v.forbidden) || []).filter(x => !(PROGRESS && String(x).includes(PROGRESS)))
@@ -493,6 +497,10 @@ async function runTask(t, isolated) {
     noteProgress(t.id, 'merge', i)
     if (!i) return await closeTask(t, 'blocked', attempts, r, ['integrator without an answer'], trace)
     if (!(i.merged ?? i.ok)) return await closeTask(t, 'blocked', attempts, r, [`merge: ${i.detail || 'failure'}`], trace)
+    if (isolated && i.worktree_kept) {
+      trace.kept = [`worktree ${r.path} kept after the merge of ${t.id} (${short(i.worktree_kept, 200)}): what it holds uncommitted is not in ${INTEG}; look at it, then remove it`]
+      log(`${t.id}: worktree ${r.path} kept, uncommitted work`)
+    }
     if (!(i.check_ok ?? i.ok)) {
       // Merge done but check failed: the task stays merged and the run stops for a human
       const detail = `${setupOf(t).length ? 'setup or ' : ''}post-merge check failed on ${INTEG} (${check}): ${i.detail || 'failure'}`

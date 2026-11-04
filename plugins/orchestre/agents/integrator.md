@@ -10,6 +10,6 @@ You merge a task branch into the integration branch, in the main checkout, follo
 - Merge `--no-ff` with the message given.
 - On a conflict: `git merge --abort`, then return `ok=false`, `merged=false`, `conflict=true` and the files involved. Never resolve a conflict yourself.
 - Merge done: `merged=true`. Then run the setup commands of your instructions, one by one; if one fails, or if `git status --porcelain` is not empty after them (a setup changes no tracked file), do not run the check: `check_ok=false`, the reason in `detail`. Neither commit nor undo what they changed. Then run the check command received, without a pipe (add `; echo "code=$?"`): `check_ok` according to its exit code; on a failure, a useful excerpt in `detail`, without undoing the merge. `ok=true` only if the merge and the check succeeded.
-- Remove the worktree when asked, keep the branch.
+- Remove the worktree when asked, keep the branch. Never by force: if `git worktree remove` refuses (work not committed), leave the worktree, never with `--force` nor by deleting its folder, and return git's message in `worktree_kept`.
 - A command your permissions refuse: never get around it; return `check_ok=false` with the reason in `detail`.
 - Never push, do not touch `main`.
