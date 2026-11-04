@@ -21,10 +21,10 @@
 // converts it once.
 // Task ids across plans (0.18.0): the branches task/<id> belong to the repository, not to a plan. With --integration, a plan
 // that has never run is refused while a branch task/<id> of one of its ids already exists: its worker would take that
-// branch back and build on the work of another plan. "used_prefixes" lists the prefixes of the other plans (the folders next
-// to this one, and the plans committed on the local branches plan/*, where a plan lives until its pull request is merged)
-// and of the existing branches task/*. Usage without a plan: plan-lint.mjs --used-prefixes [<plans folder>], for
-// /orchestre:prepare, which gives a new plan a free prefix.
+// branch back and build on the work of another plan; the error names the plan that holds the id, in the folders next to
+// this one or committed on a local branch plan/* (where a plan lives until its pull request is merged). "used_prefixes": the
+// prefixes of the plans next to this one and of the branches task/*. Usage without a plan: plan-lint.mjs --used-prefixes
+// [<plans folder>], which also reads the branches plan/*, for /orchestre:prepare, which gives a new plan a free prefix.
 import { readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs'
 import { join, dirname, resolve, relative, basename, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -155,7 +155,8 @@ function folderPlans(plansDir, own) {
     if (name === own) continue
     let files = []
     try { files = readdirSync(join(plansDir, name, 'tasks')).filter(f => f.endsWith('.md')).sort() } catch { continue }
-    for (const f of files) { try { const id = idOf(readFileSync(join(plansDir, name, 'tasks', f), 'utf8')); if (id) found.push({ id, where: join(plansDir, name) }) } catch {} }
+    const where = relative(process.cwd(), join(plansDir, name)).split(sep).join('/')
+    for (const f of files) { try { const id = idOf(readFileSync(join(plansDir, name, 'tasks', f), 'utf8')); if (id) found.push({ id, where }) } catch {} }
   }
   return found
 }
@@ -264,15 +265,19 @@ if (integ) {
 // or to an older attempt; the worker would take it back. A plan that has run (a run in progress.json, or a task that is no
 // longer todo) keeps its own branches
 const plansDir = dirname(resolve(dir)), ownName = basename(resolve(dir))
-const others = [...folderPlans(plansDir, ownName), ...(integ ? branchPlans(plansDir, ownName, integ) : [])]
+const nearby = folderPlans(plansDir, ownName)
 const ranRuns = (() => { try { const j = JSON.parse(readFileSync(join(dir, 'progress.json'), 'utf8')); return Array.isArray(j.runs) ? j.runs.length : 0 } catch { return 0 } })()
 const launched = ranRuns > 0 || [...T.keys()].some(id => (st[id] || 'todo') !== 'todo')
 const branchIds = integ ? taskBranchIds() : []
-if (integ && !launched) for (const id of [...new Set(branchIds)].filter(id => T.has(id)).sort()) {
+const collisions = integ && !launched ? [...new Set(branchIds)].filter(id => T.has(id)).sort() : []
+// The plans committed on the branches plan/* (one git show per task) are read only to name the plan of a refused id:
+// progress.mjs runs plan-lint at each of its writes
+const others = collisions.length ? [...nearby, ...branchPlans(plansDir, ownName, integ)] : nearby
+for (const id of collisions) {
   const where = [...new Set(others.filter(o => o.id === id).map(o => o.where))]
   errors.push(`${id}: a branch task/${id} already exists and this plan has never run: its worker would take it back and build on it (${where.length ? `the task ${id} of ${where.join(', ')}` : 'a task of a plan no longer here, or an older attempt'}). Give this plan its own prefix (/orchestre:prepare picks a free one: node plan-lint.mjs --used-prefixes), or delete the branch if its work is no longer needed (git branch -D task/${id})`)
 }
-const usedPrefixes = [...new Set([...others.map(o => prefixOf(o.id)), ...branchIds.filter(id => !T.has(id)).map(prefixOf)])].filter(Boolean).sort()
+const usedPrefixes = [...new Set([...nearby.map(o => prefixOf(o.id)), ...branchIds.filter(id => !T.has(id)).map(prefixOf)])].filter(Boolean).sort()
 for (const t of T.values()) {
   if (!t.phase) errors.push(`${t.id}: missing phase`)
   // Model absent (nothing, "model:", "model: \"\""): warning below (the worker will run on sonnet, then the escalation
