@@ -29,9 +29,9 @@ A long dev plan does not fit in one Claude Code session: the context fills up, a
 **Follow a long run without watching it.** A banner above the prompt shows the phase, the progress and the task in progress. `/progress` opens a pane: what waits for you comes first, each item with its buttons (review it with Claude, mark it done, move it to tickets, fix its text), then the run, the tasks as timelines and the log. A notification comes only when a task needs you or a run stops, and when you come back after a break, one says what changed. To see it without a run: `/progress demo`.
 
 <p align="center">
-  <img src="brand/screenshots/progress-panel.png" width="793" alt="The /progress pane at the end of the demo: the reviews to do before the pull request, each with its key, then the finished run, the tasks as timelines and the log">
+  <img src="brand/screenshots/progress-panel.png" width="793" alt="The /progress pane at the end of the demo, line 4 of the reviews selected: its detail card first, with when and where to act, the auto-decision and its buttons, then the reviews to do before the pull request, the finished run, the tasks as timelines and the log">
   <br>
-  <em>The <code>/progress</code> pane, last frame of <code>/progress demo</code>: what waits for you comes first.</em>
+  <em>The <code>/progress</code> pane, last frame of <code>/progress demo</code>, key <kbd>4</kbd> pressed: what waits for you comes first, with when and where to act.</em>
 </p>
 
 ## Use
