@@ -2,6 +2,16 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.18.2 — 2026-11-13: the start of a task in a worktree, noted from the main checkout
+
+On a real run, Claude Code's isolation guard refused the progress command to the workers isolated in a worktree: "too complex to verify that it stays inside the worktree". The command is a heredoc (0.18.0) that names a script outside the worktree. The worker step was therefore never written, and that step is what makes a task "in progress": the banner and `/progress` showed "0 in progress" and the task as not started for the whole of its worker, its longest step, while the workflow was running it. It was seen on a run that followed a ruling: its two added tasks started in parallel, hence in worktrees. One worker also reported the refusal as a `review`, which reached "Your turn".
+
+- Workflow: for a task that works in a worktree, the `clerk` (haiku) runs the worker step from the main checkout (`step`, `isolated: true`, the model launched), and the worker is launched once the clerk has answered. The isolated worker no longer carries a progress command, and its report has no `progress_ok` to fill. A clerk that fails, does not answer or throws only spoils the display: the failure goes to `progress_failures` (`step: "worker"`) and the worker starts all the same. Nothing changes for a task of the main checkout, whose worker runs its step itself, nor for the fix of a task in a worktree (the fix is not isolated), nor without `progress`.
+- Agents: `clerk` notes the start of a task as well as the end of a run; `isolated-worker` has no rule for a progress command any more, nor an exception to the guard for it.
+- Cost: one short call on haiku per task in a worktree, before its worker.
+- Tests: scenarios X1 to X3. X1: the clerk before the worker, the worker without a command, the fix with its step, nothing at the start in the main checkout nor without progress. X2: a clerk that fails in five ways, and a start that is awaited. X3: the real `progress.mjs` under a guard that refuses the progress commands of an isolated agent; `progress.json` holds the worker step while the worker runs, and the scenario fails on the workflow of 0.18.1. The harness now refuses a call without an answer, which a failure the workflow catches would have hidden. `commands` checks the rules of the two agents against the workflow. 23 mutations of the new code, all detected.
+- Still to check on a real run: that the rule `Bash(node <plugin>/scripts/progress.mjs *)` covers the heredoc form in manual permission mode.
+
 ## 0.18.1 — 2026-11-04: the plan-reader's copy checked against plan-lint
 
 The plan-reader, on haiku, ran `plan-lint --json` and retyped its output into the schema of the workflow, which runs no command itself. Nothing compared that copy with what plan-lint printed, and `--json` holds much more than the workflow reads (warnings, prerequisites and their steps, `ready`, `used_prefixes`…): the agent had to sort, and it rephrased. A real run on 0.17.0 went wrong because of it (run 6, reported on 2026-11-04). Everything a run does comes from that copy: statuses, dependencies, verification commands, prerequisites, last phase.

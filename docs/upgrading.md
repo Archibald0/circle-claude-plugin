@@ -2,6 +2,13 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.18.1 to 0.18.2
+
+Nothing to do: plans, `progress.json` and the settings keep their format. The rules of two agents change (`clerk`, `isolated-worker`): after the update, `/reload-plugins`, or a new session.
+
+1. A task that works in a worktree shows "in progress" as soon as it starts: the clerk notes its start from the main checkout, as it already notes the end of the run. Before, Claude Code's isolation guard refused that command to the isolated worker, and the banner and `/progress` showed the task as not started for the whole of its worker.
+2. A review left in "Your turn" by an earlier run, such as "The isolation guard refused the progress command…", asks nothing of you: close it with `[ ✓ Done ]`.
+
 ## From 0.18.0 to 0.18.1
 
 Nothing to do: plans, `progress.json` and the settings keep their format. The plan-reader now runs `plan-lint --reader`, which the rule `Bash(node <plugin>/scripts/plan-lint.mjs *)` already covers, and the workflow checks its copy against the digest that plan-lint prints. A copy that does not match twice stops the run in `error` before any task: launch a new run.
