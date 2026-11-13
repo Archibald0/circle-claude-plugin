@@ -31,16 +31,19 @@ const DEVIATION = [{ type: 'deviation', description: 'isSuperAdmin optional in U
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
 let last = null
 async function scenario(name, q, args = {}) {
-  const calls = [], logs = []
+  const calls = [], logs = [], unexpected = []
   const agent = async (prompt, opts = {}) => {
     calls.push({ prompt, opts })
     const k = opts.label
-    if (!(k in q) || !q[k].length) throw new Error(`[${name}] unexpected call: ${k}`)
+    if (!(k in q) || !q[k].length) { unexpected.push(k); throw new Error(`[${name}] unexpected call: ${k}`) }
     const v = q[k].shift()
     return sealed(k, typeof v === 'function' ? v(prompt, opts) : v)
   }
   const res = await run({ ...ARGS, ...args }, agent, () => {}, (m) => logs.push(m))
   last = res
+  // The workflow catches an agent that throws where only the display is at stake (the clerk of a task start, of the run end):
+  // a call without an answer must not pass for such a failure
+  assert.deepEqual(unexpected, [], `[${name}] call without an answer`)
   return { res, calls, logs, q }
 }
 const byLabel = (calls, l) => calls.filter(c => c.opts.label === l)
@@ -712,17 +715,18 @@ await test('V2: progress — fix and its rejection, escaped text; full close in 
   assert.deepEqual(res.added_tasks, [{ id: 'T00C', phase: 1, title: 'Rule d test' }], 'summary of the pilot unchanged')
   drained('V2', q)
 })
-await test('V3: progress — parallel tasks → worker step with isolated=true; script path with a space quoted', async () => {
+await test('V3: progress — parallel tasks → worker step with isolated=true, run by the clerk (0.18.2); script path with a space quoted', async () => {
   const T02 = { ...T00, id: 'T02', title: 'Other', file: 'plans/p/tasks/T02.md', resources: [] }
   const T03 = { ...T00, id: 'T03', title: 'Again', file: 'plans/p/tasks/T03.md', resources: [] }
-  const tt = id => ({ [`${id} · worker`]: [withProgress(report(id, { branch: `task/${id}`, path: `/wt/${id}` }))], [`${id} · verification`]: [withProgress(ok(id))], [`${id} · evaluation`]: [withProgress({ verdict: 'pass' })], [`${id} · merge`]: [withProgress(MOK)], [`${id} · progress`]: [withProgress(SOK)] })
+  const tt = id => ({ [`${id} · start`]: [COK], [`${id} · worker`]: [report(id, { branch: `task/${id}`, path: `/wt/${id}` })], [`${id} · verification`]: [withProgress(ok(id))], [`${id} · evaluation`]: [withProgress({ verdict: 'pass' })], [`${id} · merge`]: [withProgress(MOK)], [`${id} · progress`]: [withProgress(SOK)] })
   const PROG_SPACE = '/Users/x y/.claude/plugins/cache/circle/orchestre/0.8.0/scripts/progress.mjs'
   // Args values as strings or negative: integers valid for the progress schema
   const { res, calls, q } = await scenario('V3', { 'plan-reader': [planOpened(T02, T03)], ...tt('T02'), ...tt('T03'), 'run end · progress': [COK] }, { progress: PROG_SPACE, max_fixes: '2', max_auto_decisions: -1 })
   assert.equal(res.status, 'finished')
   assert.deepEqual(progressOf(calls, 'plan-reader')[0].E, { phase: 1, mode: 'phase', parallelism: 4, max_fixes: 2, max_auto_decisions: 0 })
-  for (const id of ['T02', 'T03']) assert.deepEqual(progressOf(calls, `${id} · worker`)[0].E, { task: id, step: 'worker', isolated: true, model: 'sonnet' })
-  assert.ok(byLabel(calls, 'T02 · worker')[0].prompt.includes(`~~~sh\nnode "${PROG_SPACE}" step plans/p <<'ORCHESTRE_JSON'\n`))
+  assert.deepEqual(res.progress_failures, [])
+  for (const id of ['T02', 'T03']) assert.deepEqual(progressOf(calls, `${id} · start`), [{ cmd: 'step', plan: 'plans/p', E: { task: id, step: 'worker', isolated: true, model: 'sonnet' } }])
+  assert.ok(byLabel(calls, 'T02 · start')[0].prompt.includes(`~~~sh\nnode "${PROG_SPACE}" step plans/p <<'ORCHESTRE_JSON'\n`))
   drained('V3', q)
 })
 await test('V4: progress — issues of the close passed without their actions; the stop issue goes to the clerk', async () => {
@@ -878,16 +882,22 @@ function toyRepo() {
   git('switch', '-qc', 'plan/p'); git('add', '.'); git('commit', '-qm', 'plan')
   return { root, git, writeTask, doc: () => JSON.parse(fs.readFileSync(join(d, 'progress.json'), 'utf8')), row: id => fs.readFileSync(join(d, 'PROGRESS.md'), 'utf8').split('\n').find(l => l.startsWith(`| ${id} `)) }
 }
+// The refusal of Claude Code's isolation guard, as an isolated worker reported it on a real run
+const GUARD = 'This agent is isolated in a worktree, but this command is in a form too complex to verify that it stays inside the worktree. Refusing to run it.'
 // Each progress command of the instruction goes through the shell, in order; the report carries their exit codes
 async function play(name, D, q, args = {}) {
-  const launched = []
+  const launched = [], unexpected = []
   const agent = async (prompt, opts = {}) => {
     const k = opts.label
-    if (!(k in q) || !q[k].length) throw new Error(`[${name}] unexpected call: ${k}`)
+    if (!(k in q) || !q[k].length) { unexpected.push(k); throw new Error(`[${name}] unexpected call: ${k}`) }
     const v0 = q[k].shift(), cs = progressCommands(prompt)
     // { before, answer }: what the agent does before its progress commands (the scribe writes the created tasks)
     const v = v0 && typeof v0 === 'object' && 'before' in v0 ? (v0.before(), v0.answer) : v0
-    const codes = cs.map(c => { const r = spawnSync('sh', ['-c', bashTool(c)], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.status })
+    // An agent isolated in a worktree is refused its progress commands by Claude Code's isolation guard (0.18.2): none is launched
+    const codes = cs.map(c => {
+      if (opts.isolation === 'worktree') { launched.push({ label: k, code: 1, out: '', err: GUARD }); return 1 }
+      const r = spawnSync('sh', ['-c', bashTool(c)], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.status
+    })
     const answer = sealed(k, typeof v === 'function' ? v(prompt, opts) : v)
     // The clerk also runs the cleaning of the worktrees: its last line goes in "worktrees"
     const wt = [...prompt.matchAll(/`(node "?[^`"]*worktrees\.mjs"? clean [^`]*)`/g)].map(m => m[1])
@@ -898,6 +908,7 @@ async function play(name, D, q, args = {}) {
   last = null
   const res = await run({ ...ARGS, progress: PROGRESS_SCRIPT, ...args }, agent, () => {}, () => {})
   last = { res, launched }
+  assert.deepEqual(unexpected, [], `[${name}] call without an answer`)
   return { res, launched }
 }
 const T0 = { ...T00, resources: [], file: 'plans/p/tasks/T00-x.md', verification: ['npm test'] }
@@ -1409,6 +1420,99 @@ await test('R5: real plan-lint --reader read by a plan-reader that copies its ou
     assert.deepEqual(Object.keys(printed.tasks[0]), ['id', 'title', 'file', 'phase', 'model', 'effort', 'depends_on', 'resources', 'status', 'verification', 'open_prerequisites'])
     assert.equal(printed.digest, planDigest(printed), 'plan-lint and the workflow compute the same digest')
     assert.equal(res.status, 'partial'); assert.deepEqual(res.tasks.map(t => [t.id, t.status]), [['T00', 'merged'], ['T01', 'blocked']])
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+// ——— 0.18.2: the start of a task that works in a worktree is noted by the clerk, from the main checkout ———
+// Claude Code's isolation guard refuses a progress command to an agent isolated in a worktree: the worker step was never
+// written, and the task showed as not started for the whole of its worker
+const P2 = { ...T00, id: 'T02', title: 'Other', file: 'plans/p/tasks/T02.md', resources: [] }
+const P3 = { ...T00, id: 'T03', title: 'Again', file: 'plans/p/tasks/T03.md', model: 'opus', resources: [] }
+const iso = (id, extra = {}) => ({ [`${id} · start`]: [COK], [`${id} · worker`]: [report(id, { branch: `task/${id}`, path: `/wt/${id}` })], [`${id} · verification`]: [withProgress(ok(id))], [`${id} · evaluation`]: [withProgress({ verdict: 'pass' })], [`${id} · merge`]: [withProgress(MOK)], [`${id} · progress`]: [withProgress(SOK)], ...extra })
+const starts = calls => calls.filter(c => / · start$/.test(c.opts.label))
+await test('X1: progress — a task in a worktree: the clerk notes its start before the worker, which carries no progress command; its fix keeps its step; nothing changes in the main checkout nor without progress', async () => {
+  const { res, calls, q } = await scenario('X1', { 'plan-reader': [planOpened(P2, P3)],
+    ...iso('T02', { 'T02 · verification': [withProgress(ok(1)), withProgress(ok(2))], 'T02 · evaluation': [withProgress({ verdict: 'fail', gaps: ['G1'] }), withProgress({ verdict: 'pass' })], 'T02 · fix 1': [withProgress(report('fix', { branch: 'task/T02', path: '/wt/T02' }))] }),
+    ...iso('T03'), 'run end · progress': [COK] }, AP)
+  assert.equal(res.status, 'finished')
+  // The isolated worker returns no progress_ok: nothing is expected from it any more
+  assert.deepEqual(res.progress_failures, [])
+  assert.equal(starts(calls).length, 2)
+  for (const [id, model] of [['T02', 'sonnet'], ['T03', 'opus']]) {
+    const st = byLabel(calls, `${id} · start`)[0], w = byLabel(calls, `${id} · worker`)[0]
+    assert.ok(idx(calls, `${id} · start`) < idx(calls, `${id} · worker`), id + ': the start before the worker')
+    assert.deepEqual([st.opts.agentType, st.opts.model, st.opts.isolation, st.opts.schema.required], ['orchestre:clerk', 'haiku', undefined, ['progress_ok']])
+    assert.deepEqual(progressOf(calls, `${id} · start`), [{ cmd: 'step', plan: 'plans/p', E: { task: id, step: 'worker', isolated: true, model } }])
+    for (const x of ['git ', 'worktrees.mjs', 'run-end']) assert.ok(!st.prompt.includes(x), `${id} · start: no "${x}"`)
+    assert.ok(st.prompt.includes('Your only command is the one below') && st.prompt.includes('Run nothing else and change no file'))
+    assert.deepEqual([w.opts.agentType, w.opts.isolation, w.opts.model], ['orchestre:isolated-worker', 'worktree', model])
+    assert.ok(w.prompt.startsWith(`Task ${id} of the plan plans/p.`) && !w.prompt.includes('progress.mjs') && !w.prompt.includes('ORCHESTRE_JSON'), id + ': the isolated worker carries no progress command')
+    assert.ok(!('progress_ok' in w.opts.schema.properties) && !('progress_error' in w.opts.schema.properties) && 'deviations' in w.opts.schema.properties, id + ': no progress result in the report of the isolated worker')
+    assert.deepEqual(w.opts.schema.required, ['status', 'summary', 'branch', 'path'])
+  }
+  // The fix of a task in a worktree is not isolated (it works there by cd): it keeps its step, as the agents that follow
+  const fx = byLabel(calls, 'T02 · fix 1')[0]
+  assert.deepEqual([fx.opts.agentType, fx.opts.isolation], ['orchestre:worker', undefined])
+  assert.deepEqual(progressOf(calls, 'T02 · fix 1').map(c => [c.cmd, c.E.step]), [['step', 'fix']])
+  assert.ok('progress_ok' in fx.opts.schema.properties, 'the fix reports the result of its step')
+  for (const l of ['T02 · fix 1', 'T02 · verification', 'T02 · evaluation', 'T02 · merge']) assert.ok(byLabel(calls, l)[0].prompt.startsWith(HEADER), l + ': step first')
+  drained('X1', q)
+  // Parallelism of 1: main checkout, where the guard does not apply; the worker runs its step itself, no clerk at the start
+  const main = id => ({ [`${id} · worker`]: [withProgress(report(id, { branch: `task/${id}` }))], [`${id} · verification`]: [withProgress(ok(id))], [`${id} · evaluation`]: [withProgress({ verdict: 'pass' })], [`${id} · merge`]: [withProgress(MOK)], [`${id} · progress`]: [withProgress(SOK)] })
+  const m = await scenario('X1 main checkout', { 'plan-reader': [planOpened(P2, P3)], ...main('T02'), ...main('T03'), 'run end · progress': [COK] }, { ...AP, parallelism: 1 })
+  assert.equal(m.res.status, 'finished'); assert.deepEqual(m.res.progress_failures, []); assert.equal(starts(m.calls).length, 0)
+  assert.ok(byLabel(m.calls, 'T03 · worker')[0].prompt.startsWith(HEADER) && 'progress_ok' in byLabel(m.calls, 'T03 · worker')[0].opts.schema.properties)
+  assert.deepEqual(progressOf(m.calls, 'T03 · worker'), [{ cmd: 'step', plan: 'plans/p', E: { task: 'T03', step: 'worker', isolated: false, model: 'opus' } }])
+  drained('X1 main checkout', m.q)
+  // Without progress: no clerk at the start, in a worktree as elsewhere
+  const bare = id => ({ [`${id} · worker`]: [report(id, { branch: `task/${id}`, path: `/wt/${id}` })], [`${id} · verification`]: [ok(id)], [`${id} · evaluation`]: [{ verdict: 'pass' }], [`${id} · merge`]: [MOK], [`${id} · progress`]: [SOK] })
+  const w = await scenario('X1 without progress', { 'plan-reader': [plan(P2, P3)], ...bare('T02'), ...bare('T03') })
+  assert.equal(w.res.status, 'finished'); assert.ok(!('progress_failures' in w.res)); assert.equal(starts(w.calls).length, 0)
+  assert.equal(byLabel(w.calls, 'T02 · worker')[0].opts.isolation, 'worktree')
+  drained('X1 without progress', w.q)
+})
+await test('X2: progress — the clerk of a task start fails, does not answer or throws: only the display suffers, the worker starts and the failure goes to progress_failures', async () => {
+  const cases = [
+    ['X2a', { progress_ok: false, progress_error: 'progress: lock held' }, 'progress: lock held'], ['X2b', { progress_ok: false }, 'failure without a message'], ['X2c', {}, 'result not reported'],
+    ['X2d', null, 'clerk without an answer'], ['X2e', () => { throw new Error('usage limit') }, 'clerk failed: Error: usage limit'],
+  ]
+  for (const [name, answer, error] of cases) {
+    const { res, calls, q } = await scenario(name, { 'plan-reader': [planOpened(P2, P3)], ...iso('T02', { 'T02 · start': [answer] }), ...iso('T03'), 'run end · progress': [COK] }, AP)
+    assert.equal(res.status, 'finished', name); assert.deepEqual(res.tasks.map(t => [t.id, t.status]), [['T02', 'merged'], ['T03', 'merged']], name)
+    assert.deepEqual(res.progress_failures, [{ task: 'T02', step: 'worker', error }], name)
+    assert.ok(idx(calls, 'T02 · start') < idx(calls, 'T02 · worker'), name + ': the worker starts all the same, after the clerk')
+    drained(name, q)
+  }
+  // An isolated worker that still reports a progress result (rules of an earlier version loaded): nothing is read from it
+  const { res, q } = await scenario('X2f', { 'plan-reader': [planOpened(P2, P3)], ...iso('T02', { 'T02 · worker': [{ ...report('T02', { branch: 'task/T02', path: '/wt/T02' }), progress_ok: false, progress_error: GUARD }] }), ...iso('T03'), 'run end · progress': [COK] }, AP)
+  assert.equal(res.status, 'finished'); assert.deepEqual(res.progress_failures, [])
+  drained('X2f', q)
+  // The start is awaited: the worker is launched once the clerk has answered, so that its step is written before the next ones
+  const order = []
+  const g = await scenario('X2g', { 'plan-reader': [planOpened(P2, P3)], ...iso('T02', { 'T02 · start': [async () => { await new Promise(r => setTimeout(r, 20)); order.push('T02 clerk'); return COK }], 'T02 · worker': [() => { order.push('T02 worker'); return report('T02', { branch: 'task/T02', path: '/wt/T02' }) }] }), ...iso('T03'), 'run end · progress': [COK] }, AP)
+  assert.deepEqual(order, ['T02 clerk', 'T02 worker']); assert.deepEqual(g.res.progress_failures, [])
+  drained('X2g', g.q)
+})
+await test('X3: real progress.mjs, under an isolation guard that refuses the progress commands of an isolated agent — while each worker runs in its worktree, progress.json holds its worker step', async () => {
+  const D = toyRepo()
+  try {
+    D.writeTask('T02', []); D.writeTask('T03', [])
+    const R2 = { ...T0, id: 'T02', title: 'Task T02', file: 'plans/p/tasks/T02-x.md' }, R3 = { ...T0, id: 'T03', title: 'Task T03', file: 'plans/p/tasks/T03-x.md' }
+    // What progress.json holds of the task when its worker starts: the mod shows a task in progress from its step
+    const during = {}
+    const worker = id => () => { const t = D.doc().tasks.find(x => x.id === id); during[id] = [t.step, t.isolated, t.model_used, D.doc().runs[0].status]; return report(id, { branch: `task/${id}`, path: D.root }) }
+    const real = id => ({ [`${id} · start`]: [{}], [`${id} · worker`]: [worker(id)], [`${id} · verification`]: [ok(id)], [`${id} · evaluation`]: [{ verdict: 'pass' }], [`${id} · merge`]: [MOK], [`${id} · progress`]: [SOK] })
+    const { res, launched } = await play('X3', D, { 'plan-reader': [plan(R2, R3)], ...real('T02'), ...real('T03'), 'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [], 'nothing for the guard to refuse: no progress command goes to an isolated agent')
+    assert.equal(res.status, 'finished'); assert.deepEqual(res.progress_failures, [])
+    assert.deepEqual(during, { T02: ['worker', true, 'sonnet', 'in-progress'], T03: ['worker', true, 'sonnet', 'in-progress'] })
+    assert.deepEqual(launched.filter(l => / · start$/.test(l.label)).map(l => [l.label, l.out]), [['T02 · start', 'progress: T02 → worker (sonnet)'], ['T03 · start', 'progress: T03 → worker (sonnet)']])
+    const doc = D.doc()
+    for (const id of ['T02', 'T03']) {
+      assert.deepEqual(doc.log.filter(e => e.task === id && e.kind !== 'added').map(e => e.text), [`${id} starts (worktree)`, `${id}: verification`, `${id}: evaluation`, `${id}: merge`, `${id}: progress`, `${id}: merged (1 attempt)`], id)
+      const t = doc.tasks.find(x => x.id === id)
+      assert.deepEqual([t.status, t.step, t.isolated], ['merged', null, true], id)
+    }
+    assert.equal(spawnSync(process.execPath, [PROGRESS_SCRIPT, 'validate', 'plans/p'], { cwd: D.root }).status, 0)
   } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
 })
 console.log(`scenarios: ALL GREEN (${n} cases)`)

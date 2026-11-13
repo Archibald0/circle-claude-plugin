@@ -494,6 +494,19 @@ try {
     assert.ok(!SKILLS.some(s => text[s].includes('--reader')), 'a skill reads --reader: it is the JSON of the workflow')
   })
 
+  test('start of a task in a worktree (0.18.2): the isolated worker runs no progress command, the clerk notes its start', () => {
+    const agent = a => read(join(PLUGIN, 'agents', `${a}.md`))
+    // Claude Code's isolation guard refuses the command to an agent isolated in a worktree: its rules no longer describe one
+    assert.ok(agent('isolated-worker').includes('you run no progress command (`progress.mjs`)'), 'isolated-worker.md: no progress command')
+    assert.ok(!/ORCHESTRE_JSON|progress_ok|heredoc/.test(agent('isolated-worker')), 'isolated-worker.md still describes a progress command to run')
+    // The agents of the main checkout keep theirs
+    for (const a of ['worker', 'verifier', 'evaluator', 'integrator', 'scribe', 'plan-reader']) assert.ok(agent(a).includes('ORCHESTRE_JSON'), `${a}.md: rule of the progress command`)
+    for (const x of ['progress.mjs step', 'progress.mjs run-end', 'Start of a task: the progress command is your only command']) assert.ok(agent('clerk').includes(x), `clerk.md: ${x}`)
+    // The workflow gives the step to the clerk, and none to the isolated worker
+    assert.ok(WF.includes("if (isolated) await noteStart(t, workerModel)") && WF.includes("label: `${t.id} · start`, agentType: AG('clerk')"), 'run-phase.js: the clerk notes the start')
+    assert.ok(WF.includes("`${isolated ? '' : pStep(t.id, 'worker', { isolated: false, model })}Task"), 'run-phase.js: no step in the instructions of the isolated worker')
+  })
+
   console.log(`commands: ALL GREEN (${n} tests)`)
 } finally {
   for (const d of tmp) rmSync(d, { recursive: true, force: true })
