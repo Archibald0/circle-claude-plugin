@@ -492,6 +492,149 @@ Checked by /orchestre:ready on 2026-11-03: not ready.
     assert.equal(je.ok, false); assert.ok(je.errors.some(x => x.includes('T09')), JSON.stringify(je.errors)); assert.equal(je.digest, planDigest(je))
   })
 
+  // --scope (0.19.0): the scope check of a task branch, in the temporary repository
+  const put = (path, text) => { mkdirSync(join(root, path, '..'), { recursive: true }); writeFileSync(join(root, path), text) }
+  const commit = (msg, ...paths) => { git('add', '--', ...paths); git('commit', '-q', '-m', msg) }
+  const scopeOf = (id, branch, integ = 'plan/scope') => { const r = lint('plans/scope', '--scope', id, '--branch', branch, '--integration', integ); return { ...r, rep: r.out ? JSON.parse(r.out) : null } }
+  const scopeDigest = new Function(readFileSync(LINT, 'utf8').match(/\nfunction scopeDigest\(p\) \{\n[\s\S]*?\n\}/)[0] + '\nreturn scopeDigest')()
+  git('switch', '-qc', 'plan/scope')
+  // Owned: a glob, an exact file whose comment holds a "*" (still exact), an exact file written "./", a directory, a glob that
+  // ends inside a name ("lib/gl*" owns "lib/glob-x.js"), and "*.md", which owns nothing (no text before its "*")
+  const S = plan('scope', { SC01: task('SC01', { files: ['src/sc/**', '"docs/sc.md # its backup *.bak is not owned"', './lib/exact.js', 'lib/dir/', 'lib/gl*', '*.md'] }) })
+  // Each file has its own content, so that git pairs no deletion with an unrelated addition as a rename
+  put('tests/keep.test.js', 'one\n'); put('tests/old.test.js', 'a\nb\nc\nd\ne\nf\ng\nh\n'); put('src/sc/a.js', 'first\nsecond\nthird\n'); put('docs/sc.md', 'doc\nit.only(\n'); put('README.md', 'readme\n')
+  put('src/sc/OldSpec.kt', 'spec kotlin\n'); put('notes.txt', 'notes\n'); put('lib/was.js', 'w1\nw2\nw3\nw4\n')
+  commit('plan scope', S, 'tests/keep.test.js', 'tests/old.test.js', 'src/sc/a.js', 'docs/sc.md', 'README.md', 'src/sc/OldSpec.kt', 'notes.txt', 'lib/was.js')
+  git('switch', '-qc', 'task/SC01')
+  // docs/sc.md: a line removed that carries a marker ("-it.only(") is not reported
+  put('src/sc/a.js', 'first\n// @Ignore\n// @IgnoreProperties\nsecond\nthird\n'); put('src/sc/deep/b.js', 'b\n'); put('docs/sc.md', 'doc\nmore\n')
+  put('src/sc/c.test.js', "describe('x', () => {\n  it.skip('a', () => {})\n  xit('b')\n  exit(1)\n  it.only('c')\n})\n"); put('src/sc/with space.rs', 'fn a() {}\n#[ignore]\n')
+  // The other markers, each next to a near miss that is not one (after a letter, a "." or a "$"; "@Ignore" followed by a "$")
+  put('src/sc/markers.txt', "xdescribe('a')\nit.todo('b')\n@pytest.mark.skipif(x)\nt.Skip(\"c\")\nfit.todo('n')\nobj.xdescribe('n')\nst.Skip(\"n\")\n$xit('n')\n@Ignore$n\n")
+  // A double quote in a name: git quotes the path of the header "+++ " ("b/src/sc/q\"x.js"); its added line "++ b/evil.js" reads
+  // "+++ b/evil.js" in the patch, which is not a header inside a hunk
+  put('src/sc/q"x.js', "a\n++ b/evil.js\nxit('q')\n")
+  // A control character, a tab and an accent in a name: git quotes the path ("b/src/sc/ctl\001\té.js"), with an octal escape that
+  // JSON.parse cannot read
+  const CTL = 'src/sc/ctl\x01\té.js'
+  put(CTL, "it.skip('c')\n")
+  put('lib/exact.js', 'exact\n'); put('lib/dir/x.js', 'in dir\n'); put('lib/glob-x.js', 'glob\n'); git('rm', '-q', 'src/sc/OldSpec.kt')
+  // A copy of a.js as it was, while a.js changes: what git reports as a copy when the user sets diff.renames=copies
+  put('src/sc/a-copy.js', 'first\nsecond\nthird\n')
+  commit('task SC01: owned files', 'src/sc/a-copy.js', 'src/sc/a.js', 'src/sc/deep/b.js', 'docs/sc.md', 'src/sc/c.test.js', 'src/sc/with space.rs', 'src/sc/markers.txt', 'src/sc/q"x.js', CTL, 'lib/exact.js', 'lib/dir/x.js', 'lib/glob-x.js')
+  put('README.md', 'readme\nedited\n'); put('lib/other.js', 'other\n'); put('docs/sc.md.bak', 'backup\n'); git('rm', '-q', 'tests/keep.test.js', 'notes.txt'); git('mv', 'tests/old.test.js', 'tests/fresh.test.js'); git('mv', 'lib/was.js', 'lib/is.js')
+  // git lists the rename by its new name, "tests/fresh.test.js", before "tests/keep.test.js": tests_removed is sorted all the same
+  commit('task SC01: outside', 'README.md', 'lib/other.js', 'docs/sc.md.bak', 'tests', 'lib')
+  const expected = {
+    task: 'SC01', branch: 'task/SC01',
+    files: ['README.md', 'docs/sc.md', 'docs/sc.md.bak', 'lib/dir/x.js', 'lib/exact.js', 'lib/glob-x.js', 'lib/is.js', 'lib/other.js', 'lib/was.js', 'notes.txt', 'src/sc/OldSpec.kt', 'src/sc/a-copy.js', 'src/sc/a.js','src/sc/c.test.js', CTL,
+      'src/sc/deep/b.js', 'src/sc/markers.txt', 'src/sc/q"x.js', 'src/sc/with space.rs', 'tests/fresh.test.js', 'tests/keep.test.js', 'tests/old.test.js'],
+    outside: ['README.md', 'docs/sc.md.bak', 'lib/is.js', 'lib/other.js', 'lib/was.js', 'notes.txt', 'tests/fresh.test.js', 'tests/keep.test.js', 'tests/old.test.js'],
+    // A test path is matched case-insensitively ("OldSpec"); a file deleted or renamed that is not a test is not here
+    tests_removed: ['src/sc/OldSpec.kt', 'tests/keep.test.js', 'tests/old.test.js'],
+    skips_added: [
+      { file: 'src/sc/a.js', line: 2, marker: '@Ignore' },
+      { file: 'src/sc/c.test.js', line: 2, marker: '.skip(' }, { file: 'src/sc/c.test.js', line: 3, marker: 'xit(' }, { file: 'src/sc/c.test.js', line: 5, marker: '.only(' },
+      { file: CTL, line: 1, marker: '.skip(' },
+      { file: 'src/sc/markers.txt', line: 1, marker: 'xdescribe(' }, { file: 'src/sc/markers.txt', line: 2, marker: 'it.todo(' },
+      { file: 'src/sc/markers.txt', line: 3, marker: '@pytest.mark.skip' }, { file: 'src/sc/markers.txt', line: 4, marker: 't.Skip(' },
+      { file: 'src/sc/q"x.js', line: 3, marker: 'xit(' },
+      { file: 'src/sc/with space.rs', line: 2, marker: '#[ignore]' },
+    ],
+  }
+  let scope
+  test('--scope: one line of JSON with task, branch, files, outside (a glob and an exact entry own their files), tests_removed (deleted and renamed), skips_added (file and line) and digest; exit code 0 with gaps', () => {
+    const r = scopeOf('SC01', 'task/SC01'); scope = r.rep
+    assert.equal(r.code, 0, r.out + r.err); assert.equal(r.out.trim().split('\n').length, 1); assert.equal(r.err, '')
+    assert.deepEqual(Object.keys(r.rep), ['task', 'branch', 'files', 'outside', 'tests_removed', 'skips_added', 'digest'])
+    const { digest, ...fields } = r.rep
+    assert.deepEqual(fields, expected); assert.equal(digest, scopeDigest(fields))
+    // The plan folder may come after the options: their values are not read as the plan
+    const last = lint('--scope', 'SC01', '--branch', 'task/SC01', '--integration', 'plan/scope', 'plans/scope')
+    assert.equal(last.code, 0, last.err); assert.deepEqual(JSON.parse(last.out), r.rep)
+    // The user's git settings do not change the report, one at a time: diff.renames=copies would turn the addition of a-copy.js
+    // into a copy; colors, paths without "b/", an external diff or a textconv (here "true": nothing) would change the patch;
+    // core.quotepath=false leaves the "é" of the quoted name raw, as UTF-8
+    writeFileSync(join(root, '.git', 'info', 'attributes'), '* diff=nop\n')
+    for (const [k, v] of [['diff.renames', 'copies'], ['color.diff', 'always'], ['diff.noprefix', 'true'], ['diff.external', 'true'], ['diff.nop.textconv', 'true'], ['core.quotepath', 'false']]) {
+      git('config', k, v); const u = scopeOf('SC01', 'task/SC01'); git('config', '--unset', k)
+      assert.equal(u.code, 0, `${k}=${v}: ${u.err}`); assert.deepEqual(u.rep, r.rep, `${k}=${v}`)
+    }
+    rmSync(join(root, '.git', 'info', 'attributes'))
+    // A file named like the range ("plan/scope...task/SC01") does not make git read the range as a path: "--" ends the revisions
+    put('plan/scope...task/SC01', 'x\n'); const named = scopeOf('SC01', 'task/SC01'); rmSync(join(root, 'plan'), { recursive: true })
+    assert.equal(named.code, 0, named.err); assert.deepEqual(named.rep, r.rep, 'a file named like the range')
+    // owned_files written as a single value, not a list, is read as a list of one
+    const one = plan('scope-one', { SO01: task('SO01').replace(/owned_files:\n  - .*\n/, 'owned_files: src/sc/**\n') })
+    const single = lint(one, '--scope', 'SO01', '--branch', 'task/SC01', '--integration', 'plan/scope'); rmSync(join(root, one), { recursive: true })
+    assert.equal(single.code, 0, single.err); assert.deepEqual(JSON.parse(single.out).outside, expected.files.filter(f => !f.startsWith('src/sc/')))
+  })
+  test('--scope: a branch resumed reports only its own files, whether or not the integration branch moved on and was merged into it', () => {
+    git('switch', '-q', 'plan/scope'); put('src/sc/from-integration.js', 'i\n'); put('other-integration.txt', '// it.skip(\n'); commit('integration moves on', 'src/sc/from-integration.js', 'other-integration.txt')
+    const r = scopeOf('SC01', 'task/SC01'); assert.equal(r.code, 0, r.out + r.err); assert.deepEqual(r.rep, scope, 'integration moved on, branch not updated')
+    git('switch', '-q', 'task/SC01'); git('merge', '-q', '--no-edit', 'plan/scope')
+    const r2 = scopeOf('SC01', 'task/SC01'); assert.equal(r2.code, 0, r2.out + r2.err); assert.deepEqual(r2.rep, scope, 'integration branch merged into it')
+    put('src/sc/after-merge.js', 'x\n'); commit('task SC01: after the merge', 'src/sc/after-merge.js')
+    assert.deepEqual(scopeOf('SC01', 'task/SC01').rep.files, [...expected.files, 'src/sc/after-merge.js'].sort(), 'its own work after the merge is still seen')
+  })
+  test('--scope: the digest changes with each field (task, branch, files, outside, tests_removed, skips_added: file, line, marker)', () => {
+    const { digest, ...f } = scope
+    const variants = {
+      task: { ...f, task: 'SC02' }, branch: { ...f, branch: 'task/SC01-r2' }, files: { ...f, files: [...f.files, 'z'] }, outside: { ...f, outside: f.outside.slice(1) },
+      tests_removed: { ...f, tests_removed: f.tests_removed.slice(1) }, skips_added: { ...f, skips_added: f.skips_added.slice(1) },
+      'skip file': { ...f, skips_added: f.skips_added.map((s, i) => (i ? s : { ...s, file: 'src/sc/b.js' })) },
+      'skip line': { ...f, skips_added: f.skips_added.map((s, i) => (i ? s : { ...s, line: 9 })) },
+      'skip marker': { ...f, skips_added: f.skips_added.map((s, i) => (i ? s : { ...s, marker: '.only(' })) },
+    }
+    const seen = new Set([digest])
+    for (const [k, v] of Object.entries(variants)) { const d = scopeDigest(v); assert.ok(!seen.has(d), `the digest ignores ${k}`); seen.add(d) }
+    assert.match(digest, /^[0-9a-f]{8}$/)
+  })
+  test('--scope: a clean branch reports nothing; a file added then removed leaves nothing; a removed test is still reported', () => {
+    git('switch', '-q', 'plan/scope'); git('branch', '-q', 'task/SC03'); git('switch', '-q', 'task/SC03')
+    const r = scopeOf('SC01', 'task/SC03'); assert.equal(r.code, 0)
+    assert.deepEqual({ ...r.rep, digest: undefined }, { task: 'SC01', branch: 'task/SC03', files: [], outside: [], tests_removed: [], skips_added: [], digest: undefined })
+    put('src/sc/own.test.js', 'x\n'); commit('task SC01: a test', 'src/sc/own.test.js'); git('rm', '-q', 'src/sc/own.test.js'); commit('task SC01: removed', 'src/sc')
+    assert.deepEqual(scopeOf('SC01', 'task/SC03').rep.files, [], 'added then removed: nothing left')
+    git('rm', '-q', 'tests/keep.test.js'); commit('task SC01: remove a test', 'tests')
+    const r2 = scopeOf('SC01', 'task/SC03').rep; assert.deepEqual(r2.tests_removed, ['tests/keep.test.js']); assert.deepEqual(r2.outside, ['tests/keep.test.js'])
+  })
+  test('--scope: an invalid call exits with 2 and prints nothing on stdout; the function never calls process.exit()', () => {
+    // A branch with no history in common with the integration branch
+    git('switch', '-q', '--orphan', 'task/SC05'); writeFileSync(join(root, 'alone.txt'), 'alone\n'); git('add', '--', 'alone.txt'); git('commit', '-q', '-m', 'alone'); git('switch', '-q', 'plan/scope')
+    // Each call with the message that names its refusal: a guard taken away would still exit 2 through a later one
+    const calls = [
+      [['--scope', 'SC01', '--integration', 'plan/scope'], /needs a valid --branch/], [['--scope', 'SC01', '--branch', 'task/SC01'], /needs a valid --integration/],
+      [['--scope', 'SC09', '--branch', 'task/SC01', '--integration', 'plan/scope'], /^unknown task: SC09$/m],
+      [['--scope', 'SC01', '--branch', 'task/nope', '--integration', 'plan/scope'], /^branch not found: task\/nope$/m], [['--scope', 'SC01', '--branch', 'task/SC01', '--integration', 'plan/nope'], /^branch not found: plan\/nope$/m],
+      [['--scope', 'SC01', '--branch', 'task/SC05', '--integration', 'plan/scope'], /^cannot diff plan\/scope\.\.\.task\/SC05/m],
+      // A name that git resolves but that is not a local branch
+      [['--scope', 'SC01', '--branch', 'HEAD', '--integration', 'plan/scope'], /^branch not found: HEAD$/m],
+      [['--scope', 'SC01', '--branch', '--output=x', '--integration', 'plan/scope'], /needs a valid --branch/],
+      [['--scope', '--branch', 'task/SC01', '--integration', 'plan/scope'], /needs a task id/], [['--branch', 'task/SC01', '--integration', 'plan/scope', '--scope'], /needs a task id/],
+      [['--scope', 'SC01', '--branch', 'task/SC01', '--integration', 'plan/scope', '--json'], /cannot go with --json/], [['--scope', 'SC01', '--branch', 'task/SC01', '--integration', 'plan/scope', '--reader'], /cannot go with --json/],
+    ]
+    for (const [c, msg] of calls) { const r = lint('plans/scope', ...c); assert.equal(r.code, 2, `${c.join(' ')}: ${r.code} ${r.out}${r.err}`); assert.equal(r.out, '', c.join(' ')); assert.match(r.err, msg, c.join(' ')) }
+    assert.ok(!existsSync(join(root, 'x')))
+    // An option-like name is refused for what it is, not as an unknown branch ("refs/heads/--output=x" alone would also fail)
+    assert.match(lint('plans/scope', '--scope', 'SC01', '--branch', 'task/SC01', '--integration', '--output=x').err, /invalid integration branch/)
+    assert.ok(!/process\.exit\(/.test(readFileSync(LINT, 'utf8').match(/\nfunction scopeReport\(t\) \{\n[\s\S]*?\n\}/)[0]))
+    // Nor the dispatch to it, nor anything after the plan is read (comments aside)
+    const src = readFileSync(LINT, 'utf8'), from = src.indexOf('\nlint: {')
+    assert.ok(from > 0); assert.ok(!/process\.exit\(/.test(src.slice(from).replace(/\/\/.*$/gm, '')))
+    // The other modes are unchanged by the new options: the plan is still read as before
+    assert.equal(lint('plans/scope', '--json').json.ok, true)
+  })
+  test('--scope: a big report goes through a pipe whole (no process.exit() cutting the output at 64 KB)', () => {
+    git('switch', '-q', 'plan/scope'); git('switch', '-qc', 'task/SC04')
+    for (let i = 0; i < 1500; i++) writeFileSync(join(root, `big-${String(i).padStart(5, '0')}-long-name-to-fill-the-output.txt`), 'x\n')
+    git('add', '--', 'big-*.txt'); git('commit', '-q', '-m', 'task SC01: many files')
+    const r = scopeOf('SC01', 'task/SC04'); assert.equal(r.code, 0, r.err); assert.ok(r.out.length > 65536, String(r.out.length)); assert.ok(r.rep.outside.length >= 1500)
+    assert.equal(r.rep.digest, scopeDigest(r.rep))
+  })
+  git('switch', '-q', 'plan/ok')
+  for (const b of ['task/SC01', 'task/SC03', 'task/SC04', 'task/SC05', 'plan/scope']) git('branch', '-q', '-D', b)
+
   console.log(`plan-lint: ALL GREEN (${n} tests)`)
 } finally {
   rmSync(root, { recursive: true, force: true })

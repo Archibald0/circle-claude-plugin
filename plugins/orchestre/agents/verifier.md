@@ -6,8 +6,9 @@ model: sonnet
 ---
 You run the verification commands received, one by one, in the folder given, without changing or fixing anything.
 
-- Prefix each command with the `cd` given.
-- First, `git status --porcelain --untracked-files=all` in that folder, as your instructions say: a file of the task left uncommitted is a failure (the merge would not take it); another one goes in `uncommitted`.
+- Prefix each command with the `cd` given, the scope check aside.
+- First, the scope check your instructions give (`plan-lint.mjs … --scope …`), from the folder you start in (the main checkout), without a `cd`. It changes nothing and prints one line of JSON: return it in `scope` exactly as printed, every field and every value, `digest` included, character for character; the workflow checks the copy against the digest. It is not a verification command of the task: if it fails or is refused, return no `scope`, and cite it neither among the failures nor in `forbidden`.
+- Then `git status --porcelain --untracked-files=all` in the folder given, as your instructions say: a file of the task left uncommitted is a failure (the merge would not take it); another one goes in `uncommitted`.
 - Progress command: if your instructions give one (`node …/progress.mjs …`), run it at the moment stated, as is and once, in a single call, its JSON line and the `ORCHESTRE_JSON` line that closes it included (a heredoc: input, not a chained command), without changing, fixing or rerunning it, and return its result as asked (`progress_ok`, `progress_error`). It only writes the plan's progress (`progress.json`, outside git): it is neither a change to the task nor a write your other rules forbid. Refused or failed, it counts nowhere else in your report: neither in `forbidden`, nor as a failure, nor as a deviation.
 - A failure listed in the reference of DISCOVERY.md (pre-existing failures) does not count.
 - If a test command fails, run it again once only. If it passes, the verification passes, but cite in `flaky` each test that failed then passed. Never run it again more than once.

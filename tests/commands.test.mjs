@@ -143,7 +143,7 @@ try {
     for (const s of statuses) assert.ok(WF.includes(`'${s}'`), `status ${s} not in the workflow`)
     const handled = [...point(text.run, 4, 'On receiving the report').matchAll(/^\s+- `([a-z-]+)`(?:, or a run interrupted)?:/gm)].map(m => m[1])
     assert.deepEqual(sorted(handled), sorted(statuses))
-    const FIELDS = ['status', 'detail', 'stop_issue', 'open_issues', 'progress_failures', 'auto_decisions', 'discarded_amendments', 'rulings_applied', 'worktrees', 'waiting', 'waiting_on_prerequisites', 'deferred', 'added_tasks', 'reviews', 'rejections', 'unverifiable', 'blocker', 'branch', 'circuit_breaker', 'inconsistency', 'human']
+    const FIELDS = ['status', 'detail', 'stop_issue', 'open_issues', 'progress_failures', 'auto_decisions', 'discarded_amendments', 'rulings_applied', 'worktrees', 'waiting', 'waiting_on_prerequisites', 'deferred', 'added_tasks', 'reviews', 'rejections', 'unverifiable', 'blocker', 'branch', 'circuit_breaker', 'inconsistency', 'human', 'interrupted', 'merged_unclosed']
     for (const f of FIELDS) {
       assert.ok(text.run.includes(`\`${f}\``), `field ${f} not read by /orchestre:run`)
       assert.match(WF, new RegExp(`\\b${f}\\b`), `field ${f} not in the workflow`)
@@ -179,7 +179,7 @@ try {
       for (const o of rest.match(/--[a-z-]+/g) || []) assert.ok(OPTS[script].has(o), `${s}: ${script}.mjs does not know ${o} (\`${span}\`)`)
       const sub = rest.match(/^([a-z][a-z-]*)/)
       if (script === 'progress') assert.ok(sub && progressCommands.includes(sub[1]), `${s}: progress.mjs ${sub && sub[1]}`)
-      if (script === 'worktrees') assert.equal(sub && sub[1], 'clean', `${s}: worktrees.mjs ${sub && sub[1]}`)
+      if (script === 'worktrees') assert.ok(sub && ['clean', 'space'].includes(sub[1]), `${s}: worktrees.mjs ${sub && sub[1]}`)
       if (script === 'settings') assert.ok(sub && ['check', 'apply'].includes(sub[1]), `${s}: settings.mjs ${sub && sub[1]}`)
     }
     for (const s of ['run', 'ready']) {
@@ -188,6 +188,101 @@ try {
     }
     assert.ok(text.run.includes('run it again with `--run-stopped`') && OPTS.worktrees.has('--run-stopped'))
     assert.ok(text.ready.includes('worktrees.mjs clean <plan> --dry-run`'))
+  })
+
+  test('0.19.0: the skills run, ready and status cite the circuit breaker, space and triage as the code gives them', () => {
+    // Circuit breaker: the detail the workflow writes is the one the skill reads, and the fields of its return are read
+    assert.ok(WF.includes('`agents not answering: '), 'workflow: detail of the breaker')
+    const from = text.run.indexOf('"agents not answering:"'), breaker = text.run.slice(from, text.run.indexOf('Having an issue settled'))
+    assert.ok(from > 0 && breaker.length > 0, 'run: the breaker is not handled')
+    for (const w of ['`/login`', 'usage limit', '`interrupted`', '`merged_unclosed`', '`stop_issue`', '`open_issues`', 'recorded before the trip', 'No issue to settle', 'already merged']) assert.ok(breaker.toLowerCase().includes(w.toLowerCase()), `run: breaker line without ${w}`)
+    assert.ok(breaker.includes('question tool'), 'run: issues of the breaker settled with the question tool')
+    assert.match(WF, /merged_unclosed: mergedUnclosed/)
+    // merged_unclosed: the fields the skill cites are the ones the workflow returns, and its issues are settled before the new run
+    const entry = WF.match(/mergedUnclosed\.push\(\{([^\n]*)\}\) \}/)
+    assert.ok(entry, 'workflow: entry of merged_unclosed')
+    const wfFields = ['id', 'branch', 'deviations', 'reviews', 'unverifiable', 'issues']
+    for (const f of wfFields) assert.match(entry[1], new RegExp(`(^|[ ,{])${f}[:,]`), `workflow: merged_unclosed returns ${f}`)
+    const mu = text.run.slice(text.run.indexOf('A non-empty `merged_unclosed`'), text.run.indexOf('Having an issue settled'))
+    for (const f of wfFields.slice(2)) assert.ok(mu.includes(`\`${f}\``), `run: merged_unclosed cites ${f}`)
+    assert.ok(/every one of its `issues` settled with the question tool before the new run/.test(mu), 'run: the issues of merged_unclosed are settled before the new run')
+    assert.ok(mu.includes('decided automatically') && mu.includes('never written') && mu.includes('never present them as already applied'), 'run: auto-decided issues are not presented as applied')
+    assert.ok(mu.includes('An empty `merged_unclosed` adds nothing.'), 'run: an empty merged_unclosed adds nothing')
+    // A task interrupted at its own merge (T11C): the marker the skill cites is the one the workflow returns, set on the
+    // integrator call only, and the skill looks for the commit "task <id>:" before the new run
+    const marker = entry[1].match(/\.\.\.\(unknown \? \{ merge: '([a-z]+)' \} : \{\}\)/)
+    assert.ok(marker, 'workflow: marker of a merge unknown in merged_unclosed')
+    assert.match(WF, /label: `\$\{t\.id\} · merge`[^\n]*\n\s*\.catch\(err => \{ if \(err === INTERRUPT && launched\) unclosedOf\([^\n]*, true\); throw err \}\)/, 'workflow: the integrator call marks its task merge unknown')
+    const cited = `\`merge: "${marker[1]}"\``
+    assert.ok(breaker.includes(`the tasks in \`interrupted\` are taken up by the next run, from their branch, except a task that is also in \`merged_unclosed\` with ${cited}`), 'run: the exception to the tasks in interrupted')
+    const at = mu.indexOf(`An entry with ${cited}`)
+    assert.ok(at > 0, 'run: an entry with a merge unknown')
+    const unk = mu.slice(at)
+    for (const w of ['Before the new run, check whether a commit `task <id>:` is on the integration branch', 'If it is, the task is merged: handle the entry as above', 'run the task\'s verifications on the integration branch before the new run, as for `repair`', 'If it is not, the merge did not run: say that the next run takes the task up from its branch']) assert.ok(unk.includes(w), `run: merge unknown without "${w}"`)
+    // check_skipped: a log line, nothing to ask
+    assert.ok(text.run.includes('`check_skipped`') && text.run.includes('it asks nothing of the user'))
+    // space: run and ready launch it, not blocking; the script has it, with its option
+    for (const s of ['run', 'ready']) {
+      assert.ok(codeSpans(text[s]).includes('node ${CLAUDE_PLUGIN_ROOT}/scripts/worktrees.mjs space <plan> --parallelism <n>'), `${s}: worktrees.mjs space`)
+      assert.ok(text[s].includes('block nothing'), `${s}: space is not blocking`)
+    }
+    assert.ok(SRC.worktrees.includes("argv[0] === 'space'") && optionsOf(SRC.worktrees).has('--parallelism'), 'worktrees.mjs: space')
+    // triage: the skill reads the format of the script, closes only safe through ack, and says what to do on a non-zero exit
+    assert.ok(codeSpans(text.run).some(c => c.startsWith('node ${CLAUDE_PLUGIN_ROOT}/scripts/progress.mjs triage <plan>')))
+    assert.ok(/function triage\(/.test(SRC.progress) && /cmd === 'triage'/.test(SRC.progress), 'progress.mjs: triage')
+    assert.ok(text.run.includes('`{ plan, base, integration, safe, open }`') && SRC.progress.includes('return { plan: ctx.name, base, integration: ctx.integration, safe, open }'))
+    for (const reason of ['duplicate', 'superseded', 'no-diff', 'worktree-gone']) { assert.ok(text.run.includes(`\`${reason}\``), `run: reason ${reason}`); assert.ok(SRC.progress.includes(`'${reason}'`), `progress.mjs: reason ${reason}`) }
+    assert.ok(text.run.includes('`{ "items": <safe> }`') && text.run.includes('`{ task, items: [{ kind, task, text }] }`'))
+    assert.ok(/A non-zero exit of `triage` \(2: plan not found or ambiguous; 1: `progress.json` unreadable/.test(text.run), 'run: non-zero exit of triage')
+    assert.ok(text.run.includes('"triage not available"') && text.run.includes('never read the failure as an empty `safe` list') && text.run.includes('close nothing alone'))
+    // The exit codes the skill states are the script's
+    const bad = tempDir('triage-')
+    const none = node([join(SCRIPTS, 'progress.mjs'), 'triage', join(bad, 'plans', 'nothing')], bad)
+    assert.equal(none.code, 2, none.out)
+    assert.match(none.out, /^progress: /)
+    // status: the three lines and the label of a prerequisite that holds back nothing, in the docs
+    const REF = read(join(ROOT, 'docs', 'reference.md'))
+    for (const w of ['**Now**', '**At run stop**', '**Later**', '`before the next run`', '`before the first run`', '`plan-lint --scope`'.replace('`plan-lint --scope`', '`--scope`')]) assert.ok(REF.includes(w), `docs/reference.md without ${w}`)
+    assert.ok(SRC.status.includes('before the next run') && SRC.status.includes('before the first run'))
+    for (const w of ['entry with `*` owns the paths that start with the text before the `*`', '`docs/sc.md` does not own `docs/sc.md.bak`', '`*.md`) owns nothing', '`outside`']) assert.ok(REF.includes(w), `docs/reference.md: --scope without ${w}`)
+  })
+
+  test('0.19.0: at the end of a phase, autonomous and deviation mode close safe and ask nothing; open is offered only in phase mode and at the end of the command', () => {
+    const fin = text.run.split('\n').find(l => l.startsWith('   - `finished`:'))
+    assert.ok(fin && fin.includes('In phase mode'), 'run: the finished bullet')
+    const auto = fin.slice(0, fin.indexOf('In phase mode'))
+    for (const w of ['In autonomous or deviation mode, the triage asks no question', 'close `safe` through `ack`', 'say in one line per task how many items of `open` stay open', 'go on to the next phase without waiting']) assert.ok(auto.includes(w), `run: finished, autonomous mode without "${w}"`)
+    assert.ok(!/question tool|\boffer/i.test(auto), 'run: finished, autonomous mode offers nothing with the question tool')
+    // Every sentence of the skill that offers `open` with the question tool is for phase mode or the end of the command
+    for (const s of text.run.split(/\.\s+/).filter(s => s.includes("`open`") && /question tool|\boffer `open`/i.test(s))) {
+      assert.ok(/phase mode/.test(s), `run: open offered outside phase mode: ${s}`)
+      if (!s.startsWith('In phase mode')) assert.ok(s.includes('only in phase mode') && s.includes('at the end of the command'), `run: open offered without its moments: ${s}`)
+    }
+    const end = text.run.slice(text.run.indexOf('## 4. End'), text.run.indexOf('## During a run'))
+    assert.ok(end.includes('Offer `open` to the user with the question tool only in phase mode, at the end of a phase before the end-of-phase question, and at the end of the command'), 'run: when open is offered')
+    assert.ok(end.includes('At the end of a phase in autonomous or deviation mode, do not offer it: say in one line per task how many of its items stay open, ask nothing, and go on to the next phase.'), 'run: autonomous mode does not stop on open')
+    const REF = read(join(ROOT, 'docs', 'reference.md'))
+    const tri = REF.slice(REF.indexOf('**End-of-run triage**'), REF.indexOf('\n', REF.indexOf('**End-of-run triage**')))
+    assert.ok(tri.includes('in phase mode at the end of each phase, before the end-of-phase question, and at the end of the command') && tri.includes('Autonomous and deviation mode do not stop on it at the end of a phase'), 'docs/reference.md: when open is offered')
+  })
+
+  test('0.19.0: the check_skipped rule of the integrator agent is the one pMerge gives', () => {
+    const INTEG = read(join(PLUGIN, 'agents', 'integrator.md'))
+    const pm = WF.slice(WF.indexOf('const pMerge = '), WF.indexOf('\n// Choice of the model'))
+    assert.ok(pm.length > 0, 'workflow: pMerge')
+    // The comparison: given only for a task of the main checkout, the same command on both sides
+    const cmp = pm.match(/\$\{isolated \? '' : `\nThen compare the tree of \$\{INTEG\} with the verified branch: \\`(git diff --quiet \$\{r\.branch\} HEAD)\\`/)
+    assert.ok(cmp, 'pMerge: the comparison only for a task of the main checkout')
+    assert.ok(INTEG.includes(`Check skipped: only when your instructions give the comparison \`${cmp[1].replace('${r.branch}', '<branch>')}\` (a task of the main checkout, never a task in a worktree)`), 'integrator.md: when check_skipped applies')
+    // Code 0: the same values returned
+    const values = s => [...s.matchAll(/([a-z_]+)=(true|false)/g)].map(m => m[0]).sort()
+    const wf0 = pm.match(/Code 0: [^`]*?return ([^.]*)\./), ag0 = INTEG.match(/Code 0: [^\n]*?return ([^.]*)\./)
+    assert.ok(wf0 && ag0, 'code 0 of the comparison')
+    assert.deepEqual(values(ag0[1]), values(wf0[1]))
+    assert.deepEqual(values(wf0[1]), ['check_ok=true', 'check_skipped=true', 'ok=true'])
+    // Any other code: no check_skipped, on both sides; and the workflow takes a skipped check in a worktree as a check not done
+    assert.ok(pm.includes('Any other code: go on below, without check_skipped.') && INTEG.includes('Any other code, or no comparison in your instructions: no `check_skipped`'), 'any other code')
+    assert.ok(WF.includes('const skipped = i.check_skipped === true, notRun = skipped && isolated'), 'workflow: check_skipped read for the main checkout only')
   })
 
   test('settings: one script, settings.mjs, for /install, /prepare, /ready and /run; its headers are those the skills read', () => {
@@ -505,6 +600,53 @@ try {
     // The workflow gives the step to the clerk, and none to the isolated worker
     assert.ok(WF.includes("if (isolated) await noteStart(t, workerModel)") && WF.includes("label: `${t.id} · start`, agentType: AG('clerk')"), 'run-phase.js: the clerk notes the start')
     assert.ok(WF.includes("`${isolated ? '' : pStep(t.id, 'worker', { isolated: false, model })}Task"), 'run-phase.js: no step in the instructions of the isolated worker')
+  })
+
+  test('digest of the scope (0.19.0): the same scopeDigest in plan-lint and in the workflow, which reads the copy of plan-lint --scope; each field changes it, marker included', () => {
+    const fn = t => (t.match(/\nfunction scopeDigest\(p\) \{\n[\s\S]*?\n\}/) || [''])[0]
+    assert.ok(fn(WF).length > 100, 'scopeDigest missing from run-phase.js')
+    assert.equal(fn(SRC['plan-lint']), fn(WF), 'scopeDigest differs between scripts/plan-lint.mjs and workflows/run-phase.js')
+    const load = t => new Function(fn(t) + '\nreturn scopeDigest')()
+    const lint = load(SRC['plan-lint']), wf = load(WF)
+    const skip = { file: 'tests/x.test.mjs', line: 3, marker: '.skip(' }
+    const base = { task: 'T04', branch: 'task/T04', files: ['a.js', 'tests/x.test.mjs'], outside: ['a.js'], tests_removed: ['tests/y.test.mjs'], skips_added: [skip] }
+    assert.equal(wf(base), lint(base))
+    const variants = { task: { task: 'T05' }, branch: { branch: 'task/T04-r2' }, files: { files: ['a.js'] }, outside: { outside: [] }, tests_removed: { tests_removed: ['docs/latest.md'] },
+      'skips_added.file': { skips_added: [{ ...skip, file: 'tests/z.test.mjs' }] }, 'skips_added.line': { skips_added: [{ ...skip, line: 4 }] }, 'skips_added.marker': { skips_added: [{ ...skip, marker: '.only(' }] } }
+    for (const [field, change] of Object.entries(variants)) {
+      const v = { ...base, ...change }
+      assert.equal(wf(v), lint(v), `${field}: the two copies differ`)
+      assert.notEqual(wf(v), wf(base), `${field}: not covered by the digest`)
+    }
+    // A field left out reads as empty, as for planDigest
+    assert.equal(wf({ ...base, outside: undefined }), wf({ ...base, outside: [] }))
+  })
+
+  test('scope check and proofs (0.19.0): the rules of verifier.md and evaluator.md match the instructions of the workflow', () => {
+    const agent = a => read(join(PLUGIN, 'agents', `${a}.md`))
+    const verifier = agent('verifier'), evaluator = agent('evaluator')
+    // The workflow's texts are in template literals: a backtick there is written \`
+    const inWF = x => WF.includes(x.replace(/`/g, '\\`'))
+    // Verifier: the scope check first, from the main checkout, its JSON copied in "scope"; never a failure nor a forbidden command
+    assert.ok(WF.includes('--scope ${t.id} --branch ${r.branch} --integration ${INTEG}'), 'run-phase.js: the scope command')
+    assert.match(WF, /const VERIF_S = S\(\{[^\n]*scope: SCOPE_S/, 'VERIF_S: scope')
+    for (const x of ['First, the scope check your instructions give (`plan-lint.mjs … --scope …`), from the folder you start in (the main checkout), without a `cd`', '`digest` included, character for character', 'the workflow checks the copy against the digest', 'cite it neither among the failures nor in `forbidden`']) assert.ok(verifier.includes(x), `verifier.md: ${x}`)
+    for (const x of ['First, from the folder you start in (the main checkout), without a `cd`', '`digest` included, character for character', 'the workflow checks the copy against the digest', 'cite it neither among the failures nor in "forbidden"']) assert.ok(inWF(x), `run-phase.js: ${x}`)
+    // Evaluator: the proofs, with the four kinds of the schema
+    const by = JSON.parse(WF.match(/const PROOF_BY = (\[[^\]\n]*\])/)[1].replace(/'/g, '"'))
+    assert.deepEqual(by, ['diff', 'test', 'command', 'report'])
+    for (const b of by) { assert.ok(evaluator.includes(`\`${b}\``), `evaluator.md: ${b}`); assert.ok(inWF(`\`${b}\``), `run-phase.js: ${b}`) }
+    for (const k of ['criterion', 'by', 'ref']) { assert.ok(evaluator.includes(`\`${k}\``), `evaluator.md: ${k}`); assert.ok(WF.includes(`"${k}"`), `run-phase.js: ${k}`) }
+    assert.ok(evaluator.includes('On a pass, return `proofs`: one entry per criterion of `definition_of_done`') && WF.includes('On a pass, return "proofs": one entry per criterion of the definition of done'))
+    for (const x of ['(only a result of code 0 proves)', '(only for a criterion that asks for report content)']) { assert.ok(evaluator.includes(x), `evaluator.md: ${x}`); assert.ok(WF.includes(x), `run-phase.js: ${x}`) }
+    // Evaluator: the facts of the scope, the rule on a removed or skipped test, the path heuristic; it no longer reads the scope itself
+    for (const x of ['do not read the scope yourself', 'a test deleted or skipped is a gap, unless the definition of done asks for it',
+      'lists the paths containing `test` or `spec` (case-insensitive), which can include files that are not tests (such as `docs/latest.md`): such a file is not a gap by itself.']) {
+      assert.ok(evaluator.includes(x), `evaluator.md: ${x}`)
+      assert.ok(inWF(x) || inWF(x[0].toUpperCase() + x.slice(1)), `run-phase.js: ${x}`)
+    }
+    assert.ok(!evaluator.includes('Also check that the diff touches no file outside'), 'evaluator.md: the scope is the workflow\'s')
+    assert.ok(evaluator.includes('When your instructions say the scope check could not be read, check these points yourself') && WF.includes('could not be read: check yourself, in the diff'), 'fallback without the facts')
   })
 
   console.log(`commands: ALL GREEN (${n} tests)`)

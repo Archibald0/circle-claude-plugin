@@ -109,12 +109,14 @@ try {
 
   testCase('"Your turn" card: one line per thing, one action per type; run card, log, state as text and PR draft', () => {
     const yourTurn = M.yourTurnCard(B, tA, 100)
-    assert.equal(M.plainText(yourTurn.title), '⚠ Your turn'); assert.equal(M.plainText(yourTurn.meta), '1 to settle · 3 reviews · 1 auto-decision')
+    // D2: during a run, what waits for the session is `at run stop`: nothing is for now, the card stays quiet
+    assert.equal(M.plainText(yourTurn.title), '✓ Nothing waits for you now'); assert.equal(M.plainText(yourTurn.meta), '1 to settle · 3 reviews · 1 auto-decision'); assert.equal(yourTurn.color, 'subtle')
+    assert.equal(yourTurn.urgent, 0)
     const tt = text(yourTurn.lines)
     // 0.16.0: a line only selects; what it does is a button of its detail card
-    assert.match(tt, /^⚑ T02 · Missing secret \(human\)\n +secret missing for the tests$/m)
-    assert.match(tt, /^⚑ T01 · agents\/x\/\.env\.example: add MR_MAX$/m)
-    assert.match(tt, /^⇒ T01 · Retry threshold: A \(cap at 30 s\)$/m)
+    assert.match(tt, /^⚑ T02 · Missing secret \(human\) +at run stop\n +secret missing for the tests$/m)
+    assert.match(tt, /^⚑ T01 · agents\/x\/\.env\.example: add MR_MAX +after phase 1$/m)
+    assert.match(tt, /^⇒ T01 · Retry threshold: A \(cap at 30 s\) +before phase 2$/m)
     const actions = yourTurn.lines.flat().filter(m => m.x).map(m => m.x)
     assert.deepEqual(actions.map(x => x.hotkey), ['1', '2', '3', '4', '5'])
     assert.equal(actions[0].prompt, '/orchestre:run plans/demo --resume', 'an issue for a human: resume the run, which asks it')
@@ -123,11 +125,11 @@ try {
     // Blocked without an issue: ask the pilot; open prerequisite: /orchestre:ready
     const blocked = { ...B, issues: [], tasks: B.tasks.map(t => (t.id === 'T02' ? { ...t, status: 'blocked' } : t)), prerequisites: [{ id: 'D5', type: 'decision', blocks: ['T04'] }] }
     const ab = M.yourTurnCard(blocked, tA, 100).lines.flat().filter(m => m.x).map(m => m.x.prompt)
-    assert.deepEqual(ab.slice(0, 2), ['Explain the blocker of T02 (secret missing for the tests) and propose a way forward.', '/orchestre:ready plans/demo'])
+    assert.equal(ab[0], 'Explain the blocker of T02 (secret missing for the tests) and propose a way forward.'); assert.ok(ab.includes('/orchestre:ready plans/demo'), 'the prerequisite of phase 2 comes after the reviews of phase 1: sorted by rank')
     assert.equal(M.yourTurnCard(A, tA, 100), null, 'nothing to do: no card')
     // plan-lint in error at the last write; tickets of HANDOFF.md, to open after the PR
     const linted = M.yourTurnCard({ ...A, lint: { ok: false, errors: 2 } }, tA, 100)
-    assert.match(text(linted.lines), /^✗ plan-lint: 2 errors at the last progress update$/m)
+    assert.match(text(linted.lines), /^✗ plan-lint: 2 errors at the last progress update +at run stop$/m)
     assert.equal(linted.lines.flat().find(m => m.x).x.prompt, 'Show me the plan-lint errors on plans/demo and propose a fix.')
     assert.match(M.prText({ ...B, tickets: 2 }, tA), /\n2 tickets to open after the PR \(HANDOFF\.md, "ticket" entries\)\.\n$/)
     // Beyond 9 lines, pages of 9 (0.16.0): keys 1 to 9 on each, a button for the other page; a page out of range is brought back
@@ -146,7 +148,7 @@ try {
     const pr = M.prText(B, tA)
     assert.match(pr, /^- \[ \] T01: agents\/x\/\.env\.example: add MR_MAX$/m); assert.match(pr, /^- \[ \] T01, Retry threshold: option A, cap at 30 s$/m); assert.match(pr, /Not merged yet: T02 \(waits for a human\)/)
     const state = M.stateText(B, tA)
-    assert.match(state, /^▶ demo {2}◉○/); assert.match(state, /\n⚠ Your turn {3}1 to settle/); assert.match(state, /\nlog/)
+    assert.match(state, /^▶ demo {2}◉○/); assert.match(state, /\n✓ Nothing waits for you now {3}1 to settle/); assert.match(state, /\nlog/)
     const j = M.logCard(B, tA, 100, false)
     assert.equal(j.lines.length, M.SHORT_LOG); assert.match(text(j.lines), /⚑ /); assert.equal(M.plainText(j.meta), `l: all (${B.log.length})`)
     assert.equal(M.logCard(B, tA, 100, true).lines.length, B.log.length)
@@ -160,7 +162,7 @@ try {
     assert.deepEqual(M.changes(B, C), ['Run 1 (phase 1): awaiting-ruling', 'Run stopped: T02, Missing secret'], 'issue become the stop issue')
     assert.match(M.plainText(M.banner(C, tA, 140)), /^■ demo {2}◉○ {2}\S+ {2}1\/4 {2}⚑ 3 to review {2}⚠ 1 your turn {2}run 1 awaiting-ruling {2}⏱ /)
     assert.equal(M.suffix(C, tA), null); assert.deepEqual(M.inProgress(C, tA), [])
-    assert.match(text(M.yourTurnCard(C, tA, 100).lines), /^⚑ T02 · Missing secret \(human\)$/m)
+    assert.match(text(M.yourTurnCard(C, tA, 100).lines), /^⚑ T02 · Missing secret \(human\) +now$/m)
     // Run finished: what comes next in one key
     const rc = M.runCard(C, tA, 100, false)
     assert.equal(M.plainText(rc.title), '■ Run 1 · phase 1 · autonomous'); assert.equal(rc.color, 'warning')
@@ -390,12 +392,15 @@ try {
     const timelineOf = l => l.filter(m => /^[━╸·]+$/.test(m.t)).reduce((n, m) => n + [...m.t].length, 0)
     assert.equal(timelineOf(line(noModel, 'T01')), 26); assert.equal(timelineOf(line(I, 'T01')), 21, 'at 100 columns, the model column is taken from the timeline')
     assert.equal(timelineOf(line(I, 'T01', 160)), 26, 'at 160 columns, the timeline keeps its width')
-    // The column makes no line longer than the width; below 73 columns (the grid's least room and its width), it goes away
-    for (const w of [140, 120, 100, 80, 73, 72, 60, 50]) {
+    // The column makes no line longer than the width; below 69 columns (the grid's least room, with this plan's short
+    // titles), it goes away
+    for (const w of [140, 120, 100, 80, 69, 68, 60, 50]) {
       const withModel = M.taskLines(I, t4, w), withoutModel = M.taskLines(noModel, t4, w)
       withModel.forEach((l, i) => assert.ok(M.width(l) <= Math.max(w, M.width(withoutModel[i])), `${w}: ${M.width(l)} "${M.plainText(l)}"`))
     }
-    assert.match(M.plainText(line(I, 'T02', 73)), /sonnet → opus/); assert.doesNotMatch(M.plainText(line(I, 'T02', 72)), /sonnet|opus/)
+    // 0.19.0: no timeline under 80 columns, so the model column holds on down to 69 columns here (the titles are short: 16
+    // cells keep all their text)
+    assert.match(M.plainText(line(I, 'T02', 69)), /sonnet → opus/); assert.doesNotMatch(M.plainText(line(I, 'T02', 68)), /sonnet|opus/)
     assert.deepEqual(M.taskLines(I, t4, 60).map(M.plainText), M.taskLines(noModel, t4, 60).map(M.plainText), 'too narrow: as without a model')
     assert.equal(M.plainText(line(I, 'T02')).length - M.plainText(line(I, 'T02')).indexOf('fix attempt'), M.plainText(line(noModel, 'T02')).length - M.plainText(line(noModel, 'T02')).indexOf('fix attempt'))
     // The log: the model change, its glyph; /progress text shows it too
@@ -453,7 +458,9 @@ try {
     const T02 = w => M.plainText(M.taskLines(I7, t7, w).find(l => M.plainText(l).match(/^ {2}\S (\S+)/)?.[1] === 'T02'))
     assert.match(T02(160), /verification attempt 2 \(worktree\)$/)
     assert.match(T02(100), /verification attempt 2$/)
-    assert.match(T02(80), /verification attempt 2$/); assert.match(T02(76), / verification$/)
+    // 0.19.0: the title goes first, so at 80 columns (with the timeline) the step is cut before the attempt shows; at 76,
+    // without a timeline, the attempt shows again
+    assert.match(T02(80), / verification$/); assert.match(T02(76), /verification attempt 2$/); assert.match(T02(58), / verification$/)
   })
 
   testCase('task lines on one grid (0.13.1): each column at the same place on every line, the phases aligned among themselves', () => {
@@ -475,8 +482,17 @@ try {
           const c = cells(l), id = c.slice(4).join('').split(' ')[0], task = X.tasks.find(x => x.id === id), s = c.join('')
           assert.equal(c.slice(G.at.title - 2, G.at.title + 1).join('').slice(0, 2), '  ', `${at}: title of ${id}, "${s}"`)
           assert.notEqual(c[G.at.title], ' ', `${at}: title of ${id}, "${s}"`)
-          assert.match(c.slice(G.at.timeline - 2, G.at.timeline + 1).join(''), /^ {2}[━╸·─]$/, `${at}: timeline of ${id}, "${s}"`)
-          assert.match(c.slice(G.at.time - 2, G.at.time + 9).join(''), /^ {2} *(\d+:\d{2}(:\d{2})?|—)? {2}$/, `${at}: duration of ${id}, "${s}"`)
+          // 0.19.0: a task with no segment and no duration (to do, or waiting) draws no dots, its title takes their room; under 80 columns, no task has a timeline
+          const bare = !M.stepsOf(X, task, t).length && (task.start == null || task.end == null)
+          assert.equal(G.timeline > 0, w >= 80, `${at}: timeline column`)
+          if (bare) {
+            assert.doesNotMatch(c.slice(G.at.title, G.at.model).join(''), /[━╸·─]/, `${at}: no dot on ${id}, "${s}"`)
+            assert.equal([...M.titleCell(task.title, G.bare)].length, G.bare, `${at}: bare title of ${id}`)
+          } else {
+            if (G.timeline) assert.match(c.slice(G.at.timeline - 2, G.at.timeline + 1).join(''), /^ {2}[━╸·─]$/, `${at}: timeline of ${id}, "${s}"`)
+            else assert.doesNotMatch(c.slice(G.at.title, G.at.model).join(''), /[━╸─]/, `${at}: no timeline on ${id}, "${s}"`)
+            assert.match(c.slice(G.at.time - 2, G.at.time + 9).join(''), /^ {2} *(\d+:\d{2}(:\d{2})?|—)? {2}$/, `${at}: duration of ${id}, "${s}"`)
+          }
           const model = M.plainText(M.modelOf(task))
           if (G.model && model) assert.equal(c.slice(G.at.model, G.at.model + [...model].length).join(''), model, `${at}: model of ${id}, "${s}"`)
           if (c.length > G.at.what) assert.match(c.slice(G.at.what - 2).join(''), /^ {2}( merged |\S)/, `${at}: what ${id} does, "${s}"`)
@@ -499,6 +515,66 @@ try {
     assert.equal(M.titleCell('Docs', 6), 'Docs  ')
   })
 
+  testCase('tasks card, readable titles (0.19.0): titles first, no timeline under 80 columns, a task to do draws no dots, "waits for" and the retries within the room', () => {
+    const T = Date.parse('2026-10-09T10:00:00Z'), t = D.frameInstant(4, T) + 500, base = D.demoSnapshot(4, T)
+    // Frame 4: T01 merged, T02 in its fix (attempt 2, worktree, sonnet → opus), T03 to do. Long titles, tasks to do that
+    // wait for ids of another plan, retries on four tasks of the phase
+    const T03 = base.tasks.find(x => x.id === 'T03')
+    const titles = { T01: 'Fixes after the evaluation of the first batch', T02: 'Server: portfolio loading and its cache', T03: 'Server: contracts of an account and its hotels' }
+    const waiting = { T03: ['AH06'], T06: ['AH06'], T07: ['AH06', 'AH07', 'AH08', 'AH09'] }
+    const longTitle = 'Routing: the answer to a vague request, with the long title of a real plan'
+    const plan = tasks => ({ ...base, tasks })
+    const X = plan([
+      ...base.tasks.map(x => ({ ...x, title: titles[x.id] ?? x.title, attempts: x.id === 'T01' ? 3 : x.attempts, waiting: waiting[x.id] ?? x.waiting })),
+      { ...T03, id: 'T06', title: 'The hub, three readings', waiting: waiting.T06, attempts: 3 },
+      { ...T03, id: 'T07', title: longTitle, waiting: waiting.T07, attempts: 2 },
+    ])
+    const noModel = plan(X.tasks.map(x => ({ ...x, model: null, modelUsed: null })))
+    const row = (Y, w, id) => M.taskLines(Y, t, w).find(l => M.plainText(l).match(/^ {2}\S (\S+)/)?.[1] === id)
+    const dots = l => /[━╸·─]/.test(M.plainText(l))
+
+    // 58 columns: the title of a started task goes from 10 to 20 cells, that of a task to do to 29; one line per task
+    assert.deepEqual(['title', 'bare', 'timeline', 'model'].map(k => M.taskGrid(X, t, 58)[k]), [20, 29, 0, 0])
+    assert.match(M.plainText(row(X, 58, 'T03')), /^ {2}○ T03 {4}Server: contracts of an acco… {2}waits for AH06$/)
+    assert.match(M.plainText(row(X, 58, 'T02')), /^ {2}◐ T02 {4}Server: portfolio l… {2} *\d+:\d{2} {2}fix attempt 2$/)
+    assert.ok(!dots(row(X, 58, 'T03')) && !dots(row(X, 58, 'T02')), 'no dot on a task to do, no timeline on a started task')
+    assert.ok(!M.taskLines(X, t, 58).some(l => /━ work/.test(M.plainText(l))), 'no legend of the steps without a timeline')
+    // waits for ...: whole ids, the others counted, never an id cut
+    assert.match(M.plainText(row(X, 58, 'T07')), / {2}waits for AH06…$/, 'room for the first id and not for its count')
+    assert.match(M.plainText(row(X, 70, 'T07')), / {2}waits for AH06 \+3$/)
+    assert.equal(M.waitsFor(['AH06', 'AH07', 'AH08', 'AH09'], 23), 'waits for AH06, AH07 +2')
+    assert.equal(M.waitsFor(['AH06', 'AH07'], 32), 'waits for AH06, AH07')
+    assert.equal(M.waitsFor(['AH06', 'AH07', 'AH08', 'AH09', 'AH10'], 99), 'waits for AH06, AH07, AH08, AH09 +1')
+    for (let n = 15; n < 40; n++) assert.ok(M.waitsFor(['AH06', 'AH07', 'AH08', 'AH09', 'AH10'], n).split(/[ ,]+/).every(w => /^(waits|for|AH\d\d…?|\+\d)$/.test(w)), `${n}: ${M.waitsFor(['AH06', 'AH07', 'AH08', 'AH09', 'AH10'], n)}`)
+    // The line of a phase fits, whatever the width; its name and its counter stay whole, the retries are cut to the room left
+    for (const w of [120, 80, 58, 50]) {
+      const ph = M.taskLines(X, t, w).find(l => /Phase 1/.test(M.plainText(l)))
+      assert.ok(M.width(ph) <= w, `${w}: ${M.width(ph)} "${M.plainText(ph)}"`)
+      assert.match(M.plainText(ph), /^◉ Phase 1 +0\/5 /, `${w}: name and counter whole`)
+    }
+    assert.match(M.plainText(M.taskLines(X, t, 120).find(l => /Phase 1/.test(M.plainText(l)))), / T01 ×3, T02 ×2, T06 ×3…$/)
+    // 28 tasks in the phase: the squares give way to a bar when they would push the line past the width
+    const many = plan([...X.tasks, ...Array.from({ length: 23 }, (_, i) => ({ ...T03, id: `T1${i}`, title: `Extra task ${i}` }))])
+    for (const w of [58, 50, 44]) for (const l of M.taskLines(many, t, w).filter(x => /^[◉●○◐⚠] Phase/.test(M.plainText(x)))) assert.ok(M.width(l) <= w, `${w}: ${M.width(l)} "${M.plainText(l)}"`)
+    const phase1 = w => M.plainText(M.taskLines(X, t, w).find(l => /Phase 1/.test(M.plainText(l))))
+    assert.match(phase1(50), / T01 ×3, T02 ×2…$/); assert.match(phase1(40), / T01 ×3…$/, phase1(40)); assert.doesNotMatch(phase1(33), /×|…/, 'no room: no retries')
+
+    // The columns grow title first (28), then what the task does (24), then the timeline (26), then the title (48)
+    assert.deepEqual(['title', 'what', 'timeline', 'model'].map(k => M.taskGrid(noModel, t, 100)[k]), [28, 24, 24, 0])
+    assert.deepEqual(['title', 'what', 'timeline'].map(k => M.taskGrid(noModel, t, 140)[k]), [48, 42, 26])
+    // The timeline goes under 80 columns
+    assert.deepEqual([79, 80].map(w => M.taskGrid(noModel, t, w).timeline > 0), [false, true])
+    // The model column stays while the title keeps 24 cells with it (87 columns here), and with its own text if shorter
+    assert.deepEqual([80, 86, 87, 100, 120].map(w => M.taskGrid(X, t, w).model), [0, 0, 13, 13, 13])
+    assert.ok(M.taskGrid(X, t, 87).title >= 24)
+    assert.equal(M.taskGrid(plan(X.tasks.map(x => ({ ...x, title: x.title.slice(0, 12) }))), t, 80).model, 13, 'short titles: they keep all their text')
+    // 120 columns: a started task keeps its timeline, its duration, its model and its step
+    assert.match(M.plainText(row(X, 120, 'T02')), /[━╸]+ +\d+:\d{2} {2}sonnet → opus {2}fix attempt 2 \(worktree\)$/)
+    // One line per task: the card does not move when a task starts
+    const started = plan(X.tasks.map(x => (x.id === 'T03' ? { ...x, step: 'worker', start: t - 5000, attempts: 1, waiting: [] } : x)))
+    for (const w of [58, 80, 120]) assert.equal(M.taskLines(started, t, w).length, M.taskLines(X, t, w).length, `${w}`)
+  })
+
   testCase('pane within its width (0.13.1): no line wider than its card, the steps closer then over two lines, the step column at its content', () => {
     const T = Date.parse('2026-10-09T10:00:00Z')
     // A line wider than its card makes the terminal shorten each of its pieces ("…verif", "merge 2:…")
@@ -516,14 +592,14 @@ try {
     const two = M.stepLines(items, 50)
     assert.deepEqual(two.map(M.plainText), ['work 14:36 · verif 3:00 · eval 3:06 · fix 1:12', 'merge 1:12 · prog 0:24'])
     assert.ok(two.every(l => M.width(l) <= 50))
-    // What the task does takes the width of its longest text: "work (worktree)" leaves the room to the titles, "fix attempt 2
+    // What the task does takes the width of its longest text: "work (worktree)" leaves the room to the timeline, "fix attempt 2
     // (worktree)" takes it back
     const I1 = D.demoSnapshot(1, T), t1 = D.frameInstant(1, T) + 500, I4 = D.demoSnapshot(4, T), t4 = D.frameInstant(4, T) + 500
-    assert.equal(M.taskGrid(I1, t1, 80).what, 16)
-    assert.equal(M.taskGrid(I4, t4, 80).what, 23)
-    assert.ok(M.taskGrid(I1, t1, 80).title > M.taskGrid(I4, t4, 80).title)
+    assert.equal(M.taskGrid(I1, t1, 88).what, 16)
+    assert.equal(M.taskGrid(I4, t4, 88).what, 24)
+    assert.ok(M.taskGrid(I1, t1, 88).timeline > M.taskGrid(I4, t4, 88).timeline)
     const waits = { ...I1, tasks: I1.tasks.map(x => (x.id === 'T03' ? { ...x, waiting: ['T01', 'T02'] } : x)) }
-    assert.equal(M.taskGrid(waits, t1, 80).what, [...'waits for T01, T02'].length, 'a task to do counts too')
+    assert.equal(M.taskGrid(waits, t1, 88).what, [...'waits for T01, T02'].length, 'a task to do counts too')
     // The resume of a long plan at 60 columns: "in the prompt" goes, then the command is cut; the prompt keeps it whole
     const I11 = D.demoSnapshot(11, T), t11 = D.frameInstant(11, T) + 500, dir = 'plans/checkout-flow-with-saved-cards-and-wallets'
     const next = M.runCard({ ...I11, dir }, t11, 60, false).lines.find(l => /^next/.test(M.plainText(l)))
@@ -602,7 +678,7 @@ try {
     assert.deepEqual([item('E1').kind, item('E1').what, item('E1').when, item('E1').where, item('E1').check], ['environment to set up', 'E1 (environment) open', 'Now', 'Your terminal, then this session: /orchestre:ready checks it', undefined], 'T02 is in the phase of the run: now; no text, its id; "—" is no evidence')
     assert.deepEqual([item('D5').kind, item('D5').where, item('D5').how], ['decision to take', 'This session, between two runs: /orchestre:ready asks the question', []])
     assert.deepEqual(items.filter(x => x.group !== 'settle' || x.task === 'T02').map(x => [x.task, x.kind, x.when, x.where]), [
-      ['T02', 'waits for you', 'Now', 'This session, once the run stops'],
+      ['T02', 'waits for you', 'At run stop', 'This session, once the run stops'],
       ['T01', 'review', 'After phase 1', 'This session once no run is going (the agents work in the main checkout), or the PR on GitHub'],
       ['T02', 'review', 'After phase 1', 'This session once no run is going (the agents work in the main checkout), or the PR on GitHub'],
       ['T02', 'review', 'After phase 1', 'This session once no run is going (the agents work in the main checkout), or the PR on GitHub'],
@@ -634,10 +710,10 @@ try {
     // The run stopped: where and when change; no run yet; all merged; a review of the source plan; a decision of the last phase
     const stopped = { ...H, run: { ...H.run, status: 'awaiting-ruling' } }
     const sItems = M.yourTurnItems(stopped, tA).items, sItem = id => sItems.find(x => x.task === id)
-    assert.deepEqual([sItem('T02').where, sItem('E1').when, sItem('H1').when], ['This session: the run is stopped, resume it here', 'Before the next run', 'Before phase 2'])
+    assert.deepEqual([sItem('T02').where, sItem('E1').when, sItem('H1').when], ['This session: the run is stopped, resume it here', 'Now', 'Before phase 2'])
     const blocked = { ...stopped, issues: [], tasks: stopped.tasks.map(t => (t.id === 'T02' ? { ...t, status: 'blocked' } : t)) }
     assert.deepEqual(['kind', 'when', 'where'].map(k => M.yourTurnItems(blocked, tA).items[0][k]), ['blocked task', 'Now', 'This session: the run is stopped, ask the pilot'])
-    assert.equal(M.yourTurnItems({ ...H, runs: [], run: null }, tA).items.find(x => x.task === 'H1').when, 'Before the first run')
+    assert.equal(M.yourTurnItems({ ...H, runs: [], run: null }, tA).items.find(x => x.task === 'H1').when, 'Before phase 2', 'the label says before phase 2: so does the card')
     assert.equal(M.yourTurnItems({ ...H, prerequisites: [{ id: 'H9', type: 'manual', blocks: [] }] }, tA).items.find(x => x.task === 'H9').when, 'Before the next run', 'holding back no task: not "Now", even during a run')
     const merged = { ...H, prerequisites: [], issues: [], tasks: H.tasks.map(t => ({ ...t, status: 'merged', step: null })) }
     assert.deepEqual([...new Set(M.yourTurnItems(merged, tA).items.map(x => x.when))], ['Before the PR'])
@@ -646,6 +722,152 @@ try {
     // Read from progress.json: the text, the evidence and the steps of an open prerequisite
     const raw = rawFile()
     assert.deepEqual(M.normalize({ ...raw, prerequisites: [{ ...H1, status: 'open' }, { ...H1, id: 'H2', status: 'done' }] }).prerequisites, [{ id: 'H1', type: 'manual', text: H1.text, evidence: H1.evidence, how: H1.how, blocks: ['T04'] }])
+  })
+
+  testCase('your turn by moment (0.19.0): label and rank, sorted, "later" line, counters, badge and banner, what waits behind, reviews in double', () => {
+    // C: run 1 stopped, T02 waits for a human (issue), three reviews and one auto-decision. E1 holds back T02 (phase 1), H1 and the
+    // decision of T01 point at phase 2, H9 holds nothing back, one review is of the source plan
+    const prerequisites = [{ id: 'E1', type: 'environment', text: 'Docker up', blocks: ['T02'] }, { id: 'H1', type: 'manual', text: 'Token', blocks: ['T04'] }, { id: 'H9', type: 'manual', text: 'Old', blocks: [] }]
+    const P = { ...C, prerequisites, reviews: [...C.reviews, { task: null, phase: null, text: 'README: reread', at: null }] }
+    const moments = I => M.yourTurnItems(I, tA).items.map(x => [x.task, x.moment, x.rank])
+    assert.deepEqual(moments(P), [
+      ['T02', 'now', 0], ['E1', 'now', 0],
+      ['T01', 'after phase 1', 1], ['T02', 'after phase 1', 1], ['T02', 'after phase 1', 1],
+      ['H1', 'before phase 2', 1.5], ['T01', 'before phase 2', 1.5],
+      ['H9', 'before the next run', 98], ['source plan', 'before the PR', 99],
+    ], 'sorted by rank; the order of the list stays at an equal rank')
+    assert.deepEqual(M.yourTurnItems({ ...P, runs: [], run: null }, tA).items.filter(x => x.group === 'settle').map(x => [x.task, x.moment]), [['T02', 'now'], ['E1', 'now'], ['H1', 'before phase 2'], ['H9', 'before the first run']], 'no run yet: the first run, not the next one')
+    // D2: the same plan with the run going on (B has run 1 in progress): what needs the session is `at run stop`, the prerequisite stays `now`
+    const L = { ...B, prerequisites }
+    assert.deepEqual(moments(L).slice(0, 2), [['E1', 'now', 0], ['T02', 'at run stop', 0.2]])
+    assert.deepEqual([M.yourTurnItems(C, tA).urgent, M.yourTurnItems(B, tA).urgent, M.yourTurnItems(P, tA).urgent, M.yourTurnItems(L, tA).urgent], [1, 0, 2, 1], 'only `now` counts')
+    // A blocked task without an issue, a decision to take of the phase in progress, plan-lint in error: all now while no run goes
+    const D1 = { id: 'D1', type: 'decision', text: 'Pick a cap', blocks: ['T02'] }, D9 = { id: 'D9', type: 'decision', text: 'Pick a name', blocks: ['T04'] }
+    const blocked = { ...P, issues: [], lint: { ok: false, errors: 1 }, prerequisites: [...prerequisites, D1, D9], tasks: P.tasks.map(t => (t.id === 'T02' ? { ...t, status: 'blocked' } : t)) }
+    assert.deepEqual(moments(blocked).filter(x => x[2] === 0).map(x => x[0]), ['T02', 'E1', 'D1', 'plan-lint'])
+    // During a run: the task that waits for someone and the manual or environment prerequisite stay `now`; the decision to
+    // take and plan-lint need the session, like an issue (D2)
+    const running = { ...blocked, run: { ...blocked.run, status: 'in-progress' } }
+    assert.deepEqual(moments(running).filter(x => x[2] === 0).map(x => x[0]), ['T02', 'E1'])
+    assert.deepEqual(moments(running).filter(x => x[2] === 0.2).map(x => x[0]), ['D1', 'plan-lint'])
+    assert.deepEqual(moments(running).find(x => x[0] === 'D9'), ['D9', 'before phase 2', 1.5], 'a decision for a later phase keeps its phase')
+    for (const status of ['failed', 'needs-human']) {
+      const waiting = { ...running, tasks: running.tasks.map(t => (t.id === 'T02' ? { ...t, status } : t)) }
+      assert.deepEqual(moments(waiting)[0], ['T02', 'now', 0], `${status} without an issue, during a run`)
+    }
+    // The card: title, border, counter; the grey line goes before the first item that is not for now, and has no key
+    const card = M.yourTurnCard(P, tA, 100), lines = card.lines.map(M.plainText)
+    assert.deepEqual([M.plainText(card.title), card.color, card.title[0].c, card.urgent], ['⚠ Your turn', 'warning', 'warning', 2])
+    assert.equal(M.plainText(card.meta), '2 now · 4 to settle · 4 reviews · 1 auto-decision')
+    const rule = lines.findIndex(l => /^ {2}── later ─+$/.test(l))
+    assert.equal(rule, 3, 'after T02 (and its blocker), E1')
+    assert.ok(!card.lines[rule].some(m => m.x) && card.lines[rule].every(m => m.d), 'grey, without a key')
+    assert.equal(lines.filter(l => /── later/.test(l)).length, 1)
+    assert.deepEqual(card.lines.flat().filter(m => m.x?.mode === 'select').map(m => m.x.hotkey), ['1', '2', '3', '4', '5', '6', '7', '8', '9'], 'the line has no key: the others keep 1 to 9')
+    // The labels: `now` bold in `suggestion`, the others grey, all ending at the same cell, the text cut to leave them room
+    const label = id => card.lines[lines.findIndex(l => l.startsWith(id))].at(-1)
+    assert.deepEqual([label('◇ E1'), label('⇒ T01')].map(m => [m.t, m.c, m.b, m.d]), [['now', 'suggestion', true, undefined], ['before phase 2', undefined, undefined, true]])
+    const ends = card.lines.filter(l => l.some(m => m.x)).map(l => M.width(l))
+    assert.ok(ends.every(w => w === ends[0] && w <= 96), `${ends}`)
+    const narrow = M.yourTurnCard({ ...P, reviews: [{ task: 'T01', phase: 1, text: 'x'.repeat(80), at: null }] }, tA, 58)
+    for (const l of narrow.lines) assert.ok(M.width(l) <= 54, M.plainText(l))
+    assert.match(M.plainText(narrow.lines.find(l => /xxx/.test(M.plainText(l)))), /…\s+after phase 1$/, 'cut to leave the label its room')
+    // Only items of rank above 0: the page starts with the grey line; the card says nothing waits now, text in `success`, border `subtle`
+    const only = { ...A, reviews: Array.from({ length: 10 }, (_, i) => ({ task: 'T01', phase: 1, text: `f${i}`, at: null })) }
+    const o1 = M.yourTurnCard(only, tA, 100), o2 = M.yourTurnCard(only, tA, 100, null, { page: 1 })
+    assert.match(M.plainText(o1.lines[0]), /^ {2}── later ─+$/); assert.match(M.plainText(o2.lines[0]), /^ {2}── later ─+$/, 'the second page too')
+    assert.deepEqual([M.plainText(o1.title), o1.title[0].c, o1.color, o1.urgent], ['✓ Nothing waits for you now', 'success', 'subtle', 0])
+    assert.equal(M.plainText(o1.meta), '10 reviews')
+    // Nothing for later: no line; nothing at all: unchanged
+    assert.ok(!M.yourTurnCard({ ...C, reviews: [], decisions: [] }, tA, 100).lines.map(M.plainText).some(l => /later/.test(l)))
+    assert.equal(M.plainText(M.yourTurnCard({ ...A, reviews: [], decisions: [] }, tA, 100, null, { last: { text: 'x', kind: 'done' } }).title), '✓ Nothing left to review')
+    // The header badge and the banner count the `now` items, not only the tasks that wait
+    assert.match(M.plainText(M.pane(P, tA, 100).header[0]), /⚠ 2 YOUR TURN$/); assert.equal(M.pane(P, tA, 100).header[0].at(-1).t, ' ⚠ 2 YOUR TURN ')
+    assert.doesNotMatch(M.plainText(M.pane(B, tA, 100).header[0]), /YOUR TURN/); assert.match(M.plainText(M.pane(B, tA, 100).header[0]), /⚑ 3 TO REVIEW$/)
+    assert.match(M.plainText(M.banner(P, tA, 140)), /⚑ 4 to review {2}⚠ 2 your turn /)
+    assert.match(M.plainText(M.banner(L, tA, 140)), /⚑ 3 to review {2}⚠ 1 your turn /, 'during the run: the prerequisite only')
+    assert.doesNotMatch(M.plainText(M.banner(B, tA, 140)), /your turn/, 'T02 waits, but for the stop of the run: the banner is silent')
+    assert.match(M.plainText(M.banner({ ...C, reviews: [], decisions: [], issues: [], tasks: C.tasks.map(t => (t.id === 'T02' ? { ...t, status: 'todo' } : t)), prerequisites: [prerequisites[0]] }, tA, 140)), /⚠ 1 your turn/, 'an item that is not a task also counts')
+    // What waits behind a prerequisite: the tasks of the phases after the first one held back, not merged nor cancelled
+    const tk = (id, phase, status = 'todo') => ({ ...C.tasks[0], id, phase, status, step: null })
+    const W = { ...P, tasks: [tk('T01', 1, 'merged'), tk('T02', 1, 'needs-human'), tk('T03', 2), tk('T04', 2), tk('T05', 3), tk('T06', 3), tk('T07', 4), tk('T08', 4, 'cancelled'), tk('T09', 4, 'merged')] }
+    assert.equal(M.waitingBehind(W, ['T02']), 'phases 2, 3 and 4 (5 tasks) wait behind it')
+    assert.equal(M.waitingBehind(W, ['T03']), 'phases 3 and 4 (3 tasks) wait behind it')
+    assert.equal(M.waitingBehind(W, ['T05']), 'phase 4 (1 task) waits behind it')
+    assert.equal(M.waitingBehind(W, ['T07']), '', 'the last phase: nothing behind it')
+    assert.equal(M.waitingBehind(W, ['T01']), '', 'merged: it holds nothing back')
+    assert.equal(M.waitingBehind(W, ['T02', 'T06']), 'phases 2, 3 and 4 (4 tasks) wait behind it', 'from the first held back; a task held back is not behind itself')
+    const itemOf = id => M.yourTurnItems(W, tA).items.find(x => x.task === id)
+    const behind = (id, columns = 100) => M.detailCard(W, tA, columns, itemOf(id).key).lines.map(M.plainText)
+    assert.ok(behind('E1').includes('  blocks T02; phases 2, 3 and 4 (5 tasks) wait behind it'), behind('E1').join('\n'))
+    assert.ok(behind('H1').includes('  blocks T04; phases 3 and 4 (3 tasks) wait behind it'))
+    assert.ok(behind('E1', 60).join(' ').includes('blocks T02; phases 2, 3 and 4'))
+    assert.ok(behind('H9').every(l => !/blocks/.test(l)), 'holds nothing back: no line')
+    // Two reviews of the same task with the same first backquoted passage: one item, in the list, the counters and the PR draft;
+    // progress.json keeps both; no passage, another task or another passage: not the same
+    const reviewsIn = [
+      { task: 'T02', phase: 1, text: 'Check `.env.example`: add X', at: null }, { task: 'T02', phase: 1, text: 'Again `.env.example` and `b.md`', at: null },
+      { task: 'T01', phase: 1, text: 'Check `.env.example`: add X', at: null }, { task: 'T02', phase: 1, text: 'Check `b.md` first', at: null },
+      { task: 'T02', phase: 1, text: 'No passage', at: null }, { task: 'T02', phase: 1, text: 'No passage', at: null },
+      { task: null, phase: null, text: 'See `plan.md`', at: null }, { task: null, phase: null, text: 'Also `plan.md`', at: null },
+    ]
+    const dup = { ...A, reviews: reviewsIn }
+    assert.deepEqual(M.distinctReviews(reviewsIn).map(r => r.text), ['Check `.env.example`: add X', 'Check `.env.example`: add X', 'Check `b.md` first', 'No passage', 'No passage', 'See `plan.md`'])
+    assert.equal(dup.reviews.length, 8)
+    assert.equal(M.yourTurnItems(dup, tA).items.filter(x => x.group === 'review').length, 6)
+    assert.equal(M.plainText(M.yourTurnCard(dup, tA, 100).meta), '6 reviews'); assert.equal(M.summarize(dup, tA).reviews, 6)
+    assert.match(M.plainText(M.banner(dup, tA, 140)), /⚑ 6 to review/)
+    const pr = M.prText(dup, tA)
+    assert.equal(pr.split('\n').filter(l => /^- \[ \] /.test(l)).length, 6); assert.ok(!pr.includes('Again `.env.example`') && !pr.includes('Also `plan.md`'))
+    // From progress.json: both reviews are read, one item shown
+    const rawTwo = { ...rawFile(), reviews: [{ ...rawFile().reviews[0], task: 'T02', text: 'Check `x.env`: a' }, { ...rawFile().reviews[0], task: 'T02', text: 'Check `x.env`: b' }] }
+    const norm = M.normalize(rawTwo)
+    assert.equal(norm.reviews.length, 2); assert.equal(M.yourTurnItems(norm, tA).items.filter(x => x.group === 'review').length, 1)
+  })
+
+  testCase('your turn by moment (0.19.0): the first phase held back, tasks merged or cancelled, an issue alone, auto-decisions before the PR, "later" before "at run stop"', () => {
+    const at = (I, group = null) => M.yourTurnItems(I, tA).items.filter(x => !group || x.group === group).map(x => [x.task, x.moment, x.rank])
+    // A prerequisite takes the phase of the first task it holds back; a task merged or cancelled holds nothing back (C: run 1 stopped at phase 1)
+    const tk = (id, phase, status = 'todo') => ({ ...C.tasks[0], id, phase, status, step: null })
+    const held = {
+      ...C, reviews: [], decisions: [],
+      tasks: [tk('T01', 1, 'merged'), tk('T02', 1, 'needs-human'), tk('T03', 2), tk('T04', 2), tk('T05', 3), tk('T06', 3, 'cancelled')],
+      prerequisites: [
+        { id: 'E2', type: 'environment', text: 'a', blocks: ['T04', 'T02'] }, { id: 'H2', type: 'manual', text: 'b', blocks: ['T05', 'T03'] },
+        { id: 'H3', type: 'manual', text: 'c', blocks: ['T01'] }, { id: 'H4', type: 'manual', text: 'd', blocks: ['T06'] },
+      ],
+    }
+    assert.deepEqual(at(held), [['T02', 'now', 0], ['E2', 'now', 0], ['H2', 'before phase 2', 1.5], ['H3', 'before the next run', 98], ['H4', 'before the next run', 98]])
+    // An issue on a task that does not wait (T03 to do): at run stop during the run (B), now once it stopped (C) (D2)
+    const alone = I => ({ ...I, issues: [...I.issues, { ...I.issues[0], task: 'T03', title: 'Name of the queue', human: false }] })
+    assert.deepEqual(at(alone(B)).find(x => x[0] === 'T03'), ['T03', 'at run stop', 0.2])
+    assert.deepEqual(at(alone(C)).find(x => x[0] === 'T03'), ['T03', 'now', 0])
+    // An auto-decision of the last phase, of a task the plan no longer has, or of a plan all merged: before the PR
+    const decisions = [...C.decisions, { ...C.decisions[0], task: 'T03', title: 'Queue size' }, { ...C.decisions[0], task: 'T99', title: 'Gone' }]
+    assert.deepEqual(at({ ...C, decisions }, 'decision'), [['T01', 'before phase 2', 1.5], ['T03', 'before the PR', 99], ['T99', 'before the PR', 99]])
+    const merged = { ...C, issues: [], tasks: C.tasks.map(t => ({ ...t, status: 'merged' })) }
+    assert.deepEqual(at(merged, 'decision'), [['T01', 'before the PR', 99]])
+    // A review of a task of the last phase: after that phase while the plan is not all merged, before the PR once it is
+    const last = C.tasks.find(t => t.id === 'T03').phase
+    const lastReview = I => ({ ...I, reviews: [{ ...C.reviews[0], task: 'T03', phase: undefined, text: 'last phase', label: undefined }] })
+    assert.deepEqual(at(lastReview(C), 'review'), [['T03', `after phase ${last}`, last]])
+    assert.deepEqual(at(lastReview(merged), 'review'), [['T03', 'before the PR', 99]])
+    // During the run (B), nothing is for now: the card starts with the grey line, then T02 at run stop
+    const during = M.yourTurnCard(B, tA, 100).lines.map(M.plainText)
+    assert.match(during[0], /^ {2}── later ─+$/); assert.match(during[1], /^⚑ T02 · .* at run stop$/)
+  })
+
+  testCase('demo (0.19.0): the frame where run 1 stops has an item for now and items for later', () => {
+    const T = Date.parse('2026-10-09T10:00:00Z'), I = D.demoSnapshot(11, T), t = D.frameInstant(11, T) + 500
+    const at = M.yourTurnItems(I, t).items.map(x => `${x.task}:${x.moment}`)
+    assert.ok(at.includes('T03:now'), at.join(' ')); assert.ok(at.some(m => /:after phase 1$/.test(m)), at.join(' '))
+    assert.match(text(M.yourTurnCard(I, t, 100).lines), /^ {2}── later ─+$/m)
+    // While the run goes on (frame 10), T03 waits for its stop
+    const I10 = D.demoSnapshot(10, T), t10 = D.frameInstant(10, T) + 500
+    assert.ok(M.yourTurnItems(I10, t10).items.some(x => x.task === 'T03' && x.moment === 'at run stop'))
+    // The legend of these two frames names what they show, checked above
+    assert.match(D.legend(10), /T03 "at run stop" under the grey "later" line/)
+    assert.match(D.legend(11), /T03 is now "now", the review and the auto-decision stay below "later"/)
   })
 
   testCase('mark done (0.15.1): d on a review or an auto-decision, the items done leave "Your turn", the notifications by key', () => {
@@ -690,7 +912,7 @@ try {
     assert.deepEqual(review.ref, { kind: 'review', task: 'T02', text: R0[2], shown: `${R0[2]} (in GitHub)`, original: R0[2], edited: true })
     assert.equal(review.key, M.yourTurnItems(B, tA).items.find(it => it.ref?.text === R0[2]).key, 'the same key, edited or not')
     assert.deepEqual([decision.ref.text, decision.ref.shown, decision.ref.original, decision.toTicket], ['Retry threshold', 'Retry threshold: A, kept', 'Retry threshold: A (cap at 30 s)', '/orchestre:done plans/demo ticket decision T01 Retry threshold'])
-    assert.match(text(M.yourTurnCard(X, tA, 100).lines), new RegExp(`^⚑ T02 · ${R0[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(in GitHub\\) {2}✎ edited$`, 'm'))
+    assert.match(text(M.yourTurnCard(X, tA, 100).lines), new RegExp(`^⚑ T02 · ${R0[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(in GitHub\\) {2}✎ edited +before the PR$`, 'm'))
     assert.equal(M.plainText(M.yourTurnCard(X, tA, 100).meta), '1 review · 1 auto-decision · 1 moved to tickets')
     // The detail card of an edited item: its original text under it
     const d = M.detailCard(X, tA, 100, review.key)
@@ -811,6 +1033,52 @@ try {
     assert.equal(D.frameInstant(12, T) - D.frameInstant(11, T), 4 * D.DEMO_FRAME_MS)
     assert.equal(D.demoEnd(T), D.frameInstant(D.FRAME_COUNT - 1, T) + 60000, 'the real progress comes back a minute after the last frame')
     assert.equal(D.frameAt(D.demoEnd(T), T), D.FRAME_COUNT - 1)
+  })
+
+  testCase('T07B: merged reviews close together, the status line counts the `now` items, the detail card agrees with its label', () => {
+    // D5: three reviews of T01, two of them quoting the same passage, one with a different text; one of the source plan
+    const R = (task, text) => ({ task, phase: task ? 1 : null, text, at: null })
+    const dup = { ...C, reviews: [R('T01', 'Fix `a.js` once'), R('T01', 'Also `a.js` twice'), R('T01', 'Other `b.js`'), R('T02', 'Fix `a.js` once'), R(null, 'no passage'), R(null, 'no passage')] }
+    const ref = it => it.ref
+    const reviewsOf = I => M.yourTurnItems(I, tA).items.filter(x => x.group === 'review')
+    assert.deepEqual(reviewsOf(dup).map(x => [x.task, ref(x).text]), [['T01', 'Fix `a.js` once'], ['T01', 'Other `b.js`'], ['T02', 'Fix `a.js` once'], ['source plan', 'no passage'], ['source plan', 'no passage']])
+    // every review the item stands for, each with its original text (progress.mjs ack matches by kind, task and text)
+    assert.deepEqual(M.mergedTexts(dup, ref(reviewsOf(dup)[0])), ['Fix `a.js` once', 'Also `a.js` twice'], 'both texts of the merged item')
+    assert.deepEqual(M.mergedTexts(dup, ref(reviewsOf(dup)[1])), ['Other `b.js`'], 'alone')
+    assert.deepEqual(M.mergedTexts(dup, ref(reviewsOf(dup)[2])), ['Fix `a.js` once'], 'same passage on another task: not merged')
+    assert.deepEqual(M.mergedTexts(dup, ref(reviewsOf(dup)[3])), ['no passage'], 'no passage: never merged')
+    assert.deepEqual(M.mergedTexts(dup, { kind: 'decision', task: 'T01', text: 'Fix `a.js` once' }), ['Fix `a.js` once'], 'a decision stands alone')
+    // the status line: reviews after the D5 merge, `⚠` the `now` items, the same figure as the header badge and the banner
+    const urgent = I => M.yourTurnItems(I, tA).urgent
+    assert.equal(M.statusLine(dup, tA), `orchestre ■ 1/4 · ⚑ 5${urgent(dup) ? ` · ⚠ ${urgent(dup)}` : ''}`)
+    assert.equal(M.statusLine(B, tA), 'orchestre ■ 1/4 · ⚑ 3', 'fixture B, run in progress: T02 waits with an open issue, so no ⚠')
+    assert.equal(urgent(B), 0)
+    assert.equal(M.statusLine(C, tA), 'orchestre ■ 1/4 · ⚑ 3 · ⚠ 1', 'fixture C, run stopped: the same issue is now')
+    const E = { id: 'E1', type: 'environment', text: 'Docker', blocks: ['T02'] }
+    assert.equal(M.statusLine({ ...B, prerequisites: [E] }, tA), 'orchestre ■ 1/4 · ⚑ 3 · ⚠ 1', 'a `now` prerequisite counts, as in the badge')
+    const hdr = I => (/(\d+) YOUR TURN/.exec(M.plainText(M.pane(I, tA, 100).header[0])) ?? [])[1]
+    for (const I of [B, C, { ...B, prerequisites: [E] }]) assert.equal(String(urgent(I) || ''), hdr(I) ?? '', 'status line, badge and banner: one count')
+    // the detail card: its `when` is the label, written out; its `where` never says "once the run stops" for a `now` item
+    const label = m => m.charAt(0).toUpperCase() + m.slice(1)
+    const D1 = { id: 'D1', type: 'decision', text: 'Pick', blocks: ['T02'] }, D9 = { id: 'D9', type: 'decision', text: 'Name', blocks: ['T04'] }, H9 = { id: 'H9', type: 'manual', text: 'Old', blocks: [] }
+    const waiting = I => ({ ...I, issues: [], lint: { ok: false, errors: 1 }, prerequisites: [E, D1, D9, H9], tasks: I.tasks.map(t => (t.id === 'T02' ? { ...t, status: 'blocked' } : t)) })
+    const sets = { live: { ...waiting(B), issues: B.issues }, liveNoIssue: waiting(B), stopped: waiting(C), stoppedIssue: C, noRun: { ...waiting(C), runs: [], run: null } }
+    for (const [name, I] of Object.entries(sets)) {
+      for (const it of M.yourTurnItems(I, tA).items) {
+        const d = M.detailCard(I, tA, 100, it.key).lines.map(M.plainText)
+        assert.equal(d[0], `when     ${label(it.moment)}`, `${name}: ${it.task} ${it.moment}`)
+        if (it.moment === 'now') assert.ok(!/once the run stops/.test(d.find(l => l.startsWith('where')) ?? ''), `${name}: ${it.task} is now, its where does not wait for a stop`)
+      }
+    }
+    const whenOf = (I, task, group = 'settle') => M.yourTurnItems(I, tA).items.find(x => x.task === task && x.group === group).when
+    assert.deepEqual([whenOf(sets.live, 'T02'), whenOf(sets.live, 'D1'), whenOf(sets.live, 'plan-lint'), whenOf(sets.live, 'E1')], ['At run stop', 'At run stop', 'At run stop', 'Now'], 'an issue, a decision and plan-lint labelled at run stop do not say Now; a prerequisite labelled now does not say Before the next run')
+    assert.equal(whenOf(sets.live, 'H9'), 'Before the next run'); assert.equal(whenOf(sets.noRun, 'H9'), 'Before the first run'); assert.equal(whenOf(sets.live, 'D9'), 'Before phase 2')
+    assert.equal(whenOf(dup, 'source plan', 'review'), 'Before the PR'); assert.equal(whenOf(dup, 'T01', 'review'), 'After phase 1')
+    // a waiting task during a run, `now` (row 17): its where does not say "once the run stops"
+    const w = M.yourTurnItems(sets.liveNoIssue, tA).items.find(x => x.task === 'T02' && x.group === 'settle')
+    assert.deepEqual([w.moment, /once the run stops/.test(w.where)], ['now', false])
+    const nr = M.yourTurnItems({ ...sets.liveNoIssue, tasks: sets.liveNoIssue.tasks.map(t => (t.id === 'T02' ? { ...t, status: 'needs-human' } : t)) }, tA).items.find(x => x.task === 'T02' && x.group === 'settle')
+    assert.deepEqual([nr.moment, /once the run stops/.test(nr.where)], ['now', false])
   })
 
   console.log(`progress mod: ALL GREEN (${n} cases)`)

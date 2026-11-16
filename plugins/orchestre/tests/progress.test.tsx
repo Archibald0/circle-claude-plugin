@@ -115,6 +115,11 @@ test('/progress pane: a view in cards, its keys, its buttons; the actions prepar
     expect(await ui.find({ type: 'Text', text: /1-9: act/ })).toBeUndefined()
     // The cards, in order, with their border: "Your turn" in amber, the stopped run in amber too
     expect((await ui.find({ type: 'Text', text: '⚠ Your turn' }))?.props.color).toBe('warning')
+    // 0.19.0: the label of each line on its right, `now` bold in `suggestion`, the others grey; the grey line before the first of them
+    const nowLabel = await ui.find({ type: 'Text', text: /^now$/ })
+    expect([nowLabel?.props.color, nowLabel?.props.bold]).toEqual(['suggestion', true])
+    expect((await ui.find({ type: 'Text', text: /^after phase 1$/ }))?.props.dimColor).toBe(true)
+    expect(await ui.find({ type: 'Text', text: /^ {2}── later ─+$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^■ Run 1 · phase 1 · stop at each phase$/ })).toBeDefined()
     expect((await ui.find({ key: 'card-yourTurn' }))?.props.borderStyle).toBe('round')
     expect((await ui.find({ key: 'card-run' }))?.props.borderColor).toBe('warning')
@@ -206,7 +211,10 @@ test('/progress pane: a view in cards, its keys, its buttons; the actions prepar
   w.file.mtime = 2
   await clock.advance(2100)
   const end = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
-  expect(await end.find({ type: 'Text', text: '⚑ To review before the PR' })).toBeDefined()
+  expect((await end.find({ type: 'Text', text: '✓ Nothing waits for you now' }))?.props.color).toBe('success')
+  expect((await end.find({ key: 'card-yourTurn' }))?.props.borderColor).toBe('subtle')
+  expect(await end.find({ type: 'Text', text: /^ {2}── later ─+$/ })).toBeDefined()
+  expect(await end.find({ type: 'Text', text: 'before the PR' })).toBeDefined()
   expect((await end.find({ type: 'Button', key: 'action-next' }))?.props.label).toBe('PR draft in the prompt')
   await end.press({ key: 'action-next' })
   await end.unmount()
@@ -304,6 +312,61 @@ test('buttons of "Your turn" (0.16.0): Done, Ticket, Edit text and Undo run prog
   ui = await pane()
   expect(await ui.find({ key: 'card-detail' })).toBeUndefined()
   await ui.unmount()
+})
+
+// T07B: two reviews of one task that quote the same passage show as one item (D5); Done and Undo act on both
+test('buttons of "Your turn" (T07B): Done and Ticket on merged duplicate reviews close each one with its own text; Undo brings every one back', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  state(on)
+  const w = world(on)
+  const TEXTS = ['Fix `a.js` once', 'Also `a.js` twice']
+  const open = new Set(TEXTS)
+  const write = () => {
+    w.file.text = doc([task('T01', 1, { status: 'merged', attempts: 1 })], {
+      runs: [run({ status: 'finished', end: '2026-10-08T11:58:00+02:00' })],
+      reviews: TEXTS.filter(t => open.has(t)).map(text => ({ task: 'T01', phase: 1, text, run: 1, at: '2026-10-08T11:40:00+02:00' })),
+    })
+    w.file.mtime++
+  }
+  write()
+  const calls: string[] = []
+  on('process.run', ($, e) => {
+    const [bin, first, verb] = e.argv
+    if (first === '--version') return bin === 'node' ? { value: { exitCode: 0, stdout: 'v22.1.0\n', stderr: '' } } : { deny: `spawn ${bin} ENOENT` }
+    const E = JSON.parse(e.init?.stdin ?? '{}') as { text: string }
+    calls.push(`${verb} ${E.text}`)
+    if (verb === 'ack' || verb === 'ticket') open.delete(E.text); else open.add(E.text)
+    write()
+    return { value: { exitCode: 0, stdout: `progress: review of T01 ${verb}\n`, stderr: '' } }
+  })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.command.run({ ...(CMD('') as object), presentation: { isFullscreen: true, columns: 160 } } as never)
+  const pane = () => $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
+  const pressIn = async (...keys: string[]) => { for (const key of keys) { const ui = await pane(); await ui.press({ key }); await ui.unmount() } }
+  let ui = await pane()
+  expect((await ui.find({ type: 'Button', key: 'action-1' }))?.props.label).toBe('T01 · Fix `a.js` once')
+  expect(await ui.find({ type: 'Button', key: 'action-2' })).toBeUndefined()
+  await ui.unmount()
+  // Done: one ack per review, each with its own text; none shows again; one last line
+  await pressIn('action-1', 'detail-done')
+  expect(calls).toEqual(['ack Fix `a.js` once', 'ack Also `a.js` twice'])
+  ui = await pane()
+  expect(await ui.find({ type: 'Button', key: 'action-1' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /a\.js/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'T01 · review done' })).toBeDefined()
+  expect(w.toasts.at(-1)).toBe('T01 · review done')
+  // Undo: both are back
+  await ui.press({ key: 'undo' })
+  await ui.unmount()
+  expect(calls.slice(2)).toEqual(['reopen Fix `a.js` once', 'reopen Also `a.js` twice'])
+  expect([...open]).toEqual(['Fix `a.js` once', 'Also `a.js` twice'])
+  ui = await pane()
+  expect(await ui.find({ type: 'Button', key: 'undo' })).toBeUndefined()
+  await ui.unmount()
+  // Ticket: the same, through progress.mjs ticket
+  await pressIn('action-1', 'detail-ticket')
+  expect(calls.slice(4)).toEqual(['ticket Fix `a.js` once', 'ticket Also `a.js` twice'])
+  expect(open.size).toBe(0)
 })
 
 test('[ Close the plan ] (0.16.1): the banner goes at once, the pane closes at the next prompt, the plan is no longer followed; /progress plans/<name> and Reopen', async ($, on) => {
@@ -553,7 +616,7 @@ test('where the pane does not open: /progress gives the state as text, "⤢ Deta
   on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined } })
   on('ui.open', () => ({ value: { isPlaced: false as const } }) as never)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
-  expect((await $.command.run(CMD(''))).text ?? '').toMatch(/^■ demo {2}.*\n\n⚠ Your turn {3}1 to settle/)
+  expect((await $.command.run(CMD(''))).text ?? '').toMatch(/^■ demo {2}.*\n\n⚠ Your turn {3}1 now · 1 to settle/)
   const ui = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...BAND })
   await ui.press({ key: 'details' })
   await ui.unmount()

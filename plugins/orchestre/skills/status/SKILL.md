@@ -1,6 +1,6 @@
 ---
 name: status
-description: Shows the progress of an orchestre plan as a compact table (phases, tasks in progress, what waits for the user), read-only, including during a run. To run when the user types /orchestre:status.
+description: Shows the progress of an orchestre plan as a compact table (phases, tasks in progress, what waits for the user and when it can be acted on), read-only, including during a run. To run when the user types /orchestre:status.
 argument-hint: "[<plan-dir>]"
 disable-model-invocation: true
 allowed-tools:

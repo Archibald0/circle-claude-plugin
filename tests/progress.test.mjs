@@ -234,9 +234,32 @@ async function main() {
     assert.match(r.split('\n')[1], / · run 2 \(auto\) opened just now$/)
     assert.match(r, /\*\*In progress\*\*: T03 \(verification, worktree, started just now\) · T05 \(worktree, started\) · T06 \(worker, checkout, started just now\)$/m)
     assert.ok(!r.includes('T06 waits for a human'), r)
-    assert.ok(r.includes('**Your turn**: D5 (decision) blocks T04 · 2 reviews before the PR · 1 ticket after the PR'), r)
+    assert.ok(r.endsWith('\n\n**At run stop**: D5 (decision) blocks T04\n**Later**: 2 reviews after phase 1 · 1 ticket after the PR'), r)
     assert.equal(B.progress('run-end', { status: 'partial' }).code, 0)
     assert.equal(B.progress('status').out, statusMjs(), 'run closed: like status.mjs again')
+  })
+
+  await test('status: git wins over a stale progress.json, and an unknown progress.json is ignored, the same moment lines as status.mjs', () => {
+    const f = join(B.d, 'progress.json')
+    const keep = readFileSync(f, 'utf8')
+    const moments = out => out.split('\n').filter(l => /^\*\*(Now|At run stop|Later|Your turn)\*\*/.test(l))
+    // progress.mjs writes the reason of an unreadable file at the end of **Now**; status.mjs says nothing about it
+    const noNote = out => out.replace(/ · progress\.json: [^\n]*/, '')
+    const stale = JSON.parse(keep)
+    stale.tasks = stale.tasks.map(t => (t.id === 'T01' ? { ...t, status: 'needs-human' } : t))
+    writeFileSync(f, JSON.stringify(stale))
+    let r = B.progress('status').out
+    assert.match(r, /^## demo — 2\/7 tasks/, 'T01 merged in git, needs-human in the file')
+    assert.ok(!moments(r).join('\n').includes('T01'), r)
+    assert.deepEqual(moments(r), moments(statusMjs()))
+    for (const raw of [JSON.stringify({ ...JSON.parse(keep), format: 'orchestre-progress/2' }), '{ not json']) {
+      writeFileSync(f, raw)
+      r = B.progress('status')
+      assert.equal(r.code, 0)
+      assert.deepEqual(moments(noNote(r.out)), moments(statusMjs()))
+      assert.equal(noNote(r.out), statusMjs())
+    }
+    writeFileSync(f, keep)
   })
 
   // ─── Writes ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -450,7 +473,7 @@ async function main() {
     assert.equal(C.progress('close', { task: 'T03', status: 'merged', attempts: 1, branch: 'task/T03', reviews: ['agents/x/.env.example: add MR_MAX'] }).code, 0)
     doc = C.doc()
     assert.deepEqual([doc.reviews.length, doc.reviews.filter(x => !x.done).map(x => x.text)], [3, ['docs/DEPLOY.md: relire']])
-    assert.ok(C.progress('status').out.includes('1 review before the PR'))
+    assert.ok(C.progress('status').out.includes('1 review after phase 1'))
     assert.equal(C.progress('run-end', { status: 'finished' }).code, 0)
     // Refusals: nothing written
     const before = C.read('progress.json')
@@ -506,7 +529,7 @@ async function main() {
     assert.ok(doc.log.some(e => e.kind === 'pilot' && e.text === 'review of T03 moved to tickets by the pilot: b.env.example: add B'))
     // status: one review left open, besides the source plan's; the ticket of HANDOFF.md and the one moved
     const st = C.progress('status').out
-    assert.ok(st.includes('2 reviews before the PR'), st); assert.ok(st.includes('2 tickets after the PR'), st)
+    assert.ok(st.includes('1 review after phase 1 · 1 review before the PR'), st); assert.ok(st.includes('2 tickets after the PR'), st)
     // Relabel: the text shown changes, the key stays; null goes back to the original
     r = C.progress('relabel', { kind: 'review', task: 'T03', text: 'docs/DEPLOY.md: read again', label: '  docs/DEPLOY.md: read   again (done in GitHub)  ' })
     assert.deepEqual([r.code, r.out], [0, 'progress: review of T03: text changed; HANDOFF.md keeps the original'], r.err)
@@ -943,6 +966,191 @@ Statuses: todo · added · merged · blocked · failed · needs-human · cancell
     const st = spawnSync(process.execPath, [PROGRESS_MJS, 'status'], { cwd: root, encoding: 'utf8' })
     assert.equal(st.status, 0); assert.match(st.stdout, /^orchestre:status: plan in the French format/)
     assert.deepEqual(readdirSync(join(root, 'plans', 'fr')), ['taches'])
+  })
+
+  // ─── Triage: what the pilot closes alone at the end of a run (D5, D6) ───────────────────────────────────────────────
+  const triaged = (R, opts) => { const r = R.progress('triage', undefined, opts); assert.equal(r.code, 0, r.err); return JSON.parse(r.out) }
+  const brief = list => list.map(s => [s.reason, s.kind, s.task, s.text])
+  const readsAndFiles = R => [R.read('progress.json'), R.read('PROGRESS.md')]
+
+  await test('triage: the four safe cases, with their reason; the rest open by task; nothing written; safe passed to ack closes it in one write', () => {
+    const wtDir = join(temp('triage-wt-'), 'wt'), goneDir = join(temp('triage-gone-'), 'gone')
+    const T = repo('triage', {
+      tasks: [{ id: 'T01' }, { id: 'T02' }, { id: 'T03' }],
+      progress: PROGRESS_TEMPLATE(['T01', 'T02', 'T03']),
+      handoff: '## source plan\n\n- review · major · `docs/x.md`: read the procedure\n- review · major · `docs/x.md`: same file, another wording\n- review · major · `docs/y.md`: unrelated\n- review · major · no backquote here\n- review · major · no backquote here either\n',
+    })
+    // The base branch main has README.md as the plan branch; only the plan branch has src/changed.txt
+    mkdirSync(join(T.root, 'src'), { recursive: true })
+    writeFileSync(join(T.root, 'src', 'changed.txt'), 'changed on the plan branch\n')
+    T.git('add', 'src/changed.txt'); T.git('commit', '-qm', 'plan: a changed file')
+    T.git('worktree', 'add', '-q', '-b', 'task/T02', wtDir)
+    assert.equal(T.progress('run-start', RUN).code, 0)
+    const unreadable = f => `${f}: unreadable by the agents, to review by the human before the PR`
+    // T02 closes before T01: the groups of the answer follow the order of the plan, not the order of the closes
+    assert.equal(T.progress('close', {
+      task: 'T02', status: 'merged', attempts: 1, branch: 'task/T02',
+      reviews: ['`src/a.ts`: same passage, but another task', `worktree ${wtDir} kept after the merge of T02 (modified files): look at it, then remove it`],
+      auto_decisions: [{ title: 'Retry threshold', option: 'C', description: 'same title as a decision of T01' }],
+    }).code, 0)
+    assert.equal(T.progress('close', {
+      task: 'T01', status: 'merged', attempts: 1, branch: 'task/T01',
+      reviews: [
+        '`src/a.ts` and `b`: check the migration', '`src/a.ts`: another wording of the same check', '`src/a.ts` again: third wording',
+        unreadable('README.md'), unreadable('src/changed.txt'), unreadable('.claude/settings.json'), unreadable('../outside.txt'),
+        '`README.md`: add the deny rule for git push to the settings, forbidden to the agents',
+        'update the key of README.md: unreadable by the agents, change it before the PR',
+        `worktree ${goneDir} kept after the merge of T01 (modified files): look at it, then remove it`,
+      ],
+      auto_decisions: [{ title: 'Retry threshold', option: 'A', description: 'cap at 30 s' }, { title: 'Other point', option: 'B', description: 'x' }],
+    }).code, 0)
+    assert.equal(T.progress('run-end', { status: 'finished' }).code, 0)
+    assert.equal(T.progress('run-start', RUN).code, 0)
+    // Run 2: the user settles the automatic decision of run 1; a decision of run 2 is settled in the same run: it is not replaced
+    assert.equal(T.progress('ruling', { task: 'T01', title: 'Retry threshold', option: 'B' }).code, 0)
+    assert.equal(T.progress('close', { task: 'T03', status: 'merged', attempts: 1, branch: 'task/T03', auto_decisions: [{ title: 'Same run', option: 'A', description: 'y' }] }).code, 0)
+    assert.equal(T.progress('ruling', { task: 'T03', title: 'Same run', option: 'A' }).code, 0)
+    assert.equal(T.progress('run-end', { status: 'finished' }).code, 0)
+
+    const before = readsAndFiles(T), status = T.clean()
+    let out = triaged(T)
+    assert.deepEqual([out.plan, out.base, out.integration], ['triage', 'main', 'plan/triage'])
+    assert.deepEqual(brief(out.safe), [
+      ['duplicate', 'review', null, '`docs/x.md`: same file, another wording'],
+      ['duplicate', 'review', 'T01', '`src/a.ts`: another wording of the same check'],
+      ['duplicate', 'review', 'T01', '`src/a.ts` again: third wording'],
+      ['superseded', 'decision', 'T01', 'Retry threshold'],
+      ['no-diff', 'review', 'T01', unreadable('README.md')],
+      ['no-diff', 'review', 'T01', unreadable('.claude/settings.json')],
+      ['worktree-gone', 'review', 'T01', `worktree ${goneDir} kept after the merge of T01 (modified files): look at it, then remove it`],
+    ])
+    // Each with the item it doubles, or its reason
+    assert.deepEqual(out.safe[0].of, { kind: 'review', task: null, text: '`docs/x.md`: read the procedure' })
+    assert.deepEqual(out.safe[1].of, { kind: 'review', task: 'T01', text: '`src/a.ts` and `b`: check the migration' })
+    assert.equal(out.safe[3].detail, 'settled by the user in run 2: option B, instead of A')
+    assert.equal(out.safe[4].detail, 'README.md has no difference between main and plan/triage')
+    assert.equal(out.safe[6].detail, `${goneDir} no longer exists`)
+    assert.ok(out.safe.every(s => typeof s.detail === 'string' && s.detail))
+    // The rest, grouped by task (source plan first, then the order of the plan): the file that differs, the file git cannot
+    // compare (outside the repository: unknown is not "no difference"), the requests to change
+    // a forbidden file even with no difference, a kept worktree, the decision of T02 that no ruling replaced
+    assert.deepEqual(out.open.map(g => g.task), [null, 'T01', 'T02', 'T03'])
+    assert.deepEqual(out.open.map(g => g.items.map(i => [i.kind, i.text])), [
+      [['review', '`docs/x.md`: read the procedure'], ['review', '`docs/y.md`: unrelated'], ['review', 'no backquote here'], ['review', 'no backquote here either']],
+      [['review', '`src/a.ts` and `b`: check the migration'], ['review', unreadable('src/changed.txt')], ['review', unreadable('../outside.txt')],
+        ['review', '`README.md`: add the deny rule for git push to the settings, forbidden to the agents'],
+        ['review', 'update the key of README.md: unreadable by the agents, change it before the PR'], ['decision', 'Other point']],
+      [['review', '`src/a.ts`: same passage, but another task'], ['review', `worktree ${wtDir} kept after the merge of T02 (modified files): look at it, then remove it`], ['decision', 'Retry threshold']],
+      [['decision', 'Same run']],
+    ])
+    assert.ok(out.open.every(g => g.items.every(i => i.task === g.task)))
+    // Read-only: no write, no leftover
+    assert.deepEqual(readsAndFiles(T), before); assert.equal(T.clean(), status); assert.deepEqual(T.leftovers(), [])
+    // A kept worktree that is removed becomes safe
+    T.git('worktree', 'remove', '--force', wtDir)
+    out = triaged(T)
+    assert.equal(out.safe.length, 8)
+    assert.deepEqual(brief(out.safe).filter(s => s[1] === 'review' && s[2] === 'T02'), [['worktree-gone', 'review', 'T02', `worktree ${wtDir} kept after the merge of T02 (modified files): look at it, then remove it`]])
+    // The items of safe are the input of ack: closed in one write
+    const log = T.doc().log.length
+    const r = T.progress('ack', { items: out.safe })
+    assert.deepEqual([r.code, r.out], [0, 'progress: 8 done; they leave "Your turn"'], r.err)
+    assert.equal(T.doc().log.length, log + 8)
+    const doc = T.doc()
+    assert.equal(doc.reviews.filter(x => x.done).length + doc.auto_decisions.filter(x => x.done).length, 8)
+    out = triaged(T)
+    assert.deepEqual(out.safe, [])
+    assert.equal(out.open.flatMap(g => g.items).length, 13, 'what ack did not close is still offered')
+    // triage is in the usage line of the script, which tests/commands.test.mjs reads
+    const unknown = T.progress('nope')
+    assert.equal(unknown.code, 2); assert.match(unknown.err, /\|view\|status\|triage\|validate>/)
+  })
+
+  await test('triage: without progress.json it reads HANDOFF.md and writes nothing; an unknown plan is refused (code 2); a closed item is out', () => {
+    const R = repo('triage-bare', { tasks: [{ id: 'T01' }], progress: PROGRESS_TEMPLATE(['T01']), handoff: '## T01\n\n- review · major · `a.ts`: one\n- review · major · `a.ts`: two\n' })
+    const out = triaged(R)
+    assert.deepEqual(brief(out.safe), [['duplicate', 'review', 'T01', '`a.ts`: two']])
+    assert.ok(!existsSync(join(R.d, 'progress.json')), 'triage creates no progress.json')
+    assert.equal(R.clean(), '')
+    const r = R.progress('triage', undefined, { arg: 'plans/unknown' })
+    assert.equal(r.code, 2); assert.match(r.err, /plan not found/)
+    // A review already done is not a duplicate any more, nor offered
+    assert.equal(R.progress('run-start', RUN).code, 0)
+    assert.equal(R.progress('ack', { kind: 'review', task: 'T01', text: '`a.ts`: one' }).code, 0)
+    const after = triaged(R)
+    assert.deepEqual(after.safe, [])
+    assert.deepEqual(after.open, [{ task: 'T01', items: [{ kind: 'review', task: 'T01', text: '`a.ts`: two' }] }])
+  })
+
+  await test('triage: ack would close two reviews of one key, so none of them is safe; no base branch, no no-diff', () => {
+    const R = repo('triage-key', { tasks: [{ id: 'T01' }], progress: PROGRESS_TEMPLATE(['T01']) })
+    assert.equal(R.progress('run-start', RUN).code, 0)
+    // Two reviews that differ by spaces only: ack matches on the squashed text, it would close both
+    const seeded = R.doc()
+    seeded.reviews = [{ task: 'T01', phase: 1, text: '`x`: check  it', run: 1, at: null }, { task: 'T01', phase: 1, text: '`x`: check it', run: 1, at: null }]
+    writeFileSync(join(R.d, 'progress.json'), JSON.stringify(seeded, null, 2) + '\n')
+    let out = triaged(R)
+    assert.deepEqual(out.safe, [])
+    assert.equal(out.open[0].items.length, 2)
+    // No main, no master and no base in the configuration: the file cannot be compared, the review stays open
+    R.git('branch', '-m', 'main', 'trunk')
+    seeded.reviews = [{ task: 'T01', phase: 1, text: 'README.md: unreadable by the agents, to review by the human before the PR', run: 1, at: null }]
+    writeFileSync(join(R.d, 'progress.json'), JSON.stringify(seeded, null, 2) + '\n')
+    out = triaged(R)
+    assert.equal(out.base, null)
+    assert.deepEqual(out.safe, [])
+    assert.equal(out.open[0].items.length, 1)
+    // A base branch that is the integration branch compares nothing with itself: it proves no absence of difference
+    writeFileSync(join(R.d, 'orchestre.config.json'), JSON.stringify({ integration_branch: 'plan/triage-key', base_branch: 'plan/triage-key' }))
+    out = triaged(R)
+    assert.deepEqual([out.base, out.safe], ['plan/triage-key', []])
+    assert.equal(out.open[0].items.length, 1)
+  })
+
+  await test('triage: a review that falls under two cases is listed once', () => {
+    const R = repo('triage-twice', {
+      tasks: [{ id: 'T01' }], progress: PROGRESS_TEMPLATE(['T01']),
+      handoff: '## T01\n\n- review · major · `README.md`: unreadable by the agents (first)\n- review · major · `README.md`: unreadable by the agents (second)\n',
+    })
+    const out = triaged(R)
+    assert.deepEqual(brief(out.safe), [
+      ['duplicate', 'review', 'T01', '`README.md`: unreadable by the agents (second)'],
+      ['no-diff', 'review', 'T01', '`README.md`: unreadable by the agents (first)'],
+    ])
+    assert.deepEqual(out.open, [])
+  })
+
+  await test('triage: a file name with `[`, `*` or `?` is compared as written: kept open when it differs, safe when only a file its pattern would match differs', () => {
+    const R = repo('triage-glob', { tasks: [{ id: 'T01' }], progress: PROGRESS_TEMPLATE(['T01']) })
+    // On main and on the plan branch: six files whose names git would read as patterns, and the files these patterns match
+    R.git('switch', '-q', 'main')
+    mkdirSync(join(R.root, 'src'), { recursive: true })
+    const SAME = ['src/a[1].txt', 'src/b*.txt', 'src/c?.txt'], CHANGED = ['src/d[1].txt', 'src/e*.txt', 'src/f?.txt'], MATCHED = ['src/a1.txt', 'src/bz.txt', 'src/cq.txt']
+    for (const f of [...SAME, ...CHANGED, ...MATCHED]) writeFileSync(join(R.root, f), 'x\n')
+    R.git('add', 'src'); R.git('commit', '-qm', 'files with patterns in their names')
+    R.git('switch', '-q', 'plan/triage-glob'); R.git('merge', '-q', '--no-edit', 'main')
+    // The plan branch changes the three CHANGED files, and the files that the SAME names match as patterns, not the SAME files
+    for (const f of [...CHANGED, ...MATCHED]) writeFileSync(join(R.root, f), 'changed\n')
+    R.git('add', 'src'); R.git('commit', '-qm', 'plan: changes')
+    const unreadable = f => `${f}: unreadable by the agents, to review by the human before the PR`
+    assert.equal(R.progress('run-start', RUN).code, 0)
+    assert.equal(R.progress('close', { task: 'T01', status: 'merged', attempts: 1, branch: 'task/T01', reviews: [...SAME, ...CHANGED].map(unreadable) }).code, 0)
+    const out = triaged(R)
+    assert.equal(out.base, 'main')
+    // Read as a pattern (without --literal-pathspecs), each SAME name matches a file that differs: they would stay open
+    assert.deepEqual(brief(out.safe), SAME.map(f => ['no-diff', 'review', 'T01', unreadable(f)]))
+    assert.deepEqual(out.open, [{ task: 'T01', items: CHANGED.map(f => ({ kind: 'review', task: 'T01', text: unreadable(f) })) }])
+  })
+
+  await test('triage: an unreadable progress.json exits 1, with its message on stderr, and writes nothing', () => {
+    const R = repo('triage-bad', { tasks: [{ id: 'T01' }], progress: PROGRESS_TEMPLATE(['T01']) })
+    assert.equal(R.progress('run-start', RUN).code, 0)
+    writeFileSync(join(R.d, 'progress.json'), '{ not json')
+    const before = readsAndFiles(R), status = R.clean()
+    const r = R.progress('triage')
+    assert.deepEqual([r.code, r.out], [1, ''])
+    assert.match(r.err, /^progress: progress\.json unreadable/)
+    assert.deepEqual(readsAndFiles(R), before); assert.equal(R.clean(), status); assert.deepEqual(R.leftovers(), [])
   })
 
   console.log(`progress: ALL GREEN (${n} tests)`)

@@ -1,14 +1,16 @@
 // Tests of status.mjs (/orchestre:status) on a toy plan, in a temporary git repository.
 // Usage: node tests/status.test.mjs [path of status.mjs]
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { join, resolve, dirname } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { tmpdir } from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
 
 const STATUS = resolve(process.argv[2] || 'plugins/orchestre/scripts/status.mjs')
 const root = mkdtempSync(join(tmpdir(), 'status-'))
 const elsewhere = mkdtempSync(join(tmpdir(), 'outside-git-'))
+const eq = mkdtempSync(join(tmpdir(), 'status-eq-'))
 const git = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 const status = (args = [], cwd = root) => { const r = spawnSync('node', [STATUS, ...args], { cwd, encoding: 'utf8' }); return { code: r.status, out: r.stdout.trim() } }
 const task = (id, phase, extra = '') => `---\nid: ${id}\ntitle: Task ${id}\nphase: ${phase}\nmodel: sonnet\nmodel_reason: x\ndepends_on: []\nowned_files:\n  - src/${id}/**\nresources: []${extra}\ntoken_estimate: 1.0M\nverification:\n  - "npm test"\ndefinition_of_done:\n  - "the test passes"\n---\n`
@@ -51,7 +53,7 @@ try {
     assert.ok(r.out.includes('| ⚠ 2 | `░░░░░░░░░░` 0% | 0/4 |'), 'phase 2: T06 waits for a human')
     assert.ok(r.out.includes('| ○ 3 | `░░░░░░░░░░` 0% | 0/1 |'), 'phase 3: T08 cancelled, not counted')
     assert.match(r.out, /\*\*In progress\*\*: T03 \(last commit (just now|\d+ min ago)\) · T05 \(worktree, started\)$/m)
-    assert.ok(r.out.includes('**Your turn**: D5 (decision) blocks T04 · T06 waits for a human · 2 reviews before the PR · 1 ticket after the PR'), r.out)
+    assert.ok(r.out.endsWith('**Now**: D5 (decision) blocks T04 · T06 waits for a human\n**Later**: 2 reviews after phase 1 · 1 ticket after the PR'), r.out)
     assert.ok(!/T06 \(/.test(r.out), 'T06 waiting, not in progress')
     assert.ok(r.out.split('\n').length <= 16, 'compact')
   })
@@ -60,7 +62,7 @@ try {
     const reviews = [{ task: 'T01', text: 'a', done: '2026-11-02T10:00:00+01:00' }, { task: 'T01', text: 'b', ticket: '2026-11-02T10:00:00+01:00' }, { task: 'T02', text: 'c' }]
     writeFileSync(f, JSON.stringify({ format: 'orchestre-progress/3', reviews, auto_decisions: [{ task: 'T02', title: 'd', ticket: '2026-11-02T10:00:00+01:00' }] }))
     const r = status(['plans/demo'])
-    assert.ok(r.out.includes('· 1 review before the PR · 3 tickets after the PR'), r.out)
+    assert.ok(r.out.endsWith('**Later**: 1 review after phase 1 · 3 tickets after the PR'), r.out)
     rmSync(f)
   })
   test('read-only: neither status, HEAD nor branch changed; no lock left', () => {
@@ -119,7 +121,171 @@ try {
     assert.match(r.out.split('\n')[1], /^`█{24}` plan finished · last merge T07 /)
     assert.ok(!r.out.includes('**In progress**'))
   })
+  // ── The moments of "Your turn" (0.19.0): one line per moment, the rules of the mod, on the same progress.json ──
+  // status.mjs loads nothing from the mod: the rules are written a second time, and these cases compare both.
+  const VM = await import(pathToFileURL(join(dirname(STATUS), '..', 'hooks', 'view-model.mjs')).href)
+  const g = (...a) => execFileSync('git', a, { cwd: eq, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  const E = join(eq, 'plans', 'eq')
+  const PH = { T01: 1, T02: 1, T03: 2, T04: 2, T05: 3, T06: 4 }
+  const BEHIND = { T01: ['H3'], T02: ['H1', 'D1'], T03: ['EV1'], T04: ['D9'] }
+  const PRE = [['H1', 'manual', ['T02']], ['D1', 'decision', ['T02']], ['EV1', 'manual', ['T03']], ['D9', 'decision', ['T04']], ['H3', 'environment', ['T01']]]
+  g('init', '-q', '-b', 'main'); g('config', 'user.email', 't@t'); g('config', 'user.name', 't'); g('config', 'commit.gpgsign', 'false')
+  writeFileSync(join(eq, 'README.md'), 'x\n'); g('add', '.'); g('commit', '-qm', 'init')
+  mkdirSync(join(E, 'tasks'), { recursive: true })
+  for (const [id, ph] of Object.entries(PH)) writeFileSync(join(E, 'tasks', `${id}-x.md`), task(id, ph, BEHIND[id] ? `\nprerequisites: [${BEHIND[id].join(', ')}]` : ''))
+  writeFileSync(join(E, 'PROGRESS.md'), PROGRESS(Object.entries(PH).map(([id, ph]) => [id, ph, id === 'T06' ? 'cancelled' : 'todo'])))
+  writeFileSync(join(E, 'PREREQUISITES.md'), `| ID | Type | Prerequisite | Status | Evidence |\n|----|------|--------------|--------|----------|\n${PRE.map(([id, type]) => `| ${id} | ${type} | Do ${id} | open | — |`).join('\n')}\n`)
+  writeFileSync(join(E, 'HANDOFF.md'), '# Handoff\n')
+  writeFileSync(join(E, 'orchestre.config.json'), JSON.stringify({ integration_branch: 'plan/eq', base_branch: 'main' }))
+  g('switch', '-qc', 'plan/eq'); g('add', '.'); g('commit', '-qm', 'plan')
+  g('commit', '-q', '--allow-empty', '-m', 'task T01: Task T01')
+  const ago = ms => new Date(Date.now() - ms).toISOString()
+  const run = (status, o = {}) => ({ number: 1, phase: 1, mode: 'phase', parallelism: 1, status, start: ago(600000), end: status === 'in-progress' ? null : ago(60000), rulings_applied: [], ...o })
+  const issue = (task, title) => ({ task, title, status: 'open', human: false, role: 'worker' })
+  const review = (task, text, phase = null) => ({ task, phase, text, run: 1, at: ago(1000) })
+  const REVIEWS = [review('T01', 'first `a.md`: relire', 1), review('T01', 'same passage `a.md`: autre', 1), review('T02', 'sans passage', 1), review(null, 'plan source'), review('T03', 'later `b.md`', 2), review('T05', 'last phase `c.md`', 3)]
+  const DECISIONS = [{ task: 'T01', title: 'Seuil', option: 'A', description: '' }, { task: 'T05', title: 'Dernier', option: 'B', description: '' }]
+  const doc = (o = {}) => ({
+    format: 'orchestre-progress/3', plan: 'eq', dir: 'plans/eq', updated: ago(1000),
+    tasks: Object.entries(PH).map(([id, phase]) => ({ id, title: `Task ${id}`, phase, status: id === 'T01' ? 'merged' : id === 'T06' ? 'cancelled' : (o.statuses || {})[id] || 'todo', ...((o.steps || {})[id] ? { step: o.steps[id], start: ago(300000) } : {}) })),
+    runs: [run('finished')], issues: [], auto_decisions: DECISIONS, reviews: REVIEWS, handoff: {}, lint: { ok: true, errors: [] }, log: [],
+    prerequisites: PRE.map(([id, type, blocks]) => ({ id, type, status: 'open', text: `Do ${id}`, evidence: '—', how: [], blocks })),
+    ...o.over,
+  })
+  const WAITS = { 'needs-human': 'waits for a human', blocked: 'blocked', failed: 'failed' }
+  const KIND = { prerequisite: 0, task: 1, issue: 2, lint: 3, review: 4, 'auto-decision': 5 }
+  const plural = (k, w) => `${k} ${w}${k > 1 ? 's' : ''}`
+  // What the mod says, as the lines of the answer: its items, sorted by rank, then by kind, those of one kind and one moment counted
+  const expectedLines = raw => {
+    const inst = VM.normalize(raw)
+    const items = VM.yourTurnItems(inst, Date.now()).items.map(it => ({ it, kind: it.group === 'review' ? 'review' : it.group === 'decision' ? 'auto-decision' : it.g.t === '◇' ? 'prerequisite' : it.g.t === '?' ? 'issue' : it.task === 'plan-lint' ? 'lint' : 'task' }))
+    items.sort((a, b) => a.it.rank - b.it.rank || KIND[a.kind] - KIND[b.kind])
+    const entries = []
+    for (const { it, kind } of items) {
+      const line = it.moment === 'now' ? 'Now' : it.moment === 'at run stop' ? 'At run stop' : 'Later'
+      if (['issue', 'review', 'auto-decision'].includes(kind)) {
+        const e = entries.find(x => x.kind === kind && x.moment === it.moment)
+        if (e) e.n++; else entries.push({ line, kind, moment: it.moment, n: 1 })
+        continue
+      }
+      const p = raw.prerequisites.find(x => x.id === it.task)
+      entries.push({ line, text: kind === 'prerequisite' ? (line === 'Later' ? `${p.id} ${it.moment}` : `${p.id} (${p.type}) blocks ${p.blocks.join(', ')}`) : kind === 'lint' ? `plan-lint: ${plural(inst.lint.errors, 'error')}` : `${it.task} ${WAITS[raw.tasks.find(t => t.id === it.task).status]}` })
+    }
+    const tickets = inst.closed.filter(c => c.as === 'ticket').length
+    if (tickets) entries.push({ line: 'Later', text: `${plural(tickets, 'ticket')} after the PR` })
+    const say = e => (e.text ?? `${e.kind === 'issue' ? `${plural(e.n, 'issue')} to settle` : plural(e.n, e.kind)}${e.line === 'Later' ? ` ${e.moment}` : ''}`)
+    const cap = xs => (xs.length > 6 ? [...xs.slice(0, 5), `+${xs.length - 5}`] : xs)
+    const lines = ['Now', 'At run stop', 'Later'].filter(l => entries.some(e => e.line === l)).map(l => `**${l}**: ${cap(entries.filter(e => e.line === l).map(say)).join(' · ')}`)
+    return lines.length ? lines : ['**Your turn**: nothing for now']
+  }
+  // status.mjs on this progress.json, and the mod's reading of it: the same lines; returns them
+  const same = (label, raw) => {
+    writeFileSync(join(E, 'progress.json'), JSON.stringify(raw))
+    const r = status(['plans/eq'], eq)
+    const got = r.out.split('\n').filter(l => /^\*\*(Now|At run stop|Later|Your turn)\*\*/.test(l))
+    assert.deepEqual(got, expectedLines(raw), `${label}\n${r.out}`)
+    return got
+  }
+  const WAITING = { T02: 'needs-human', T03: 'failed' }
+  const OPEN = [issue('T02', 'Missing secret'), issue('T04', 'Other')]
+
+  test('moments, run stopped: now for what waits and for the phase in progress, before phase k for the later ones, after the phases, before the PR', () => {
+    const got = same('stopped', doc({ statuses: WAITING, over: { issues: OPEN } }))
+    // Nine groups wait for later: the line keeps five and counts the rest, as every line did before (6 at most)
+    assert.deepEqual(got, [
+      '**Now**: H1 (manual) blocks T02 · D1 (decision) blocks T02 · T02 waits for a human · T03 failed · 1 issue to settle',
+      '**Later**: 2 reviews after phase 1 · EV1 before phase 2 · D9 before phase 2 · 1 auto-decision before phase 2 · 1 review after phase 2 · +4',
+    ])
+  })
+  test('moments during a run: an issue and a decision to take wait for the run to stop; a waiting task without an issue stays now (row 17)', () => {
+    const live = { runs: [run('in-progress')] }
+    let got = same('run, T02 with an issue', doc({ statuses: WAITING, over: { ...live, issues: OPEN } }))
+    assert.equal(got[0], '**Now**: H1 (manual) blocks T02 · T03 failed')
+    assert.equal(got[1], '**At run stop**: D1 (decision) blocks T02 · T02 waits for a human · 1 issue to settle')
+    got = same('run, T02 without an issue', doc({ statuses: WAITING, over: live }))
+    assert.equal(got[0], '**Now**: H1 (manual) blocks T02 · T02 waits for a human · T03 failed')
+    assert.ok(got[1].startsWith('**At run stop**: D1 (decision) blocks T02'), got[1])
+    got = same('blocked task, no issue', doc({ statuses: { T02: 'blocked' }, over: live }))
+    assert.ok(got[0].includes('T02 blocked'), got[0])
+  })
+  test('moments: a decision for a later phase stays "before phase k", run or not; a prerequisite that holds back nothing left waits for the first or the next run', () => {
+    for (const runs of [[run('in-progress')], [run('finished')]]) {
+      const got = same('later decision', doc({ over: { runs, reviews: [], auto_decisions: [] } }))
+      assert.ok(got.at(-1).includes('D9 before phase 2'), got.at(-1))
+      assert.ok(got.at(-1).includes('H3 before the next run'), got.at(-1))
+    }
+    const got = same('no run yet', doc({ over: { runs: [], reviews: [], auto_decisions: [] } }))
+    assert.ok(got.at(-1).includes('H3 before the first run') && !got.at(-1).includes('next run'), got.at(-1))
+  })
+  test('moments: the phase of the run moves with its tasks (a task of phase 2 started: EV1 is now, D9 at run stop); a step, a silent run or a ruling change who waits', () => {
+    const live = { runs: [run('in-progress')] }
+    let got = same('phase 2 started', doc({ steps: { T03: 'worker' }, over: live }))
+    assert.equal(got[0], '**Now**: H1 (manual) blocks T02 · EV1 (manual) blocks T03')
+    assert.ok(got[1].startsWith('**At run stop**: D1 (decision) blocks T02 · D9 (decision) blocks T04'), got[1])
+    got = same('a task in a step', doc({ statuses: { T03: 'failed' }, steps: { T03: 'worker' }, over: live }))
+    assert.ok(!got.join('\n').includes('T03 failed'), got.join('\n'))
+    got = same('silent run', doc({ statuses: { T03: 'failed' }, steps: { T03: 'worker' }, over: { ...live, updated: ago(2 * 3600000) } }))
+    assert.ok(got[0].includes('T03 failed'), got.join('\n'))
+    got = same('ruled task', doc({ statuses: { T03: 'failed' }, over: { runs: [run('in-progress', { rulings_applied: [{ task: 'T03', title: 'x', option: 'A' }] })] } }))
+    assert.ok(!got.join('\n').includes('T03 failed'), got.join('\n'))
+  })
+  test('moments: plan-lint in error (now, at run stop during a run); reviews and auto-decisions moved to tickets close nothing but count', () => {
+    writeFileSync(join(E, 'tasks', 'T09-x.md'), task('T09', 3).replace('verification:\n  - "npm test"\n', 'verification: []\n'))
+    const bad = { lint: { ok: false, errors: ['T09: verification is empty'] } }
+    assert.ok(same('lint, stopped', doc({ over: bad }))[0].includes('plan-lint: 1 error'))
+    assert.ok(same('lint, run', doc({ over: { ...bad, runs: [run('in-progress')] } })).some(l => l.startsWith('**At run stop**') && l.includes('plan-lint: 1 error')))
+    rmSync(join(E, 'tasks', 'T09-x.md'))
+    const ticket = [{ ...REVIEWS[3], ticket: ago(500) }, { ...REVIEWS[1], done: ago(500) }]
+    const got = same('tickets', doc({ over: { reviews: [REVIEWS[0], ...ticket], auto_decisions: [{ ...DECISIONS[0], ticket: ago(500) }] } }))
+    assert.ok(got.at(-1).endsWith('2 tickets after the PR'), got.at(-1))
+  })
+  test('moments: two reviews of one task with the same first passage count as one; without a passage, never merged (D5)', () => {
+    const got = same('duplicates', doc({ over: { auto_decisions: [], reviews: [review('T01', 'a `x.md` one', 1), review('T01', 'b `x.md` two', 1), review('T01', 'no passage', 1), review('T01', 'no passage 2', 1), review('T02', 'c `x.md` other task', 1), review(null, 'd `x.md` plan', null), review(null, 'e `x.md` plan again', null)] } }))
+    assert.ok(got.at(-1).includes('4 reviews after phase 1'), got.at(-1))
+    assert.ok(got.at(-1).includes('1 review before the PR'), got.at(-1))
+  })
+  // ── Git wins, and an unknown progress.json is ignored (T08B) ──
+  const lines = out => out.split('\n').filter(l => /^\*\*(Now|At run stop|Later|Your turn)\*\*/.test(l))
+  test('a task merged in git while progress.json still says needs-human: counted merged, in no moment line', () => {
+    const base = doc()
+    const stale = { ...base, tasks: base.tasks.map(t => (t.id === 'T01' ? { ...t, status: 'needs-human' } : t)) }
+    assert.equal(stale.tasks.find(t => t.id === 'T01').status, 'needs-human')
+    writeFileSync(join(E, 'progress.json'), JSON.stringify(stale))
+    const r = status(['plans/eq'], eq)
+    assert.equal(r.code, 0)
+    assert.ok(r.out.startsWith('## eq — 1/5 tasks · 20%'), r.out)
+    assert.ok(!lines(r.out).join('\n').includes('T01'), r.out)
+    writeFileSync(join(E, 'progress.json'), JSON.stringify(base))
+    assert.equal(r.out, status(['plans/eq'], eq).out, 'same text as with the fresh file')
+  })
+  test('a progress.json in another format, or not JSON: the text of a plan without progress.json, code 0', () => {
+    rmSync(join(E, 'progress.json'))
+    const without = status(['plans/eq'], eq)
+    assert.equal(without.code, 0)
+    const other = { ...doc(), format: 'orchestre-progress/2', tasks: doc().tasks.map(t => ({ ...t, status: 'failed' })) }
+    for (const raw of [JSON.stringify(other), '{ not json']) {
+      writeFileSync(join(E, 'progress.json'), raw)
+      const r = status(['plans/eq'], eq)
+      assert.equal(r.code, 0)
+      assert.equal(r.out, without.out)
+    }
+    rmSync(join(E, 'progress.json'))
+  })
+  test('moments: a plan all merged puts its reviews and auto-decisions before the PR; a line without an item is not written; nothing at all says so', () => {
+    for (const id of ['T02', 'T03', 'T04', 'T05']) g('commit', '-q', '--allow-empty', '-m', `task ${id}: Task ${id}`)
+    writeFileSync(join(E, 'PREREQUISITES.md'), `| ID | Type | Prerequisite | Status | Evidence |\n|----|------|--------------|--------|----------|\n${PRE.map(([id, type]) => `| ${id} | ${type} | Do ${id} | dropped | not needed |`).join('\n')}\n`)
+    const merged = { statuses: { T02: 'merged', T03: 'merged', T04: 'merged', T05: 'merged' } }
+    assert.deepEqual(same('all merged', doc({ ...merged, over: { prerequisites: [] } })), ['**Later**: 5 reviews before the PR · 2 auto-decisions before the PR'])
+    assert.deepEqual(same('one review', doc({ ...merged, over: { prerequisites: [], auto_decisions: [], reviews: [review('T05', 'z `z.md`', 3)] } })), ['**Later**: 1 review before the PR'])
+    assert.deepEqual(same('nothing', doc({ ...merged, over: { prerequisites: [], auto_decisions: [], reviews: [] } })), ['**Your turn**: nothing for now'])
+  })
+  test('the rules of status.mjs and of progress.mjs status are the same text', () => {
+    const block = f => { const t = readFileSync(f, 'utf8'); return t.slice(t.indexOf('// ── moments:begin'), t.indexOf('// ── moments:end')) }
+    const a = block(STATUS), b = block(join(dirname(STATUS), 'progress.mjs'))
+    assert.ok(a.length > 1000, 'the block is found')
+    assert.equal(a, b)
+  })
   console.log(`status: ALL GREEN (${n} tests)`)
 } finally {
-  rmSync(root, { recursive: true, force: true }); rmSync(elsewhere, { recursive: true, force: true })
+  rmSync(root, { recursive: true, force: true }); rmSync(elsewhere, { recursive: true, force: true }); rmSync(eq, { recursive: true, force: true })
 }

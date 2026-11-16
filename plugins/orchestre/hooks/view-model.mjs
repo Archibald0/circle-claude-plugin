@@ -159,7 +159,7 @@ export function summarize(inst, now) {
   return {
     total: activeTasks.length, done, inProgress: inProgress(inst, now), todo: activeTasks.filter(t => !isMerged(t)).length, silent: silent(inst, now),
     phases, current, maxPhase: phases.at(-1)?.number ?? 0,
-    reviews: inst.reviews.length, attention, run,
+    reviews: distinctReviews(inst.reviews).length, attention, run,
     duration: inst.run && inst.run.start != null ? (inst.run.end ?? (runInProgress(inst) ? (run ? now : inst.updated ?? inst.run.start) : inst.run.start)) - inst.run.start : null,
     allMerged: activeTasks.length > 0 && done === activeTasks.length,
   }
@@ -370,13 +370,29 @@ const STEPS = /** @type {Record<string, string>} */ ({ worker: 'work', verificat
 // The step's slot in the banner: "verification +9"
 const STEP_WIDTH = 15
 
-/** What a task does, in a few words. @param {TaskView} t @param {boolean} active @param {boolean} [settled] */
-export function what(t, active, settled = false) {
+/**
+ * What a task waits for (0.19.0): "waits for AH06, AH07", four ids at most. Within `n` cells, whole ids only, the others
+ * counted: "waits for AH06 +3". When not even the first id and the count fit: "waits for AH06…". An id is only cut when
+ * the room is too small for the first one.
+ * @param {string[]} ids @param {number} [n]
+ */
+export function waitsFor(ids, n = Infinity) {
+  const shown = ids.slice(0, 4)
+  for (let k = shown.length; k > 0; k--) {
+    const s = `waits for ${shown.slice(0, k).join(', ')}${k < ids.length ? ` +${ids.length - k}` : ''}`
+    if ([...s].length <= n) return s
+  }
+  const s = `waits for ${ids[0]}${ids.length > 1 ? '…' : ''}`
+  return [...s].length <= n ? s : cut(s, n)
+}
+
+/** What a task does, in a few words. @param {TaskView} t @param {boolean} active @param {boolean} [settled] @param {number} [n] the room of the text on the card, for "waits for …" */
+export function what(t, active, settled = false, n = Infinity) {
   if (active && t.step) return (STEPS[t.step] || t.step) + (t.attempts > 1 ? `, attempt ${t.attempts}` : '') + (t.isolated ? ' (worktree)' : '')
   if (t.status in ATTENTION && settled) return 'issue settled, restart pending'
   if (t.status in ATTENTION) return /** @type {Record<string, string>} */ (ATTENTION)[t.status] + (t.blocker[0] ? `: ${t.blocker[0]}` : '')
   if (t.status === 'merged') return t.attempts > 1 ? `${t.attempts} attempts` : ''
-  return t.waiting.length ? `waits for ${t.waiting.slice(0, 4).join(', ')}${t.waiting.length > 4 ? '…' : ''}` : ''
+  return t.waiting.length ? waitsFor(t.waiting, n) : ''
 }
 /** The same in colors: the step in its color, the attempt in amber, the place dim. @param {TaskView} t @param {boolean} active @param {boolean} settled @param {number} n @returns {Line} */
 function whatColored(t, active, settled, n) {
@@ -392,7 +408,7 @@ function whatColored(t, active, settled, n) {
     if (shownPlace) l.push({ t: shownPlace, d: true })
     return l
   }
-  const q = cut(what(t, active, settled), n)
+  const q = cut(what(t, active, settled, n), n)
   if (!q) return []
   return [{ t: q, c: settled ? 'subtle' : t.status === 'needs-human' ? 'warning' : t.status in ATTENTION ? 'error' : 'subtle' }]
 }
@@ -412,10 +428,12 @@ export function banner(inst, now, columns, reserve = 0, animated = false) {
   if (!inst.run || inst.planClosed != null) return null
   const s = summarize(inst, now)
   const place = Math.max(0, columns - reserve)
+  // "your turn" counts what is for now: an issue during a run waits for its stop (0.19.0)
+  const yours = yourTurnItems(inst, now).urgent
   /** @type {Line | null} */
   let l = null
   for (const shape of BANNER_SHAPES) {
-    l = bannerLine(inst, s, now, shape, animated)
+    l = bannerLine(inst, s, now, shape, animated, yours)
     if (width(l) <= place) return l
   }
   return l
@@ -432,9 +450,10 @@ const BANNER_SHAPES = [
 ]
 /**
  * @param {Snapshot} inst @param {ReturnType<typeof summarize>} s @param {number} now
- * @param {typeof BANNER_SHAPES[number]} f @param {boolean} animated @returns {Line}
+ * @param {typeof BANNER_SHAPES[number]} f @param {boolean} animated @param {number} yours the items that are for now
+ * @returns {Line}
  */
-function bannerLine(inst, s, now, f, animated) {
+function bannerLine(inst, s, now, f, animated, yours) {
   const run = /** @type {NonNullable<Snapshot['run']>} */ (inst.run)
   const runLive = !!s.run
   const head = s.silent ? { t: '◌ ', c: 'warning' } : runLive ? { t: `${animated ? wheel(now) : '▶'} `, c: 'claude' } : run.status === 'finished' ? { t: '✓ ', c: 'success' } : { t: '■ ', c: 'warning' }
@@ -452,7 +471,7 @@ function bannerLine(inst, s, now, f, animated) {
   // mentions do not move from one step to the next. They can be clicked (a: the pane card opened, k: the key of the
   // button); the glyph keeps the color.
   if (s.reviews) l.push({ t: '  ' }, { t: '⚑ ', c: 'warning' }, { t: `${s.reviews}${f.labels ? ' to review' : ''}`, a: 'yourTurn', k: 'review' })
-  if (s.attention.length) l.push({ t: '  ' }, { t: '⚠ ', c: 'warning', b: true }, { t: `${s.attention.length}${f.labels ? ' your turn' : ''}`, a: 'yourTurn', k: 'your-turn' })
+  if (yours) l.push({ t: '  ' }, { t: '⚠ ', c: 'warning', b: true }, { t: `${yours}${f.labels ? ' your turn' : ''}`, a: 'yourTurn', k: 'your-turn' })
   const ec = s.inProgress
   if (runLive && f.step) {
     const t = ec[0], id = Math.min(8, Math.max(3, ...inst.tasks.map(x => [...x.id].length)))
@@ -621,6 +640,8 @@ const WHERE = {
   resume: 'This session: the run is stopped, resume it here',
   pilot: 'This session: the run is stopped, ask the pilot',
   live: 'This session, once the run stops',
+  waiting: 'This session: do what it waits for, then resume the run with the others',
+  pilotLive: 'This session: ask the pilot, the run goes on meanwhile',
   decision: 'This session, between two runs: /orchestre:ready asks the question',
   manual: 'Outside Claude (a secret stays out of the chat), then this session to mark it done',
   environment: 'Your terminal, then this session: /orchestre:ready checks it',
@@ -628,6 +649,76 @@ const WHERE = {
   review: 'This session once no run is going (the agents work in the main checkout), or the PR on GitHub',
   autoDecision: 'This session, between two runs (reversing it amends the plan)',
 }
+// ── The moment of an item of "Your turn" (0.19.0) ──────────────────────────────────────────────────────────────────────
+// Each item has a label, drawn on the right of its line, and a rank, which sorts the list (stable). The rules, in one place:
+//   task that waits for someone (needs-human, blocked, failed) ..... now, rank 0, run or not
+//   open issue (also on a waiting task), decision to take that holds
+//   back a task of the phase in progress, plan-lint in error ......... now, rank 0; the same during a run (they need the
+//                                                                    session, D2) ... at run stop, rank 0.2
+//   manual or environment prerequisite that holds back a task of the
+//   phase in progress ................................................ now, rank 0, run or not
+//   prerequisite that holds back a task of a later phase k ........... before phase k, rank k - 0.5
+//   prerequisite that holds back no task left ........................ before the next (first) run, rank 98
+//   review of a task of phase k ..................................... after phase k, rank k
+//   auto-decision of a task of phase k ............................... before phase k + 1, rank k + 0.5
+//   auto-decision of the last phase; review or auto-decision of the
+//   source plan, or of a plan all merged ............................. before the PR, rank 99
+// Only `now` items count in the title, the header badge and the banner: `at run stop` ones wait for the run to stop.
+/** @typedef {{ moment: string, rank: number }} Moment */
+/** @type {Moment} */
+const NOW = { moment: 'now', rank: 0 }
+/** @type {Moment} */
+const AT_RUN_STOP = { moment: 'at run stop', rank: 0.2 }
+/** @type {Moment} */
+const BEFORE_THE_PR = { moment: 'before the PR', rank: 99 }
+const IDLE_RANK = 98
+/** @param {number} k @returns {Moment} */
+const afterPhase = k => ({ moment: `after phase ${k}`, rank: k })
+/** @param {number} k @returns {Moment} */
+const beforePhase = k => ({ moment: `before phase ${k}`, rank: k - 0.5 })
+/** The item counts for the title, the badge and the banner. @param {{ moment: string }} it */
+export const isNow = it => it.moment === NOW.moment
+
+// Two open reviews of the same task (or of the source plan) are the same when their first backquoted passage is identical
+// (D5). Merged at display and in the PR draft only: progress.json and HANDOFF.md keep both texts. A review with no
+// backquoted passage is never merged. The first one stays.
+/** @param {{ task: string | null, text: string }} r @returns {string | null} */
+const reviewIdentity = r => { const m = /`([^`]+)`/.exec(r.text); return m ? `${r.task ?? ''}|${m[1]}` : null }
+/** @template {{ task: string | null, text: string }} R @param {R[]} reviews @returns {R[]} */
+export function distinctReviews(reviews) {
+  const seen = new Set()
+  return reviews.filter(r => { const k = reviewIdentity(r); if (k == null) return true; if (seen.has(k)) return false; seen.add(k); return true })
+}
+
+/**
+ * Every open review that D5 merges with the one of `ref`, their original texts (the first is `ref.text`): what Done or
+ * Ticket must close, one `progress.mjs ack` each. A review with no backquoted passage, or a decision, stands alone.
+ * @param {{ reviews: { task: string | null, text: string }[] }} inst @param {{ kind: string, task: string | null, text: string }} ref @returns {string[]}
+ */
+export function mergedTexts(inst, ref) {
+  if (ref.kind !== 'review') return [ref.text]
+  const id = reviewIdentity(ref)
+  const same = id == null ? [] : inst.reviews.filter(r => reviewIdentity(r) === id).map(r => r.text)
+  return [ref.text, ...same.filter(t => t !== ref.text)]
+}
+
+/**
+ * What waits behind the tasks a prerequisite holds back, from the phases and the statuses of the plan: the tasks of the
+ * phases after the first one held back, not merged nor cancelled. "phases 3 and 4 (10 tasks) wait behind it"; '' if nothing.
+ * @param {Snapshot} inst @param {string[]} blocks
+ */
+export function waitingBehind(inst, blocks) {
+  const open = inst.tasks.filter(t => t.status !== 'merged' && t.status !== 'cancelled')
+  const held = open.filter(t => blocks.includes(t.id))
+  if (!held.length) return ''
+  const first = Math.min(...held.map(t => t.phase))
+  const behind = open.filter(t => t.phase > first && !blocks.includes(t.id))
+  if (!behind.length) return ''
+  const phases = [...new Set(behind.map(t => t.phase))].sort((a, b) => a - b)
+  const names = phases.length === 1 ? String(phases[0]) : `${phases.slice(0, -1).join(', ')} and ${phases.at(-1)}`
+  return `${phases.length > 1 ? 'phases' : 'phase'} ${names} (${plural(behind.length, 'task')}) ${phases.length > 1 ? 'wait' : 'waits'} behind it`
+}
+
 // What a prerequisite is, in the title of its detail card
 const PREREQUISITE_KINDS = /** @type {Record<string, string>} */ ({ decision: 'decision to take', manual: 'manual action', environment: 'environment to set up' })
 
@@ -639,22 +730,27 @@ const PREREQUISITE_KINDS = /** @type {Record<string, string>} */ ({ decision: 'd
  * (0.16.0: the buttons of the detail card mark it done, move it to tickets or change its text). Each item also says what
  * it is, when and where to act (0.17.0), from the state of the plan: no agent writes them.
  * @param {Snapshot} inst @param {number} now
- * @returns {{ items: YourTurnItem[], urgent: number }}
+ * @returns {{ items: YourTurnItem[], urgent: number, settle: number }} urgent: the items that are `now`; settle: those to settle
  */
 export function yourTurnItems(inst, now) {
   const s = summarize(inst, now), dir = dirOf(inst), resume = `/orchestre:run ${dir} --resume`
   // When to act (0.17.0): the phase the plan is at, the one of the run in progress if there is one
   const live = !!runInProgress(inst), cur = live ? runPhase(inst) : s.current?.number ?? null
   const phaseOf = /** @param {string | null} id */ id => inst.tasks.find(t => t.id === id)?.phase ?? null
-  /** Before the phase of the first task it holds back. @param {string[]} blocks */
+  /**
+   * When to act on a prerequisite, and its moment: before the phase of the first task it holds back, now if that task is
+   * in the phase in progress. @param {string[]} blocks @returns {Moment}
+   */
   const beforeTasks = blocks => {
-    if (!inst.runs.length) return 'Before the first run'
     const held = inst.tasks.filter(t => blocks.includes(t.id) && t.status !== 'merged' && t.status !== 'cancelled')
+    const first = held.length ? Math.min(...held.map(t => t.phase)) : null
+    const later = first != null && cur != null && first > cur
     // Holding back no task left (plan-lint warns about it): nothing presses
-    if (!held.length) return 'Before the next run'
-    const first = Math.min(...held.map(t => t.phase))
-    return cur != null && first > cur ? `Before phase ${first}` : live ? 'Now' : 'Before the next run'
+    if (first == null) return { moment: inst.runs.length ? 'before the next run' : 'before the first run', rank: IDLE_RANK }
+    return later ? beforePhase(first) : NOW
   }
+  // What needs the session (an issue, a decision to take, plan-lint): now, or at the stop of the run in progress (D2)
+  const session = live ? AT_RUN_STOP : NOW
   const stopped = live ? WHERE.live : WHERE.resume
   /** @type {YourTurnItem[]} */
   const items = []
@@ -665,34 +761,38 @@ export function yourTurnItems(inst, now) {
     const reason = /** @type {Record<string, string>} */ (ATTENTION)[t.status]
     const what = `${p ? p.title : reason}${p?.human ? ' (human)' : ''}`
     items.push(p || t.status === 'needs-human'
-      ? { key: '', group: 'settle', task: t.id, g: { t: '⚑', c: 'warning', b: true }, text: `${t.id} · ${what}`, detail: t.blocker[0], prompt: resume, help: 'resume the run', kind: p && !p.human && t.status !== 'needs-human' ? 'issue to settle' : 'waits for you', what, when: 'Now', where: stopped }
-      : { key: '', group: 'settle', task: t.id, g: { t: '✗', c: 'error', b: true }, text: `${t.id} · ${reason}`, detail: t.blocker[0], prompt: `Explain the blocker of ${t.id}${t.blocker[0] ? ` (${t.blocker[0]})` : ''} and propose a way forward.`, help: 'ask the pilot', kind: `${t.status} task`, what: reason, when: 'Now', where: live ? WHERE.live : WHERE.pilot })
+      ? { key: '', group: 'settle', task: t.id, g: { t: '⚑', c: 'warning', b: true }, text: `${t.id} · ${what}`, detail: t.blocker[0], prompt: resume, help: 'resume the run', kind: p && !p.human && t.status !== 'needs-human' ? 'issue to settle' : 'waits for you', what, ...(p ? session : NOW), where: p ? stopped : live ? WHERE.waiting : WHERE.resume }
+      : { key: '', group: 'settle', task: t.id, g: { t: '✗', c: 'error', b: true }, text: `${t.id} · ${reason}`, detail: t.blocker[0], prompt: `Explain the blocker of ${t.id}${t.blocker[0] ? ` (${t.blocker[0]})` : ''} and propose a way forward.`, help: 'ask the pilot', kind: `${t.status} task`, what: reason, ...NOW, where: live ? WHERE.pilotLive : WHERE.pilot })
   }
-  for (const p of inst.issues) if (!seen.has(p)) { const what = `${p.title}${p.human ? ' (human)' : ''}`; items.push({ key: '', group: 'settle', task: p.task, g: { t: '?', c: 'warning', b: true }, text: `${p.task} · ${what}`, prompt: resume, help: 'settle when resuming', kind: 'issue to settle', what, when: 'Now', where: stopped }) }
+  for (const p of inst.issues) if (!seen.has(p)) { const what = `${p.title}${p.human ? ' (human)' : ''}`; items.push({ key: '', group: 'settle', task: p.task, g: { t: '?', c: 'warning', b: true }, text: `${p.task} · ${what}`, prompt: resume, help: 'settle when resuming', kind: 'issue to settle', what, ...session, where: stopped }) }
   for (const p of inst.prerequisites) {
-    const evidence = (p.evidence ?? '').trim()
+    const evidence = (p.evidence ?? '').trim(), at = beforeTasks(p.blocks)
+    // A decision to take is asked by the session, like an issue (D2): at the stop of the run in progress
+    const { moment, rank } = p.type === 'decision' && isNow(at) ? session : at
     items.push({
       key: '', group: 'settle', task: p.id, g: { t: '◇', c: 'warning', b: true }, text: `${p.id} (${p.type}) open${p.blocks.length ? `, blocks ${p.blocks.slice(0, 4).join(', ')}` : ''}`, prompt: `/orchestre:ready ${dir}`, help: 'settle the prerequisites',
-      kind: PREREQUISITE_KINDS[p.type] ?? 'prerequisite', what: p.text?.trim() || `${p.id} (${p.type}) open`, when: beforeTasks(p.blocks), where: p.type === 'decision' ? WHERE.decision : p.type === 'environment' ? WHERE.environment : WHERE.manual,
+      kind: PREREQUISITE_KINDS[p.type] ?? 'prerequisite', what: p.text?.trim() || `${p.id} (${p.type}) open`, moment, rank, where: p.type === 'decision' ? WHERE.decision : p.type === 'environment' ? WHERE.environment : WHERE.manual,
       blocks: p.blocks, how: p.how ?? [], ...(evidence && !/^[—–-]$/.test(evidence) ? { check: evidence } : {}),
     })
   }
-  if (!inst.lint.ok) { const what = `${plural(inst.lint.errors, 'error')} at the last progress update`; items.push({ key: '', group: 'settle', task: 'plan-lint', g: { t: '✗', c: 'error', b: true }, text: `plan-lint: ${what}`, prompt: `Show me the plan-lint errors on ${dir} and propose a fix.`, help: 'ask the pilot', kind: 'plan-lint error', what, when: 'Now', where: WHERE.lint }) }
-  const urgent = items.length
+  if (!inst.lint.ok) { const what = `${plural(inst.lint.errors, 'error')} at the last progress update`; items.push({ key: '', group: 'settle', task: 'plan-lint', g: { t: '✗', c: 'error', b: true }, text: `plan-lint: ${what}`, prompt: `Show me the plan-lint errors on ${dir} and propose a fix.`, help: 'ask the pilot', kind: 'plan-lint error', what, ...session, where: WHERE.lint }) }
+  const settle = items.length
   // /orchestre:done marks it done (0.15.1), or moves it to tickets (0.16.0): what the pane puts in the prompt when it cannot
   // run progress.mjs itself
   const done = /** @param {'review' | 'decision'} kind @param {string | null} task @param {string} text @param {boolean} [ticket] */ (kind, task, text, ticket = false) => `/orchestre:done ${dir} ${ticket ? 'ticket ' : ''}${kind} ${task ?? '-'} ${text}`
-  for (const r of inst.reviews) {
+  for (const r of distinctReviews(inst.reviews)) {
     const shown = r.label ?? r.text
     // After the phase of its task; one of the source plan, or a plan all merged: before the PR
     const phase = r.phase ?? phaseOf(r.task)
-    items.push({ key: '', group: 'review', ack: done('review', r.task, r.text), toTicket: done('review', r.task, r.text, true), ref: { kind: 'review', task: r.task, text: r.text, shown, original: r.text, edited: r.label != null }, task: r.task ?? 'source plan', g: { t: '⚑', c: 'warning' }, text: `${r.task ?? 'source plan'} · ${shown}`, prompt: `Review with me, before the PR (review of ${r.task ?? 'source plan'}): ${shown}`, help: 'review', kind: 'review', what: shown, when: s.allMerged || phase == null ? 'Before the PR' : `After phase ${phase}`, where: WHERE.review })
+    const at = s.allMerged || phase == null ? BEFORE_THE_PR : afterPhase(phase)
+    items.push({ key: '', group: 'review', ack: done('review', r.task, r.text), toTicket: done('review', r.task, r.text, true), ref: { kind: 'review', task: r.task, text: r.text, shown, original: r.text, edited: r.label != null }, task: r.task ?? 'source plan', g: { t: '⚑', c: 'warning' }, text: `${r.task ?? 'source plan'} · ${shown}`, prompt: `Review with me, before the PR (review of ${r.task ?? 'source plan'}): ${shown}`, help: 'review', kind: 'review', what: shown, ...at, where: WHERE.review })
   }
   for (const d of inst.decisions) {
     const original = `${d.title}: ${d.option}${d.description ? ` (${d.description})` : ''}`, shown = d.label ?? original
     // To reverse it, before the next phase builds on it; in the last phase, before the PR
     const phase = phaseOf(d.task)
-    items.push({ key: '', group: 'decision', ack: done('decision', d.task, d.title), toTicket: done('decision', d.task, d.title, true), ref: { kind: 'decision', task: d.task, text: d.title, shown, original, edited: d.label != null }, task: d.task, g: { t: '⇒', c: 'merged' }, text: `${d.task} · ${shown}`, prompt: `Go over the auto-decision for ${d.task} with me: "${d.title}", option ${d.option}${d.description ? ` (${d.description})` : ''}.`, help: 'go over', kind: 'auto-decision', what: shown, when: s.allMerged || phase == null || phase >= s.maxPhase ? 'Before the PR' : `Before phase ${phase + 1}`, where: WHERE.autoDecision })
+    const at = s.allMerged || phase == null || phase >= s.maxPhase ? BEFORE_THE_PR : beforePhase(phase + 1)
+    items.push({ key: '', group: 'decision', ack: done('decision', d.task, d.title), toTicket: done('decision', d.task, d.title, true), ref: { kind: 'decision', task: d.task, text: d.title, shown, original, edited: d.label != null }, task: d.task, g: { t: '⇒', c: 'merged' }, text: `${d.task} · ${shown}`, prompt: `Go over the auto-decision for ${d.task} with me: "${d.title}", option ${d.option}${d.description ? ` (${d.description})` : ''}.`, help: 'go over', kind: 'auto-decision', what: shown, ...at, where: WHERE.autoDecision })
   }
   // The key: the group and the text; the same text twice gets its rank
   /** @type {Map<string, number>} */
@@ -702,7 +802,11 @@ export function yourTurnItems(inst, now) {
     counts.set(base, k + 1)
     it.key = k ? `${base}#${k + 1}` : base
   }
-  return { items, urgent }
+  // The `when` of the detail card is the moment of the label, written out: one place decides both
+  for (const it of items) it.when = capital(it.moment)
+  // By rank, stable: the order above stays at an equal rank
+  items.sort((a, b) => a.rank - b.rank)
+  return { items, urgent: items.filter(isNow).length, settle }
 }
 
 // The lines of "Your turn" by pages of 9, one key each, 1 to 9 (0.16.0); the page shown, kept within the pages there are
@@ -720,16 +824,24 @@ export const pageOf = (count, page) => Math.max(0, Math.min(Math.floor(page) || 
  * @returns {(Card & { urgent: number }) | null}
  */
 export function yourTurnCard(inst, now, columns, selected = null, { page = 0, last = null } = {}) {
-  const { items, urgent } = yourTurnItems(inst, now)
+  const { items, urgent, settle } = yourTurnItems(inst, now)
   if (!items.length && !last) return null
   const inner = columns - 4
   const p = pageOf(items.length, page), pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE))
   /** @type {Line[]} */
   const lines = []
-  items.slice(p * PAGE_SIZE, (p + 1) * PAGE_SIZE).forEach((it, i) => {
+  const shownItems = items.slice(p * PAGE_SIZE, (p + 1) * PAGE_SIZE)
+  // The labels are aligned on the right edge; the text of a line is cut to leave them their room (0.19.0)
+  const labelRoom = Math.max(0, ...shownItems.map(it => [...it.moment].length))
+  let later = false
+  shownItems.forEach((it, i) => {
     const hotkey = String(i + 1), on = it.key === selected
     const mark = it.ref?.edited ? '  ✎ edited' : ''
-    lines.push([on ? { t: '▸', c: 'claude', b: true } : it.g, { t: ' ' }, { t: cut(it.text, Math.max(16, inner - mark.length - 5)), ...(on ? { b: true } : {}), x: { hotkey, prompt: it.prompt, help: it.help, key: it.key, mode: 'select' } }, ...(mark ? [{ t: mark, d: true }] : [])])
+    // The grey line before the first item that is not for now, on every page that has one; it has no key
+    if (!later && it.rank > 0) { later = true; lines.push([{ t: `  ── later ${'─'.repeat(Math.max(3, inner - 11))}`, d: true }]) }
+    const room = Math.max(16, inner - mark.length - 5 - labelRoom - 2), text = cut(it.text, room)
+    const gap = ' '.repeat(room - [...text].length + 2 + labelRoom - [...it.moment].length)
+    lines.push([on ? { t: '▸', c: 'claude', b: true } : it.g, { t: ' ' }, { t: text, ...(on ? { b: true } : {}), x: { hotkey, prompt: it.prompt, help: it.help, key: it.key, mode: 'select' } }, ...(mark ? [{ t: mark, d: true }] : []), { t: gap }, isNow(it) ? { t: it.moment, c: 'suggestion', b: true } : { t: it.moment, d: true }])
     if (it.detail) lines.push([{ t: `     ${cut(it.detail, Math.max(16, inner - 6))}`, d: true }])
   })
   if (pages > 1) {
@@ -737,16 +849,17 @@ export function yourTurnCard(inst, now, columns, selected = null, { page = 0, la
     lines.push([{ t: `  page ${p + 1}/${pages}  `, d: true }, { t: bracketed(rest > 0 ? `Next ${Math.min(rest, PAGE_SIZE)} ›` : `‹ First ${PAGE_SIZE}`), x: { hotkey: null, prompt: '', help: 'other page', op: 'page', page: rest > 0 ? p + 1 : 0, bracket: true } }])
   }
   if (last) lines.push([{ t: '  last: ', d: true }, { t: cut(last.text, Math.max(12, inner - 20)), c: last.kind === 'done' ? 'success' : last.kind === 'ticket' ? 'suggestion' : undefined }, { t: '  ' }, { t: bracketed(UNDO_LABEL), x: { hotkey: null, prompt: '', help: 'undo', op: 'undo', bracket: true } }])
-  const tickets = (inst.closed ?? []).filter(c => c.as === 'ticket').length
+  const tickets = (inst.closed ?? []).filter(c => c.as === 'ticket').length, reviews = distinctReviews(inst.reviews).length
   const count = [
-    urgent ? `${urgent} to settle` : '',
-    inst.reviews.length ? plural(inst.reviews.length, 'review') : '',
+    urgent ? `${urgent} now` : '',
+    settle ? `${settle} to settle` : '',
+    reviews ? plural(reviews, 'review') : '',
     inst.decisions.length ? plural(inst.decisions.length, 'auto-decision') : '',
     tickets ? `${tickets} moved to tickets` : '',
   ].filter(Boolean).join(' · ')
   return {
-    id: 'yourTurn', color: items.length ? 'warning' : 'success', urgent,
-    title: [items.length ? { t: urgent ? '⚠ Your turn' : '⚑ To review before the PR', c: 'warning', b: true } : { t: '✓ Nothing left to review', c: 'success', b: true }],
+    id: 'yourTurn', color: !items.length ? 'success' : urgent ? 'warning' : 'subtle', urgent,
+    title: [!items.length ? { t: '✓ Nothing left to review', c: 'success', b: true } : urgent ? { t: '⚠ Your turn', c: 'warning', b: true } : { t: '✓ Nothing waits for you now', c: 'success', b: true }],
     meta: [{ t: count, d: true }],
     lines,
   }
@@ -811,7 +924,7 @@ export function detailCard(inst, now, columns, selected, { page = 0, editing = f
     const under = s => wrap(s, inner - INDENT.length).map(t => [{ t: INDENT + t, d: true }])
     if (ref?.edited) lines.push(...under(`original: ${ref.original}`))
     if (it.detail) lines.push(...under(`blocker: ${it.detail}`))
-    if (it.blocks?.length) lines.push(...under(`blocks ${it.blocks.join(', ')}`))
+    if (it.blocks?.length) { const behind = waitingBehind(inst, it.blocks); lines.push(...under(`blocks ${it.blocks.join(', ')}${behind ? `; ${behind}` : ''}`)) }
     // The steps of a prerequisite, numbered, the words of a step wrapped under its first word
     for (const [i, step] of (it.how ?? []).entries()) {
       const mark = `${INDENT}${i + 1}. `
@@ -966,16 +1079,35 @@ function modelCell(t, n) {
 const GAP = 2
 // The duration of a task: "1:02:03" at most
 const TIME_WIDTH = 7
-// The least room of the title, the timeline and what the task does. The room left goes first to what the task does, up
-// to its longest text on the card and 24 cells at most ("fix attempt 2 (worktree)"), then to the title up to 24, to the
-// timeline up to 26, to the title again up to 40, and what remains to what the task does
+// The least room of the title, the timeline and what the task does. The room left goes first to the title up to 28 cells
+// (0.19.0), then to what the task does, up to its longest text on the card and 24 cells at most ("fix attempt 2
+// (worktree)"), then to the timeline up to 26, to the title again up to 48, and what remains to what the task does
 const MIN_TITLE = 10, MIN_TIMELINE = 8, MIN_WHAT = 16
+const TITLE_FIRST = 28, TITLE_LAST = 48
+// Below this width the timeline goes: the room goes to the title, the duration and the step stay (0.19.0)
+const TIMELINE_COLUMNS = 80
+// The model column only stays if the title keeps this many cells with it, or all its text when it is shorter
+const TITLE_WITH_MODEL = 24
 /** @param {number} n @returns {Piece} */
 const spaces = n => ({ t: ' '.repeat(Math.max(0, n)) })
 /** A title in its column: without the code marks of markdown, cut with "…" right after the last character kept, padded to n cells. @param {string} s @param {number} n */
 export function titleCell(s, n) {
   const c = [...String(s).replace(/`/g, '').replace(/\s+/g, ' ').trim()]
   return column(c.length > n ? c.slice(0, n - 1).join('').trimEnd() + '…' : c.join(''), n)
+}
+
+/**
+ * The tasks of a phase that needed retries, "AH02 ×3, AH02B ×2…": three entries at most, fewer when the room lacks, never
+ * an entry cut in the middle; empty when not even the first fits.
+ * @param {{ id: string, attempts: number }[]} retries @param {number} n
+ */
+function retriesText(retries, n) {
+  const all = retries.map(r => `${r.id} ×${r.attempts}`)
+  for (let k = Math.min(3, all.length); k > 0; k--) {
+    const s = `${all.slice(0, k).join(', ')}${k < all.length ? '…' : ''}`
+    if ([...s].length <= n) return s
+  }
+  return ''
 }
 
 /** A task merged a moment ago: a badge in place of what it does. @param {TaskView} t @param {number} now */
@@ -1000,9 +1132,11 @@ function shownTasks(inst, now) {
 
 /**
  * The columns of the task lines in `columns` cells: where each one starts (`at`) and its width. The model column is 0
- * when no model is known, or when it leaves the title, the timeline and what the task does less than their least room.
- * What the task does takes the width of its longest text on the card (0.13.1): the title gets the rest, and the columns
- * move when that text gets longer during a run.
+ * when no model is known, when it leaves the title, the timeline and what the task does less than their least room, or
+ * when the title would keep less than 24 cells with it, or less than its longest title when that is shorter (0.19.0).
+ * The timeline column is 0 under 80 columns. What the task does takes the width of its longest text on the card
+ * (0.13.1): the title gets the rest, and the columns move when that text gets longer during a run. `bare` is the
+ * width of the title of a task with neither a timeline nor a duration: it takes the room of both.
  * @param {Snapshot} inst @param {number} now @param {number} columns
  */
 export function taskGrid(inst, now, columns) {
@@ -1015,21 +1149,36 @@ export function taskGrid(inst, now, columns) {
   const id = Math.min(8, Math.max(3, ...tasks.map(t => [...t.id].length)))
   // "◉ Phase 12" takes the room of "  ◐ T012": the glyph, a space, the id
   const lead = Math.max(4 + id, 8 + Math.max(1, ...tasks.map(t => String(t.phase).length))) + GAP
-  let model = Math.min(MODEL_WIDTH, Math.max(0, ...inst.tasks.map(t => width(modelOf(t)))))
-  const fixed = () => lead + GAP + GAP + TIME_WIDTH + GAP + (model ? model + GAP : 0)
-  if (model && columns - fixed() < MIN_TITLE + MIN_TIMELINE + MIN_WHAT) model = 0
-  let rest = Math.max(0, columns - fixed() - MIN_TITLE - MIN_TIMELINE - MIN_WHAT)
-  /** @param {number} v @param {number} to */
-  const grow = (v, to) => { const k = Math.max(0, Math.min(rest, to - v)); rest -= k; return v + k }
   const need = Math.max(MIN_TITLE, ...tasks.map(t => [...titleCell(t.title, 999).trimEnd()].length))
-  let doing = grow(MIN_WHAT, Math.min(24, longest))
-  let title = grow(MIN_TITLE, Math.min(need, 24))
-  const timeline = grow(MIN_TIMELINE, 26)
-  title = grow(title, Math.min(need, 40))
-  doing += rest
-  const at = { title: lead, timeline: lead + title + GAP, time: lead + title + GAP + timeline + GAP }
-  const atModel = at.time + TIME_WIDTH + GAP
-  return { id, lead, title, timeline, model, what: doing, at: { ...at, model: atModel, what: atModel + (model ? model + GAP : 0) } }
+  // Under TIMELINE_COLUMNS there is no timeline column: a started task keeps its duration and its step
+  const withTimeline = columns >= TIMELINE_COLUMNS
+  /** The widths of the title, the timeline and what the task does, with or without a model column of `model` cells. @param {number} model */
+  const widths = model => {
+    const fixed = lead + GAP + (withTimeline ? GAP : 0) + TIME_WIDTH + GAP + (model ? model + GAP : 0)
+    const least = MIN_TITLE + (withTimeline ? MIN_TIMELINE : 0) + MIN_WHAT
+    let rest = Math.max(0, columns - fixed - least)
+    /** @param {number} v @param {number} to */
+    const grow = (v, to) => { const k = Math.max(0, Math.min(rest, to - v)); rest -= k; return v + k }
+    let title = grow(MIN_TITLE, Math.min(need, TITLE_FIRST))
+    let doing = grow(MIN_WHAT, Math.min(24, longest))
+    const timeline = withTimeline ? grow(MIN_TIMELINE, 26) : 0
+    title = grow(title, Math.min(need, TITLE_LAST))
+    doing += rest
+    return { title, timeline, doing, fits: columns - fixed >= least }
+  }
+  let model = Math.min(MODEL_WIDTH, Math.max(0, ...inst.tasks.map(t => width(modelOf(t)))))
+  let w = widths(model)
+  // The model column goes when it leaves less than the least room, or less than 24 cells to the title, or less than
+  // its longest title when that is shorter (0.19.0)
+  if (model && (!w.fits || w.title < Math.min(TITLE_WITH_MODEL, need))) { model = 0; w = widths(0) }
+  const { title, timeline, doing } = w
+  const atTimeline = lead + title + GAP
+  // Without a timeline column, "timeline" and "time" are the same place
+  const atTime = timeline ? atTimeline + timeline + GAP : atTimeline
+  const atModel = atTime + TIME_WIDTH + GAP
+  // A task with neither a timeline nor a duration (not started, waiting) gives its title the room of both (0.19.0)
+  const bare = atModel - GAP - lead
+  return { id, lead, title, bare, timeline, model, what: doing, at: { title: lead, timeline: atTimeline, time: atTime, model: atModel, what: atModel + (model ? model + GAP : 0) } }
 }
 
 /**
@@ -1050,39 +1199,57 @@ export function taskLines(inst, now, columns, animated = false) {
   const model = t => (G.model ? modelCell(t, G.model) : [])
   // The columns of the phase lines: the count, the squares (a bar of 20 beyond 30 tasks), the duration
   const countWidth = Math.max(0, ...s.phases.map(p => `${p.done}/${p.total}`.length))
-  const squaresWidth = Math.max(0, ...phases.map(x => (x.ts.length <= 30 ? x.ts.length : 20)))
   const durationWidth = Math.max(0, ...s.phases.map(p => duration(p.duration).length))
+  // The squares keep the line within the width (0.19.0): beyond the room left, a bar of fewer cells
+  const squaresRoom = Math.max(4, columns - G.lead - countWidth - GAP - GAP - durationWidth)
+  /** @param {TaskView[]} ts */
+  const oneEach = ts => ts.length <= Math.min(30, squaresRoom)
+  const squaresWidth = Math.max(0, ...phases.map(x => (oneEach(x.ts) ? x.ts.length : Math.min(20, squaresRoom))))
   /** @type {Line[]} */
   const out = []
   let segments = false
   for (const { p, ts, detail, todo } of phases) {
     const finished = p.total > 0 && p.done === p.total
     const g = finished ? { t: '●', c: 'success' } : p.attention ? { t: '⚠', c: 'warning' } : p.number === cur ? { t: '◉', c: 'claude', b: true } : p.done ? { t: '◐', c: 'suggestion' } : { t: '○', c: 'subtle' }
-    const sq = ts.length <= 30 ? squares(ts, classOf) : classBar(ts, classOf, 20, now, animated)
+    const sq = oneEach(ts) ? squares(ts, classOf) : classBar(ts, classOf, Math.min(20, squaresRoom), now, animated)
     /** @type {Line} */
     const l = [g, { t: ` Phase ${p.number}`.padEnd(G.lead - 1), b: p.number === cur || finished, c: finished ? 'success' : undefined }]
     l.push({ t: `${p.done}/${p.total}`.padStart(countWidth), c: finished ? 'success' : undefined, b: finished }, spaces(GAP), ...sq, spaces(squaresWidth - width(sq) + GAP))
     l.push({ t: duration(p.duration).padStart(durationWidth), d: true })
-    if (p.retries.length) l.push(spaces(GAP), { t: `${p.retries.slice(0, 3).map(r => `${r.id} ×${r.attempts}`).join(', ')}${p.retries.length > 3 ? '…' : ''}`, c: 'merged' })
+    // The retries go after the name, the count, the squares and the duration, cut to the room left: whole entries, then "…"
+    const retries = retriesText(p.retries, columns - width(l) - GAP)
+    if (retries) l.push(spaces(GAP), { t: retries, c: 'merged' })
     out.push(l)
     for (const t of detail) {
       const segs = stepsOf(inst, t, now)
-      if (segs.length) segments = true
+      if (segs.length && G.timeline) segments = true
       const running = live && !!t.step && !isMerged(t)
       const before = !segs.length && isMerged(t) ? runOf(inst, t) : null
       const elapsed = segs.length ? /** @type {[number, number, string]} */ (segs.at(-1))[1] - /** @type {[number, number, string]} */ (segs[0])[0] : t.start != null && t.end != null ? t.end - t.start : null
+      // Neither a timeline nor a duration: the title takes the room of both, no dots (0.19.0)
+      const bare = !segs.length && !before && elapsed == null
+      const dim = !running && !isMerged(t)
       /** @type {Line} */
-      const line = [...lead(t, glyph(t, live, now, animated)), { t: titleCell(t.title, G.title), d: !running && !isMerged(t) }, spaces(GAP)]
-      if (segs.length) line.push(...timeline(inst, t, now, G.timeline, animated))
-      else if (before) line.push({ t: `── run ${before.number} `.padEnd(G.timeline, '─').slice(0, G.timeline), c: 'subtle' })
-      else line.push({ t: '·'.repeat(G.timeline), c: 'subtle' })
-      line.push(spaces(GAP), time(chrono(elapsed)), ...model(t))
+      const line = [...lead(t, glyph(t, live, now, animated))]
+      if (bare) line.push({ t: titleCell(t.title, G.bare), d: dim }, spaces(GAP), ...model(t))
+      else {
+        line.push({ t: titleCell(t.title, G.title), d: dim }, spaces(GAP))
+        // No timeline column below TIMELINE_COLUMNS
+        if (G.timeline) {
+          if (segs.length) line.push(...timeline(inst, t, now, G.timeline, animated))
+          else if (before) line.push({ t: `── run ${before.number} `.padEnd(G.timeline, '─').slice(0, G.timeline), c: 'subtle' })
+          else line.push({ t: '·'.repeat(G.timeline), c: 'subtle' })
+          line.push(spaces(GAP))
+        }
+        line.push(time(chrono(elapsed)), ...model(t))
+      }
       if (justMerged(t, now)) line.push({ t: ' merged ', c: 'inverseText', f: 'success', b: true })
       else line.push(...whatColored(t, live, ruled(inst, t), G.what))
       out.push(line)
     }
-    // The planned model, in the same column as the detailed lines; the duration column empty
-    for (const t of todo.slice(0, 6)) out.push([...lead(t, glyph(t, live)), { t: titleCell(t.title, G.title), d: true }, spaces(GAP), { t: '·'.repeat(G.timeline), c: 'subtle' }, spaces(GAP), time(''), ...model(t), { t: cut(what(t, live), G.what), d: true }])
+    // A task to do: its title over the room of the timeline and the duration, then the planned model in the same column as
+    // the detailed lines (0.19.0)
+    for (const t of todo.slice(0, 6)) out.push([...lead(t, glyph(t, live)), { t: titleCell(t.title, G.bare), d: true }, spaces(GAP), ...model(t), { t: cut(what(t, live, false, G.what), G.what), d: true }])
     if (todo.length > 6) out.push([{ t: '  ' }, { t: '○', d: true }, spaces(G.lead - 3), { t: `${todo.length - 6} more to do`, d: true }])
   }
   if (!out.length) return [[{ t: 'No task in progress.json.', d: true }]]
@@ -1215,9 +1382,9 @@ export function closedCard(inst, now, columns) {
 
 /** The status line when the banner is hidden and something is left to do: "orchestre ✓ 5/5 · ⚑ 3". @param {Snapshot} inst @param {number} now */
 export function statusLine(inst, now) {
-  const s = summarize(inst, now)
-  if (inst.planClosed != null || (s.allMerged && !s.reviews && !s.attention.length)) return null
-  return `orchestre ${s.allMerged ? '✓' : '■'} ${s.done}/${s.total}${s.reviews ? ` · ⚑ ${s.reviews}` : ''}${s.attention.length ? ` · ⚠ ${s.attention.length}` : ''}`
+  const s = summarize(inst, now), urgent = yourTurnItems(inst, now).urgent
+  if (inst.planClosed != null || (s.allMerged && !s.reviews && !urgent)) return null
+  return `orchestre ${s.allMerged ? '✓' : '■'} ${s.done}/${s.total}${s.reviews ? ` · ⚑ ${s.reviews}` : ''}${urgent ? ` · ⚠ ${urgent}` : ''}`
 }
 
 /** A line as plain text. @param {Line} l */
@@ -1243,9 +1410,10 @@ export function prText(inst, now) {
   const s = summarize(inst, now), closed = inst.closed ?? []
   const l = [`Plan ${inst.plan}: ${s.done}/${s.total} tasks merged, ${plural(inst.runs.length, 'run')}.`, '']
   const reviewsDone = closed.filter(c => c.kind === 'review' && c.as === 'done'), decisionsDone = closed.filter(c => c.kind === 'decision' && c.as === 'done')
-  if (inst.reviews.length || reviewsDone.length) {
+  const reviews = distinctReviews(inst.reviews)
+  if (reviews.length || reviewsDone.length) {
     l.push('To review before merging (files and commands forbidden to the agents):')
-    for (const r of inst.reviews) l.push(`- [ ] ${r.task ?? 'source plan'}: ${r.label ?? r.text}`)
+    for (const r of reviews) l.push(`- [ ] ${r.task ?? 'source plan'}: ${r.label ?? r.text}`)
     for (const r of reviewsDone) l.push(`- [x] ${r.task ?? 'source plan'}: ${r.shown}`)
     l.push('')
   }

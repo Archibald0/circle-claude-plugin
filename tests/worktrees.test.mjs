@@ -1,12 +1,14 @@
-// Tests of worktrees.mjs (cleaning the worktrees of earlier attempts), in temporary git repositories.
+// Tests of worktrees.mjs (cleaning the worktrees of earlier attempts, disk space for the worktrees), in temporary git repositories.
 // Usage: node tests/worktrees.test.mjs [path of worktrees.mjs]
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, chmodSync, statfsSync, symlinkSync, lstatSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
+import { pathToFileURL } from 'node:url'
 import { execFileSync, spawnSync } from 'node:child_process'
 
 const SCRIPT = resolve(process.argv[2] || 'plugins/orchestre/scripts/worktrees.mjs')
+const { space } = await import(pathToFileURL(SCRIPT).href)
 const temporaries = []
 let n = 0
 const test = (name, fn) => { fn(); n++; console.log('ok ·', name) }
@@ -102,6 +104,128 @@ try {
     const fr = D.launch(['clean', 'plans/fr'])
     assert.equal(fr.code, 2); assert.match(fr.err, /^worktrees: plan in the French format of orchestre 0\.11 and earlier \(taches\/\): migrate it with node ".*\/migrate\.mjs" plans\/fr$/)
     assert.deepEqual(worktrees(D), ['plan/p', 'task/T01'])
+  })
+
+  test('space: one line, ⚠ only when space is lacking (size injected), code 0 in both cases', () => {
+    const D = repo()
+    let r = D.launch(['space', 'plans/p', '--parallelism', '2', '--size-bytes', '1000'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /^space: [0-9.]+ GB free, 0\.0 GB needed \(0\.0 GB x 2 in parallel\)$/)
+    assert.ok(!r.out.includes('⚠'))
+    r = D.launch(['space', 'plans/p', '--parallelism', '2', '--size-bytes', '1000000000000000000'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /^space: ⚠ [0-9.]+ GB free, 2000000000\.0 GB needed \(1000000000\.0 GB x 2 in parallel\): the worktrees may not fit$/)
+    assert.equal(r.out.split('\n').length, 1)
+  })
+
+  test('space: the size is multiplied by the parallelism (one copy fits, four do not)', () => {
+    const D = repo()
+    const fs = statfsSync(D.root), free = Number(fs.bavail) * Number(fs.bsize)
+    const size = String(Math.floor(free / 2))
+    assert.ok(!D.launch(['space', 'plans/p', '--parallelism', '1', '--size-bytes', size]).out.includes('⚠'))
+    assert.ok(D.launch(['space', 'plans/p', '--parallelism', '4', '--size-bytes', size]).out.includes('⚠'))
+    assert.ok(D.launch(['space', 'plans/p', '--size-bytes', size]).out.includes('x 4 in parallel'), 'default parallelism 4')
+  })
+
+  test('space: measured size counts ignored files, never .git', () => {
+    const D = repo()
+    const here = process.cwd()
+    process.chdir(D.root)
+    try {
+      const base = space('plans/p', { parallelism: 1 }).need
+      assert.ok(base > 0)
+      writeFileSync(join(D.root, '.git', 'big'), 'x'.repeat(7000))
+      assert.equal(space('plans/p', { parallelism: 1 }).need, base, '.git excluded')
+      mkdirSync(join(D.root, 'node_modules')); writeFileSync(join(D.root, 'node_modules', 'x'), 'x'.repeat(5000))
+      assert.equal(space('plans/p', { parallelism: 1 }).need, base + 5000, 'ignored files included')
+      assert.equal(space('plans/p', { parallelism: 3 }).need, 3 * (base + 5000))
+    } finally { process.chdir(here) }
+  })
+
+  test('space: measure fails (unreadable folder): one line "not measured", code 0; invalid options: code 2', () => {
+    const D = repo()
+    const locked = join(D.root, 'locked'); mkdirSync(locked)
+    chmodSync(locked, 0o000)
+    try {
+      if (process.getuid && process.getuid() !== 0) {
+        const r = D.launch(['space', 'plans/p'])
+        assert.equal(r.code, 0, r.err)
+        assert.match(r.out, /^space: not measured \(EACCES.*\)$/)
+        assert.ok(!r.out.includes('⚠'))
+      }
+    } finally { chmodSync(locked, 0o755) }
+    for (const args of [['space', 'plans/p', '--parallelism', '0'], ['space', 'plans/p', '--parallelism', 'x'], ['space', 'plans/p', '--size-bytes', '-1'], ['space', 'plans/unknown']]) assert.equal(D.launch(args).code, 2, args.join(' '))
+  })
+
+  // node:fs patched before the script loads it: statfsSync missing (Node 18.0 to 18.14) or giving no usable figure
+  const patched = (D, patch, args) => {
+    const code = `const fs = require('fs'); ${patch}; require('module').syncBuiltinESMExports(); import(require('url').pathToFileURL(process.argv[1]).href)`
+    const r = spawnSync(process.execPath, ['-e', code, SCRIPT, ...args], { cwd: D.root, encoding: 'utf8' })
+    return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }
+  }
+  test('space: no statfsSync, or a free space that is not a number: one line "not measured", code 0', () => {
+    const D = repo()
+    let r = patched(D, 'fs.statfsSync = undefined', ['space', 'plans/p', '--size-bytes', '1000'])
+    assert.equal(r.code, 0, r.err)
+    assert.equal(r.out, 'space: not measured (this Node version has no statfsSync (18.15 or later))')
+    r = patched(D, 'fs.statfsSync = () => ({ bavail: undefined, bsize: 4096 })', ['space', 'plans/p', '--size-bytes', '1000'])
+    assert.equal(r.code, 0, r.err)
+    assert.equal(r.out, 'space: not measured (free space unknown)')
+  })
+
+  test('space: the message of a failed measure: its code first, its first line only, also for a thrown value that is not an Error; code 0', () => {
+    const D = repo()
+    let r = patched(D, "fs.statfsSync = () => { throw new Error('disk gone\\nsecond line') }", ['space', 'plans/p', '--size-bytes', '1000'])
+    assert.equal(r.code, 0, r.err)
+    assert.equal(r.out, 'space: not measured (disk gone)')
+    r = patched(D, "fs.statfsSync = () => { throw Object.assign(new Error('i/o failure'), { code: 'EIO' }) }", ['space', 'plans/p', '--size-bytes', '1000'])
+    assert.equal(r.out, 'space: not measured (EIO i/o failure)', 'the error code comes first')
+    r = patched(D, "fs.statfsSync = () => { throw 'not an Error' }", ['space', 'plans/p', '--size-bytes', '1000'])
+    assert.equal(r.code, 0, r.err)
+    assert.equal(r.out, 'space: not measured (not an Error)', 'a thrown value that is not an Error')
+  })
+
+  test('space: an injected size of 0 is used as is, the folder is not measured', () => {
+    const D = repo()
+    const r = D.launch(['space', 'plans/p', '--parallelism', '1', '--size-bytes', '0'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /^space: [0-9.]+ GB free, 0\.0 GB needed \(0\.0 GB x 1 in parallel\)$/)
+    const here = process.cwd()
+    process.chdir(D.root)
+    try { assert.equal(space('plans/p', { parallelism: 1, sizeBytes: 0 }).need, 0) } finally { process.chdir(here) }
+  })
+
+  test('space: a symbolic link counts for itself, never for its target; a .git below the root is counted', () => {
+    const D = repo()
+    const here = process.cwd()
+    process.chdir(D.root)
+    try {
+      const base = space('plans/p', { parallelism: 1 }).need
+      const target = join(D.root, '..', 'big outside'); writeFileSync(target, 'x'.repeat(50000))
+      symlinkSync(target, join(D.root, 'link'))
+      const linked = space('plans/p', { parallelism: 1 }).need
+      assert.equal(linked, base + lstatSync(join(D.root, 'link')).size, 'link counted for itself')
+      assert.ok(linked < base + 50000, 'target not followed')
+      mkdirSync(join(D.root, 'sub', '.git'), { recursive: true }); writeFileSync(join(D.root, 'sub', '.git', 'x'), 'x'.repeat(3000))
+      assert.equal(space('plans/p', { parallelism: 1 }).need, linked + 3000, '.git below the root counted')
+    } finally { process.chdir(here) }
+  })
+
+  test('space: option values are never taken as the plan, options before or after it', () => {
+    const D = repo()
+    const r = D.launch(['space', '--parallelism', '3', '--size-bytes', '1000', 'plans/p'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /x 3 in parallel\)$/)
+  })
+
+  test('space: the lacking field follows the ⚠', () => {
+    const D = repo()
+    const here = process.cwd()
+    process.chdir(D.root)
+    try {
+      assert.equal(space('plans/p', { sizeBytes: 0 }).lacking, false)
+      assert.equal(space('plans/p', { sizeBytes: 1e18 }).lacking, true)
+    } finally { process.chdir(here) }
   })
   console.log(`worktrees: ALL GREEN (${n} tests)`)
 } finally { for (const d of temporaries) rmSync(d, { recursive: true, force: true }) }

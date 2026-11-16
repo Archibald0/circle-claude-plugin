@@ -80,6 +80,7 @@ const setupOf = t => [...SETUP, ...(t.resources || []).flatMap(r => SHARED_SETUP
 const oneLine = x => String(x ?? '').replace(/\s+/g, ' ').trim()
 const short = (x, n = 240) => { const s = oneLine(x); return s.length > n ? s.slice(0, n - 1) + '…' : s }
 const shorts = xs => (xs || []).map(x => short(x))
+const arr = x => (Array.isArray(x) ? x : [])
 // Integers expected by the progress schema (args may carry strings)
 const integer = (x, min) => Math.max(min, Math.trunc(Number(x)) || 0)
 // Language of the free text (0.12.0): any non-empty text of orchestre.config.json ("en", "fr"…), on one line, quoted in the prompts
@@ -103,6 +104,19 @@ function planDigest(p) {
   for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193)
   return (h >>> 0).toString(16).padStart(8, '0')
 }
+// Fingerprint of the scope check of a task branch (0.19.0): the same text, to the character, as in scripts/plan-lint.mjs, which
+// prints it in "digest" with --scope. The verifier copies that JSON in "scope"; the workflow computes the fingerprint again on
+// the copy and, when they differ and the verification passes, has the plan-reader read the scope a second time; unfaithful
+// again, the task goes on without these facts (blind spot). A field left out, empty or null reads alike; FNV-1a on 32 bits, 8 hexadecimal digits.
+function scopeDigest(p) {
+  const s = x => (typeof x === 'string' ? x : ''), ss = x => (Array.isArray(x) ? x.map(s) : [])
+  const list = x => (Array.isArray(x) ? x : []).map(y => (y && typeof y === 'object' ? y : {}))
+  const c = JSON.stringify([s(p.task), s(p.branch), ss(p.files), ss(p.outside), ss(p.tests_removed),
+    list(p.skips_added).map(x => [s(x.file), Number.isInteger(x.line) ? x.line : null, s(x.marker)])])
+  let h = 0x811c9dc5
+  for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193)
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
 if (!PLAN || !PHASE || !INTEG || !LINT) return { status: 'error', detail: 'args required: plan, phase, integration, lint' }
 if (!['auto', 'deviation', 'phase'].includes(MODE)) return { status: 'error', detail: `unknown mode: ${MODE} (auto, deviation or phase)` }
 
@@ -120,9 +134,14 @@ const REPORT_S = S({
 // The worker isolated in a worktree runs no progress command (0.18.2): its report has no result of one to give
 const REPORT_ISOLATED_S = S(Object.fromEntries(Object.entries(REPORT_S.properties).filter(([k]) => !(k in PROGRESS_P))), REPORT_S.required)
 const RESULT_S = S({ command: str, code: { type: 'integer' }, excerpt: str }, ['command', 'code', 'excerpt'])
-const VERIF_S = S({ ok: bool, results: { type: 'array', items: RESULT_S }, failures: { type: 'array', items: S({ command: str, excerpt: str }, ['command']) }, flaky: strs, forbidden: strs, uncommitted: strs, ...PROGRESS_P }, ['ok', 'results'])
-const EVAL_S = S({ verdict: { type: 'string', enum: ['pass', 'fail'] }, gaps: strs, unverifiable: strs, unreadable: strs, ...PROGRESS_P }, ['verdict'])
-const INTEG_S = S({ ok: bool, merged: bool, check_ok: bool, conflict: bool, commit: str, detail: str, worktree_kept: str, ...PROGRESS_P }, ['ok', 'merged'])
+// Output of plan-lint --scope, copied as printed (0.19.0)
+const SCOPE_S = S({ task: str, branch: str, files: strs, outside: strs, tests_removed: strs, skips_added: { type: 'array', items: S({ file: str, line: { type: 'integer' }, marker: str }, ['file', 'line', 'marker']) }, digest: str }, ['task', 'branch', 'files', 'outside', 'tests_removed', 'skips_added', 'digest'])
+const VERIF_S = S({ ok: bool, results: { type: 'array', items: RESULT_S }, failures: { type: 'array', items: S({ command: str, excerpt: str }, ['command']) }, flaky: strs, forbidden: strs, uncommitted: strs, scope: SCOPE_S, ...PROGRESS_P }, ['ok', 'results'])
+// Proof contract of the evaluator (0.19.0): on a pass, one proof per criterion, by the diff, a test, a command of the verifier or the report
+const PROOF_BY = ['diff', 'test', 'command', 'report']
+const PROOF_S = S({ criterion: str, by: { type: 'string', enum: PROOF_BY }, ref: str }, ['criterion', 'by', 'ref'])
+const EVAL_S = S({ verdict: { type: 'string', enum: ['pass', 'fail'] }, gaps: strs, unverifiable: strs, unreadable: strs, proofs: { type: 'array', items: PROOF_S }, ...PROGRESS_P }, ['verdict'])
+const INTEG_S = S({ ok: bool, merged: bool, check_ok: bool, check_skipped: bool, conflict: bool, commit: str, detail: str, worktree_kept: str, ...PROGRESS_P }, ['ok', 'merged'])
 const SCRIBE_S = S({ ok: bool, commit: str, rejected: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }, discarded: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }, ...PROGRESS_P, run_start_ok: bool }, ['ok'])
 const CLERK_S = S({ progress_ok: bool, progress_error: str, commit: str, detail: str, worktrees: str }, ['progress_ok'])
 // Choice of a fix's model (0.11.0): haiku, sonnet or opus; fable only comes from a task the user put on it
@@ -158,6 +177,21 @@ const accumulate = (before, after) => ({ ...after, deviations: unique([...(befor
 const withoutPrefix = (x, dir) => { const m = x.match(/^cd\s+("[^"]*"|'[^']*'|\S+)\s*&&\s*/); return m && dir && m[1].replace(/^["']|["']$/g, '') === dir ? x.slice(m[0].length) : x }
 const normalize = (c, dir) => withoutPrefix(String(c || '').trim(), dir).replace(/\s*;\s*echo\s+["']?code=\$\?["']?\s*$/, '').replace(/\s+/g, ' ').trim()
 const sameCommand = (a, b, dir) => normalize(a, dir) === normalize(b, dir)
+// Copy of plan-lint --scope (0.19.0): kept only if it is about this task and branch and matches its digest
+const scopeOf = (x, t, r) => (x && typeof x === 'object' && x.task === t.id && x.branch === r.branch && typeof x.digest === 'string' && x.digest === scopeDigest(x) ? x : null)
+// Proof contract (0.19.0): the reason a pass is refused, null when its proofs hold. A command proof needs a result of code 0
+// of the verifier for that command
+const filled = x => typeof x === 'string' && !!x.trim()
+function proofsRefused(e, v, dir) {
+  if (e.verdict !== 'pass') return null
+  const proofs = arr(e.proofs)
+  if (!proofs.length) return 'pass without proofs'
+  const incomplete = proofs.filter(p => !p || typeof p !== 'object' || !filled(p.criterion) || !PROOF_BY.includes(p.by) || !filled(p.ref))
+  if (incomplete.length) return `proofs without a criterion, a "by" among ${PROOF_BY.join(', ')} or a ref: ${short(JSON.stringify(incomplete), 200)}`
+  const passed = arr(v && v.results).filter(x => x && x.code === 0)
+  const unproven = proofs.filter(p => p.by === 'command' && !passed.some(x => sameCommand(x.command, p.ref, dir)))
+  return unproven.length ? `command proofs that match no result of code 0 of the verifier: ${short(unproven.map(p => p.ref).join('; '), 200)}` : null
+}
 // A review cites a file if one of its words is that path, and not a path that contains it
 const pathOf = x => x.replace(/^\.\//, '').replace(/\.+$/, '')
 const cite = (d, f) => String(d).split(/[\s,;:()«»"'`]+/).some(x => x && pathOf(x) === pathOf(f))
@@ -190,15 +224,26 @@ Decisions taken: ${JSON.stringify(runDecisions())}.
 A file your permissions forbid you to read or change (organization or project settings): never get around the ban, by any command or script; describe the expected change in a deviation of type "review", the human will make it before the PR.
 Run the task's verification commands before handing back.
 Report: status, summary, branch, last commit, absolute path of the working folder (pwd), changed files, deviations from the plan, findings useful to the following tasks.${pLanguage}`
-const pVerif = (t, r) => `${pStep(t.id, 'verification')}Verify the task ${t.id}, branch ${r.branch}. First, without changing anything, \`cd "${r.path}" && git status --porcelain --untracked-files=all\`: a file it lists that the task owns (its owned_files, in ${t.file}) is work left uncommitted, which the merge would not take: count it as a failure, with the command \`git status\` and the excerpt "uncommitted: " followed by the files. A file it lists that the task does not own is not a failure: cite it in "uncommitted".
+// Scope check of the task branch (0.19.0), read-only, run from the main checkout, which holds the plan and the branches
+const scopeCmd = (t, r) => `${LINTCMD} ${PLANARG} --scope ${t.id} --branch ${r.branch} --integration ${INTEG}`
+const pVerif = (t, r) => `${pStep(t.id, 'verification')}Verify the task ${t.id}, branch ${r.branch}. First, from the folder you start in (the main checkout), without a \`cd\`: \`${scopeCmd(t, r)}\`. It changes nothing and prints one line of JSON: return it in "scope" exactly as printed, every field and every value, \`digest\` included, character for character; the workflow checks the copy against the digest. It is not a verification command of the task: if it fails or is refused, return no "scope", and cite it neither among the failures nor in "forbidden".
+Then, without changing anything, \`cd "${r.path}" && git status --porcelain --untracked-files=all\`: a file it lists that the task owns (its owned_files, in ${t.file}) is work left uncommitted, which the merge would not take: count it as a failure, with the command \`git status\` and the excerpt "uncommitted: " followed by the files. A file it lists that the task does not own is not a failure: cite it in "uncommitted".
 Then run one by one, without changing anything, each command below, prefixed with \`cd "${r.path}" &&\`:
 ${bullets(t.verification)}
 The failures listed as pre-existing in ${PLAN}/DISCOVERY.md do not count. A command your permissions refuse (organization or project settings): never get around it, by any other command or script, and do not count it as a failure; cite it in "forbidden", as it appears in the list above, without the \`cd\` prefix; the human will run it before the PR. If a test command fails, run it again once only: if it passes, the verification passes, but cite each test that failed then passed in "flaky". To read an exit code, do not pipe the command: add \`; echo "code=$?"\`. Return ok; in "results", for each command, even a successful one, the command, its exit code (that of the second run if there was one) and the excerpt that proves it (summary line, 10 lines at most); in "failures", for each failure that counts, the command and a useful excerpt of its output (30 lines at most). Never run a command that reads real production or personal data (production dump, production database or a copy of it): count it as a failure, with the excerpt "needs-human: real data, an action reserved to the human".`
-const pEval = (t, r, v) => `${pStep(t.id, 'evaluation')}Evaluate the task ${t.id}. Read the definition of done in ${t.file}, then the diff \`git diff ${INTEG}...${r.branch}\`.
+// Facts of the scope check passed to the evaluator (0.19.0); without them (copy unfaithful twice), it checks the scope itself
+const pScopeFacts = scope => scope ? `Scope check of this branch by plan-lint --scope, a script whose copy the workflow checked: the files outside owned_files are already checked, do not read the scope yourself. Test files deleted or renamed (tests_removed): ${JSON.stringify(arr(scope.tests_removed))}. Skipped-test markers added (skips_added): ${JSON.stringify(arr(scope.skips_added))}. A test deleted or skipped is a gap, unless the definition of done asks for it. tests_removed lists the paths containing \`test\` or \`spec\` (case-insensitive), which can include files that are not tests (such as \`docs/latest.md\`): such a file is not a gap by itself.`
+  : 'The scope check of this branch (plan-lint --scope) could not be read: check yourself, in the diff, that it touches no file outside owned_files, and that it deletes or skips no test, unless the definition of done asks for it.'
+const pProofs = `On a pass, return "proofs": one entry per criterion of the definition of done, with "criterion" (its text), "by" and "ref": \`diff\` and the file:line of the diff, \`test\` and the test file and case, \`command\` and the command exactly as in the results of the verifier above (only a result of code 0 proves), or \`report\` and the passage of the worker's report (only for a criterion that asks for report content). A pass without proofs, or with a \`command\` proof that matches no result of code 0, is refused.`
+const pEval = (t, r, v, scope, refused = null) => `${refused ? `Your first evaluation of this attempt of the task ${t.id} returned pass, refused by the workflow: ${refused}. Evaluate again, from the start.
+` : pStep(t.id, 'evaluation')}Evaluate the task ${t.id}. Read the definition of done in ${t.file}, then the diff \`git diff ${INTEG}...${r.branch}\`.
 Results of the verifier, taken on this branch just before you; they are proof of execution: ${JSON.stringify((v && v.results) || [])}.${v && (v.flaky || []).length ? ` Tests passed only on the second run, counted as passed: ${JSON.stringify(v.flaky)}.` : ''}
+${pScopeFacts(scope)}
 ${(v && (v.forbidden || []).length) ? `Commands refused to the agents by their permissions, that the human will run before the PR: ${JSON.stringify(v.forbidden)}. A criterion that only they demonstrate is neither a gap nor an unverifiable criterion.
 ` : ''}Report of the worker; it is a deliverable, not a proof: its claims of execution demonstrate nothing. ${JSON.stringify({ summary: r.summary, findings: r.findings || [], deviations: r.deviations || [] })}
-For each criterion, look for a proof: file:line of the diff, a test that covers it, or a result of the verifier above. A criterion that asks for report content is met if that content is in the worker's report. PROGRESS.md, HANDOFF.md and DISCOVERY.md are written by the scribe only at the end of the task: their state proves nothing, either way. A criterion that no verification command nor the diff can demonstrate in the context of this task, whatever the worker does (for example a behavior in a worktree for a task of the main checkout), is not a gap: cite it in "unverifiable" with the reason. This is rare: a criterion that is merely not proven stays a gap. A file of the diff your permissions forbid you to read (organization or project settings): never get around the ban; it is neither a gap nor an unverifiable criterion: cite it in "unreadable", the human will review it before the PR. A criterion that can only be demonstrated by reading such a file follows the same rule. Also check that the comments, headers, DECISIONS entries and procedures added or changed by the diff tell the truth: they describe what the code really does, and each command of a procedure meant for a human exists in the repository and does what the text says. A false text is a gap. Verdict fail if a single demonstrable criterion is not demonstrated; then list the precise gaps. Change nothing.${pLanguage}`
+For each criterion, look for a proof: file:line of the diff, a test that covers it, or a result of the verifier above. A criterion that asks for report content is met if that content is in the worker's report. PROGRESS.md, HANDOFF.md and DISCOVERY.md are written by the scribe only at the end of the task: their state proves nothing, either way. A criterion that no verification command nor the diff can demonstrate in the context of this task, whatever the worker does (for example a behavior in a worktree for a task of the main checkout), is not a gap: cite it in "unverifiable" with the reason. This is rare: a criterion that is merely not proven stays a gap. A file of the diff your permissions forbid you to read (organization or project settings): never get around the ban; it is neither a gap nor an unverifiable criterion: cite it in "unreadable", the human will review it before the PR. A criterion that can only be demonstrated by reading such a file follows the same rule. Also check that the comments, headers, DECISIONS entries and procedures added or changed by the diff tell the truth: they describe what the code really does, and each command of a procedure meant for a human exists in the repository and does what the text says. A false text is a gap. Verdict fail if a single demonstrable criterion is not demonstrated; then list the precise gaps. ${pProofs} Change nothing.${pLanguage}`
+// The second reading of the scope, by the plan-reader, when the verifier's copy does not match its digest (0.19.0)
+const pScope = (t, r) => `Your instructions read the scope of a task branch, not the plan. Run \`${scopeCmd(t, r)}\`, from the folder you start in (the main checkout), and return its JSON exactly as printed: every field and every value, \`digest\` included, character for character. Leave nothing out, add nothing, rephrase nothing: the workflow checks the copy against the digest.`
 const pFix = (t, r, gaps, rejection, choice) => `${pStep(t.id, 'fix', { rejection: rejection && { ...rejection, gaps: shorts(rejection.gaps) }, model: choice.model, ...(choice.change ? { change: choice.change } : {}) })}Fix of the task ${t.id}. Work in ${r.path}, on the branch ${r.branch}: prefix each command with \`cd "${r.path}" &&\` and edit the files by their absolute path under that folder. Read ${t.file} and ${PLAN}/DISCOVERY.md again.
 Gaps to fix:
 ${bullets(gaps)}
@@ -207,7 +252,8 @@ Deviations already reported at earlier attempts, already recorded in the plan's 
 Findings of earlier attempts: ${JSON.stringify(r.findings)}. Return in your report the updated list: those that still hold, without those your fix makes false, plus the new ones.` : ''}${pLanguage}`
 const pMerge = (t, r, isolated, check) => `${pStep(t.id, 'merge')}Merge the task ${t.id} in the main checkout: \`git switch ${INTEG}\`, then \`git merge --no-ff ${r.branch} -m "task ${t.id}: ${forMessage(t.title)}"\`.
 On a conflict: \`git merge --abort\`, then return ok=false, merged=false, conflict=true and the files involved.
-Otherwise, return merged=true.${pSetup(t, `on ${INTEG}, after the merge and before the check`, 'If one fails, do not run the check: return check_ok=false, with "setup:" followed by the command and an excerpt of its output in detail. After them, `git status --porcelain` must be empty: a setup changes no tracked file and leaves no file that is not ignored; otherwise, do not run the check and return check_ok=false, with "setup: changed files" and their list in detail.')}
+Otherwise, return merged=true.${isolated ? '' : `
+Then compare the tree of ${INTEG} with the verified branch: \`git diff --quiet ${r.branch} HEAD\` (add \`; echo "code=$?"\`). Code 0: the merged tree is the one the verifier just checked in this same folder; run neither the setup nor the check below, and return check_skipped=true, check_ok=true and ok=true. Any other code: go on below, without check_skipped.`}${pSetup(t, `on ${INTEG}, after the merge and before the check`, 'If one fails, do not run the check: return check_ok=false, with "setup:" followed by the command and an excerpt of its output in detail. After them, `git status --porcelain` must be empty: a setup changes no tracked file and leaves no file that is not ignored; otherwise, do not run the check and return check_ok=false, with "setup: changed files" and their list in detail.')}
 Then run on ${INTEG} this check command, without a pipe (add \`; echo "code=$?"\`): ${check}. Return check_ok according to its exit code, a useful excerpt in detail on a failure, and ok=true only if the merge and the check succeeded.${isolated ? `
 Then remove the worktree, never by force: \`git worktree unlock "${r.path}"\` (ignore the error), then \`git worktree remove "${r.path}"\`. If git refuses (modified or untracked files: work that was not committed), leave the worktree as it is, never with --force nor by deleting its folder, and return the first line of git's message in worktree_kept; the merge and the check keep their result. Keep the branch.` : ''}`
 // Choice of the model of the next fix (0.11.0): the attempt's rejection, the earlier rejections and their models
@@ -268,6 +314,38 @@ If step 1 fails, run step 2 anyway, skip steps 3 and 4 and say why in detail. If
 // Run state
 let stop = null
 const issues = [], added = [], results = [], autoDecisions = [], deferred = [], discardedRun = [], rulingsApplied = []
+// Circuit breaker (0.19.0): agents not answering. On a real run (0.18.1), an expired login brought every agent back without an
+// answer, and each close turned that into issues ("Replanning without an answer", "Progress not committed"), for hours.
+// Every agent call but the run end's clerk goes through ask, which counts the calls that come back without an answer or throw,
+// in the order they return; an answer resets the count. At NO_ANSWER_MAX in a row, the breaker latches: no task starts any
+// more, a task in flight stops at its next call (INTERRUPT), without a close (neither replanner, nor scribe, nor issue), and
+// the run ends in error. Fewer calls in a row without an answer keep their effect of 0.18.2.
+const NO_ANSWER_MAX = 2
+const INTERRUPT = new Error('circuit breaker: agents not answering')
+let silent = [], breaker = null
+const interrupted = []
+// Tasks interrupted after their merge, at their replanning or their scribe (0.19.0): the next run takes them as merged (commit
+// "task <id>:") and never closes them, so what their close would have recorded comes out in merged_unclosed, outside run-end.
+// A task interrupted at its own merge call comes out there too, with merge: 'unknown': git merge may have run before the
+// integrator stopped answering, and only the pilot can look for its commit "task <id>:" before the new run
+const mergedUnclosed = []
+// What a close records from the report and the trace, before any replanning: the deviations, the reviews (review deviations,
+// commands refused to the agents) and those of the files unreadable for the evaluator that no review cites yet
+const deviationsOf = r => ((r && r.deviations) || []).filter(e => e.type !== 'review')
+const reviewsOf = (r, trace) => [...((r && r.deviations) || []).filter(e => e.type === 'review').map(e => e.description), ...(trace.forbidden || []).map(c => `command \`${c}\` refused to the agents: to run by the human before the PR`)]
+const unreadableOf = (trace, reviews) => (trace.unreadable || []).filter(f => !reviews.some(d => cite(d, f))).map(f => `${f}: unreadable by the agents, to review by the human before the PR`)
+const unclosedOf = (t, r, trace, reviews, lost, unknown = false) => { mergedUnclosed.push({ id: t.id, branch: r ? r.branch : null, ...(unknown ? { merge: 'unknown' } : {}), deviations: deviationsOf(r), reviews: [...new Set([...reviews, ...unreadableOf(trace, reviews), ...(trace.kept || [])])], unverifiable: trace.unverifiable || [], issues: lost }) }
+const unanswered = label => {
+  if (!breaker) { silent.push(label); if (silent.length >= NO_ANSWER_MAX) { breaker = silent; log(`agents not answering: ${breaker.join(', ')}`) } }
+  return !!breaker
+}
+async function ask(prompt, opts) {
+  if (breaker) throw INTERRUPT
+  let r
+  try { r = await agent(prompt, opts) } catch (err) { throw unanswered(opts.label) ? INTERRUPT : err }
+  if (r == null) { if (unanswered(opts.label)) throw INTERRUPT } else if (!breaker) silent = []
+  return r
+}
 // Progress (0.8.0): run opened by run-start, and failed script calls (only the display suffers, except close and ruling)
 let opened = false
 const progressFailures = []
@@ -290,6 +368,7 @@ let worktrees = null
 async function finish(v) {
   if (PROGRESS && opened) {
     // A clerk that throws must not lose the summary: issues and actions live only in the return value
+    // Called outside ask: after the circuit breaker too, since run-end clears the steps of the interrupted tasks
     let g = null
     try { g = await agent(pClerk(v), { label: 'run end · progress', agentType: AG('clerk'), model: 'haiku', schema: CLERK_S }) } catch (err) { progressFailures.push({ task: null, step: 'run-end', error: `clerk failed: ${String(err)}` }); g = undefined }
     if (g === null) progressFailures.push({ task: null, step: 'run-end', error: 'clerk without an answer' })
@@ -314,7 +393,7 @@ for (const [i, a] of RULINGS.entries()) {
   const o = a.option
   const opens = !!PROGRESS && i === 0
   const updates = { entries: [{ type: 'decision', severity: 'major', description: `${a.title}: option ${o.id} settled by the user — ${o.description}` }, ...(o.entries || [])], tasks: (o.added_tasks || []).map(toPhase), amendments: o.amendments || [], discarded: [], auto: [] }
-  const s = await agent(pRuling(a, updates, opens), { label: `ruling ${a.task} · progress`, agentType: AG('scribe'), model: 'sonnet', schema: opens ? requireFields(SCRIBE_S, 'progress_ok', 'run_start_ok') : requireFields(SCRIBE_S, 'progress_ok') })
+  const s = await ask(pRuling(a, updates, opens), { label: `ruling ${a.task} · progress`, agentType: AG('scribe'), model: 'sonnet', schema: opens ? requireFields(SCRIBE_S, 'progress_ok', 'run_start_ok') : requireFields(SCRIBE_S, 'progress_ok') })
   if (opens && s) { if (s.run_start_ok !== true) return notOpened(s); opened = true }
   if (s && s.ok) rulingsApplied.push({ task: a.task, title: a.title, option: o.id })
   // Amendment of a task merged in the meantime: discarded and recorded, the run goes on
@@ -326,7 +405,7 @@ for (const [i, a] of RULINGS.entries()) {
 }
 // Without a ruling, the plan reader opens the run
 const readerOpens = !!PROGRESS && !RULINGS.length
-const readPlan = (opens, again) => agent(pReader(opens, again), { label: again ? 'plan-reader · second reading' : 'plan-reader', agentType: AG('plan-reader'), model: 'haiku', schema: opens ? requireFields(PLAN_S, 'run_start_ok') : PLAN_S })
+const readPlan = (opens, again) => ask(pReader(opens, again), { label: again ? 'plan-reader · second reading' : 'plan-reader', agentType: AG('plan-reader'), model: 'haiku', schema: opens ? requireFields(PLAN_S, 'run_start_ok') : PLAN_S })
 let plan = await readPlan(readerOpens, false)
 if (readerOpens && plan) { if (plan.run_start_ok !== true) return notOpened(plan); opened = true }
 // Copy checked (0.18.1): everything that follows (statuses, dependencies, verifications, prerequisites) comes from this copy
@@ -368,12 +447,14 @@ function applyRecommended(t, pt, updates) {
   const decision = { task: t.id, title: pt.title, option: rec.id, description: rec.description }
   autoDecisions.push(decision)
   updates.decisions.push(decision)
+  // The issue as raised, options included: if the scribe is interrupted, the decision is never applied (merged_unclosed)
+  updates.decided.push(issueOf(t, pt))
   updates.auto.push(`${pt.title}: ${rec.description}`)
   updates.entries.push({ type: 'decision', severity: 'major', description: `${pt.title}: option ${rec.id} taken automatically (autonomous mode) — ${rec.description}` }, ...(rec.entries || []))
   updates.tasks.push(...(rec.added_tasks || []).map(toPhase))
   const fresh = new Set([...added, ...updates.tasks].map(x => x.id))
   for (const am of rec.amendments || []) {
-    if (done.has(am.id) || doneElsewhere(am.id) || running.has(am.id)) { updates.discarded.push(am); discardedRun.push({ task: t.id, ...am }); continue }
+    if (done.has(am.id) || doneElsewhere(am.id) || running.has(am.id)) { const d = { task: t.id, ...am }; updates.discarded.push(am); updates.discardedHere.push(d); discardedRun.push(d); continue }
     updates.amendments.push(am)
     const c = T.get(am.id)
     if (!c) continue
@@ -385,13 +466,30 @@ function applyRecommended(t, pt, updates) {
   }
 }
 
+// Circuit breaker: a close interrupted at its scribe wrote nothing. What it put in the run's state (issues, auto-decisions,
+// discarded amendments, added tasks) reached neither HANDOFF.md nor progress, and leaves the summary. The issues the task
+// brought to its close (kept: a post-merge check failed, on a merge that did happen) stay.
+function forget(u, kept) {
+  const gone = new Set([...u.issues.filter(p => !kept.includes(p)), ...u.decisions, ...u.discardedHere, ...u.tasks])
+  for (const xs of [issues, autoDecisions, discardedRun, added]) xs.splice(0, xs.length, ...xs.filter(x => !gone.has(x)))
+  for (const x of u.tasks) parents.delete(x.id)
+  if (gone.has(stop)) stop = null
+}
+
 async function closeTask(t, status, attempts, r, gaps = [], trace = {}) {
   const flaky = [...new Set(trace.flaky || [])], rejections = trace.rejections || [], unverifiable = trace.unverifiable || []
   // issues and decisions: those of this close, passed to progress (close); tasks running in parallel have their own
-  const updates = { entries: [...(trace.entries || [])], tasks: [], amendments: [], discarded: [], auto: [], issues: [...(trace.issues || [])], decisions: [] }
+  // Scope of the branch not checked (0.19.0): two copies of plan-lint --scope that did not match their digest
+  const scopeBlind = trace.scopeUnread ? [{ type: 'blind-spot', severity: 'minor', description: trace.scopeUnread }] : []
+  const updates = { entries: [...(trace.entries || []), ...scopeBlind], tasks: [], amendments: [], discarded: [], auto: [], issues: [...(trace.issues || [])], decisions: [], decided: [], discardedHere: [] }
   // Files and commands the agents may not read, write or run: review by the human before the PR, without an issue or a stop
-  const reviews = [...((r && r.deviations) || []).filter(e => e.type === 'review').map(e => e.description), ...(trace.forbidden || []).map(c => `command \`${c}\` refused to the agents: to run by the human before the PR`)]
-  const deviations = ((r && r.deviations) || []).filter(e => e.type !== 'review')
+  const reviews = reviewsOf(r, trace)
+  const deviations = deviationsOf(r)
+  // File unreadable for the evaluator: a generic entry, unless a review already cites it
+  const unreadableReviews = () => unreadableOf(trace, reviews)
+  // Circuit breaker after the merge (0.19.0), at the replanning or at the scribe: nothing of this close is recorded and the next
+  // run takes the task as merged. Its deviations, reviews, unverifiable criteria and lost issues go to merged_unclosed
+  const unclosed = lost => { if (status === 'merged') unclosedOf(t, r, trace, reviews, lost) }
   let reclassified = new Set()
   // Sensitive deviations (data, database, prod, secret): major automatically, whatever the rating
   const sensitive = deviations.filter(e => e.type !== 'needs-human' && SENSITIVE.test(e.description || '')).map(e => e.description)
@@ -399,7 +497,8 @@ async function closeTask(t, status, attempts, r, gaps = [], trace = {}) {
   let humanSeen = false
   const replan = !!(r && (deviations.length || status !== 'merged' || unverifiable.length))
   if (replan) {
-    const rp = await agent(pReplan(t, { ...r, deviations }, status, gaps, unverifiable, sensitive), { label: `${t.id} · replanning`, agentType: AG('replanner'), model: 'opus', schema: REPLAN_S })
+    const rp = await ask(pReplan(t, { ...r, deviations }, status, gaps, unverifiable, sensitive), { label: `${t.id} · replanning`, agentType: AG('replanner'), model: 'opus', schema: REPLAN_S })
+      .catch(err => { if (err === INTERRUPT) unclosed([]); throw err })
     if (rp) {
       // Forbidden file reported as an ordinary deviation: the replanner reclassifies it as a review, which is neither an issue nor a sensitive deviation
       reclassified = new Set((rp.reviews || []).map(x => x.deviation).filter(Boolean))
@@ -426,8 +525,7 @@ async function closeTask(t, status, attempts, r, gaps = [], trace = {}) {
       stopOn(humanIssue(t.id, `Replanning of ${t.id} without an answer`, 'Deviations, gaps and unverifiable criteria not rated: read them in HANDOFF.md.'), updates.issues)
     }
   }
-  // File unreadable for the evaluator: a generic entry, unless a review already cites it
-  reviews.push(...(trace.unreadable || []).filter(f => !reviews.some(d => cite(d, f))).map(f => `${f}: unreadable by the agents, to review by the human before the PR`))
+  reviews.push(...unreadableReviews())
   // Worktree that git refused to remove after the merge (0.18.0): uncommitted work, never removed by force
   reviews.push(...(trace.kept || []))
   const allReviews = [...new Set(reviews)]
@@ -449,7 +547,11 @@ async function closeTask(t, status, attempts, r, gaps = [], trace = {}) {
     ...(updates.amendments.length ? { amendments: updates.amendments.map(m => ({ id: m.id, reason: short(m.reason) })) } : {}),
     ...(replan ? { replanning: true } : {}),
   } : null
-  const s = await exclusive(() => agent(pScribe(t, final, attempts, r, updates, gaps, { flaky, rejections, unverifiable }, closeInput), { label: `${t.id} · progress`, agentType: AG('scribe'), model: 'sonnet', schema: requireFields(SCRIBE_S, 'progress_ok') }))
+  const s = await exclusive(() => ask(pScribe(t, final, attempts, r, updates, gaps, { flaky, rejections, unverifiable }, closeInput), { label: `${t.id} · progress`, agentType: AG('scribe'), model: 'sonnet', schema: requireFields(SCRIBE_S, 'progress_ok') }))
+    .catch(err => {
+      if (err === INTERRUPT) { const kept = trace.issues || []; forget(updates, kept); unclosed([...updates.issues.filter(p => !kept.includes(p)), ...updates.decided]) }
+      throw err
+    })
   for (const am of updates.amendments) { const n = (amended.get(am.id) || 1) - 1; if (n > 0) amended.set(am.id, n); else amended.delete(am.id) }
   if (s) discardedRun.push(...(s.discarded || []).map(e => ({ task: t.id, ...e })))
   if (!s || !s.ok) stopOn(humanIssue(t.id, `Progress of ${t.id} not committed`, s ? 'The scribe could not commit.' : 'Scribe without an answer.'))
@@ -468,7 +570,7 @@ async function chooseModel(t, rejection, models, previous) {
   const before = models[models.length - 1], ladder = atLeast(ESC[Math.min(rejection.attempt - 1, ESC.length - 1)], t.model)
   let model = ladder, reason = `no model in the plan: escalation ladder, fix ${rejection.attempt}`
   if (t.model) {
-    const c = await agent(pChoice(t, rejection, before, previous.map((x, i) => ({ attempt: x.attempt, model: models[i], by: x.by, gaps: shorts(x.gaps) }))), { label: `${t.id} · model choice ${rejection.attempt}`, agentType: AG('replanner'), model: 'opus', schema: CHOICE_S })
+    const c = await ask(pChoice(t, rejection, before, previous.map((x, i) => ({ attempt: x.attempt, model: models[i], by: x.by, gaps: shorts(x.gaps) }))), { label: `${t.id} · model choice ${rejection.attempt}`, agentType: AG('replanner'), model: 'opus', schema: CHOICE_S, effort: 'low' })
     if (c && CHOICE_MODELS.includes(c.model)) {
       model = atLeast(c.model, t.model)
       reason = short(c.reason || 'no reason', 200) + (model !== c.model ? `; raised to the task's model (${t.model})` : '')
@@ -486,7 +588,8 @@ async function chooseModel(t, rejection, models, previous) {
 async function noteStart(t, model) {
   if (!PROGRESS) return
   let g = null
-  try { g = await agent(pStart(t, model), { label: `${t.id} · start`, agentType: AG('clerk'), model: 'haiku', schema: CLERK_S }) } catch (err) { g = { progress_ok: false, progress_error: `clerk failed: ${String(err)}` } }
+  // The circuit breaker is not a failure of the clerk: the task stops there
+  try { g = await ask(pStart(t, model), { label: `${t.id} · start`, agentType: AG('clerk'), model: 'haiku', schema: CLERK_S }) } catch (err) { if (err === INTERRUPT) throw err; g = { progress_ok: false, progress_error: `clerk failed: ${String(err)}` } }
   noteProgress(t.id, 'worker', g || { progress_ok: false, progress_error: 'clerk without an answer' })
 }
 
@@ -497,7 +600,7 @@ async function runTask(t, isolated) {
     const workerModel = t.model || 'sonnet'
     // In a worktree, the clerk notes the start first: the worker itself would be refused the command (noteStart)
     if (isolated) await noteStart(t, workerModel)
-    let r = await agent(pWorker(t, isolated, workerModel), { label: `${t.id} · worker`, agentType: AG(isolated ? 'isolated-worker' : 'worker'), model: workerModel, schema: isolated ? REPORT_ISOLATED_S : REPORT_S, ...(isolated ? { isolation: 'worktree' } : {}), ...effort(t) })
+    let r = await ask(pWorker(t, isolated, workerModel), { label: `${t.id} · worker`, agentType: AG(isolated ? 'isolated-worker' : 'worker'), model: workerModel, schema: isolated ? REPORT_ISOLATED_S : REPORT_S, ...(isolated ? { isolation: 'worktree' } : {}), ...effort(t) })
     if (!isolated) noteProgress(t.id, 'worker', r)
     // Model of each attempt, in order: the worker, then each fix
     const models = [workerModel]
@@ -507,26 +610,50 @@ async function runTask(t, isolated) {
       if (!r) return await closeTask(t, 'failed', attempts, null, ['worker without an answer (usage limit or API error)'], trace)
       if (r.status === 'blocked') return await closeTask(t, 'blocked', attempts, r, [r.blocker || 'blocked by the worker'], trace)
       let gaps = [], by = 'verification'
-      const v = await agent(pVerif(t, r), { label: `${t.id} · verification`, agentType: AG('verifier'), model: 'sonnet', schema: VERIF_S })
+      const v = await ask(pVerif(t, r), { label: `${t.id} · verification`, agentType: AG('verifier'), model: 'sonnet', schema: VERIF_S })
       noteProgress(t.id, 'verification', v)
       if (v && (v.flaky || []).length) trace.flaky.push(...v.flaky)
       if (v && (v.uncommitted || []).length) log(`${t.id}: uncommitted in ${r.path}, outside the task's files: ${short(v.uncommitted.join(', '), 300)}`)
       // Commands refused by permissions: only the task's count as forbidden; another one is a failure
-      // Progress command cited among the refused ones (authorization rule missing): neither a task command nor a failure
-      const refused = ((v && v.forbidden) || []).filter(x => !(PROGRESS && String(x).includes(PROGRESS)))
+      // Progress command or scope check cited among the refused ones (authorization rule missing): neither a task command nor a failure
+      const refused = ((v && v.forbidden) || []).filter(x => !(PROGRESS && String(x).includes(PROGRESS)) && !String(x).includes(`--scope ${t.id} --branch`))
       const unknown = refused.filter(x => !(t.verification || []).some(c => sameCommand(c, x, r.path)))
       trace.forbidden = [...new Set([...trace.forbidden, ...(t.verification || []).filter(c => refused.some(x => sameCommand(c, x, r.path)))])]
+      // Scope of the branch (0.19.0): the verifier's copy of plan-lint --scope, checked against its digest. When it does not match
+      // and the verification passes, a second reading by the plan-reader; unfaithful again, a blind spot, never a rejection
+      let scope = v ? scopeOf(v.scope, t, r) : null
+      trace.scopeUnread = null
+      if (v && !scope && v.ok && !unknown.length) {
+        log(`${t.id}: copy of plan-lint --scope that does not match its digest; second reading`)
+        scope = scopeOf(await ask(pScope(t, r), { label: `${t.id} · scope · second reading`, agentType: AG('plan-reader'), model: 'haiku', schema: SCOPE_S }), t, r)
+        if (!scope) {
+          trace.scopeUnread = `scope of ${t.id} not checked: two copies of plan-lint --scope that do not match its digest (verifier, plan-reader); the files outside owned_files and the tests removed or skipped were left to the evaluator, from the diff`
+          log(`${t.id}: ${trace.scopeUnread}`)
+        }
+      }
+      const outside = scope ? arr(scope.outside) : []
       if (!v) gaps = ['verifier without an answer']
-      else if (!v.ok || unknown.length) gaps = [...(v.failures || []).map(e => `${e.command}: ${e.excerpt || 'failure'}`), ...unknown.map(x => `${x}: refused according to the verifier, but it is not a verification command of the task`)]
+      else if (!v.ok || unknown.length || outside.length) gaps = [...(v.failures || []).map(e => `${e.command}: ${e.excerpt || 'failure'}`), ...unknown.map(x => `${x}: refused according to the verifier, but it is not a verification command of the task`), ...(outside.length ? [`files changed outside owned_files: ${outside.join(', ')}`] : [])]
       // No command allowed: nothing proves the task, and a fix would change nothing
       else if ((t.verification || []).length && (t.verification || []).every(c => trace.forbidden.includes(c))) return await closeTask(t, 'blocked', attempts, r, [`no verification command allowed to the agents: ${trace.forbidden.join('; ')}`], trace)
       else {
         by = 'evaluation'
-        const e = await agent(pEval(t, r, { ...v, forbidden: trace.forbidden }), { label: `${t.id} · evaluation`, agentType: AG('evaluator'), model: 'opus', schema: EVAL_S })
+        const facts = { ...v, forbidden: trace.forbidden }
+        let e = await ask(pEval(t, r, facts, scope), { label: `${t.id} · evaluation`, agentType: AG('evaluator'), model: 'opus', schema: EVAL_S })
         noteProgress(t.id, 'evaluation', e)
+        // Proof contract (0.19.0): a pass without valid proofs is sent back once, with the reason; invalid again, it counts as an
+        // evaluation without an answer
+        const refusal = e && proofsRefused(e, v, r.path)
+        let invalid = null
+        if (refusal) {
+          log(`${t.id}: pass refused, ${refusal}; evaluation sent back`)
+          const again = await ask(pEval(t, r, facts, scope, refusal), { label: `${t.id} · evaluation · proofs`, agentType: AG('evaluator'), model: 'opus', schema: EVAL_S })
+          invalid = again && proofsRefused(again, v, r.path)
+          e = invalid ? null : again
+        }
         // A file unreadable once stays so: accumulated from one evaluation to the next
         if (e) { trace.unverifiable = e.unverifiable || []; trace.unreadable = [...new Set([...trace.unreadable, ...(e.unreadable || [])])] }
-        if (!e) gaps = ['evaluator without an answer']
+        if (!e) gaps = [invalid ? `evaluator without an answer: pass refused twice, ${invalid}` : 'evaluator without an answer']
         else if (e.verdict === 'fail') gaps = e.gaps && e.gaps.length ? e.gaps : ['verdict fail without detail']
       }
       if (!gaps.length) break
@@ -536,7 +663,7 @@ async function runTask(t, isolated) {
       const choice = await chooseModel(t, attemptRejection, models, trace.rejections.slice(0, -1))
       // Every choice to the log, model change or not: a choice raised to the floor, equal to the previous attempt, has no other trace
       log(`${t.id}: fix ${attempts} on ${choice.model}${choice.change ? ` (instead of ${choice.change.from})` : ''}: ${choice.reason}`)
-      const c = await agent(pFix(t, r, gaps, attemptRejection, choice), { label: `${t.id} · fix ${attempts}`, agentType: AG('worker'), model: choice.model, schema: REPORT_S, ...effort(t) })
+      const c = await ask(pFix(t, r, gaps, attemptRejection, choice), { label: `${t.id} · fix ${attempts}`, agentType: AG('worker'), model: choice.model, schema: REPORT_S, ...effort(t) })
       noteProgress(t.id, 'fix', c)
       models.push(choice.model)
       attempts++
@@ -546,7 +673,12 @@ async function runTask(t, isolated) {
     }
     // Post-merge check: the first verification command the agents are allowed to run
     const check = (t.verification || []).find(c => !trace.forbidden.includes(c)) || 'none'
-    const i = await exclusive(() => agent(pMerge(t, r, isolated, check), { label: `${t.id} · merge`, agentType: AG('integrator'), model: 'sonnet', schema: INTEG_S }))
+    // Circuit breaker on this very call (0.19.0): the integrator was launched and did not answer, so its merge may have run.
+    // The task comes out in merged_unclosed with merge: 'unknown', besides interrupted. Not when the breaker had latched before
+    // the call: no integrator was launched, the merge did not run
+    let launched = false
+    const i = await exclusive(() => { launched = !breaker; return ask(pMerge(t, r, isolated, check), { label: `${t.id} · merge`, agentType: AG('integrator'), model: 'sonnet', schema: INTEG_S }) })
+      .catch(err => { if (err === INTERRUPT && launched) unclosedOf(t, r, trace, reviewsOf(r, trace), [], true); throw err })
     noteProgress(t.id, 'merge', i)
     if (!i) return await closeTask(t, 'blocked', attempts, r, ['integrator without an answer'], trace)
     if (!(i.merged ?? i.ok)) return await closeTask(t, 'blocked', attempts, r, [`merge: ${i.detail || 'failure'}`], trace)
@@ -554,14 +686,19 @@ async function runTask(t, isolated) {
       trace.kept = [`worktree ${r.path} kept after the merge of ${t.id} (${short(i.worktree_kept, 200)}): what it holds uncommitted is not in ${INTEG}; look at it, then remove it`]
       log(`${t.id}: worktree ${r.path} kept, uncommitted work`)
     }
-    if (!(i.check_ok ?? i.ok)) {
-      // Merge done but check failed: the task stays merged and the run stops for a human
-      const detail = `${setupOf(t).length ? 'setup or ' : ''}post-merge check failed on ${INTEG} (${check}): ${i.detail || 'failure'}`
+    // Check skipped (0.19.0): only for a task of the main checkout, whose merged tree is the one its verifier checked in the
+    // same folder. In a worktree, the folder is not the verifier's: a skipped check there is a check not done
+    const skipped = i.check_skipped === true, notRun = skipped && isolated
+    if (notRun || !(i.check_ok ?? i.ok)) {
+      // Merge done but check failed or not run: the task stays merged and the run stops for a human
+      const detail = notRun ? `post-merge check not run on ${INTEG} (${check}): skipped by the integrator for a task in a worktree, whose folder is not the verifier's` : `${setupOf(t).length ? 'setup or ' : ''}post-merge check failed on ${INTEG} (${check}): ${i.detail || 'failure'}`
       trace.entries = [{ type: 'needs-human', severity: 'major', description: detail }]
       stopOn({ task: t.id, title: `Post-merge check failed after ${t.id}`, context: detail, human: true, options: [{ id: 'repair', description: `Repair on ${INTEG}, replay the verifications, then rerun the phase`, impact: '', recommended: true }, { id: 'stop', description: 'Stop the plan here', impact: '', recommended: false }] }, trace.issues)
-    }
+    } else if (skipped) log(`${t.id}: post-merge check skipped, same tree as the verified branch`)
     return await closeTask(t, 'merged', attempts, r, [], trace)
   } catch (err) {
+    // Circuit breaker: the task stops without a close; its status and branch do not move, run-end clears its step
+    if (err === INTERRUPT) { log(`${t.id}: interrupted, agents not answering`); return { id: t.id, interrupted: true } }
     return { id: t.id, status: 'failed', attempts: 0, branch: null, summary: String(err), blocker: [`workflow error: ${String(err)}`] }
   }
 }
@@ -578,7 +715,7 @@ const running = new Map()
 const locks = new Set()
 const ready = t => deps(t).every(d => done.has(d)) && !amended.has(t.id) && !(t.resources || []).some(r => locks.has(r)) && !locks.has('checkout')
 while (pending.size || running.size) {
-  if (!stop) {
+  if (!stop && !breaker) {
     for (const t of [...pending.values()]) {
       if (running.size >= PAR) break
       if (!ready(t)) continue
@@ -589,7 +726,8 @@ while (pending.size || running.size) {
       taken.forEach(x => locks.add(x))
       pending.delete(t.id)
       running.set(t.id, runTask(t, isolated).then(res => {
-        results.push(res)
+        if (res.interrupted) interrupted.push(t.id)
+        else results.push(res)
         if (res.status === 'merged') done.add(t.id)
         taken.forEach(x => locks.delete(x))
         running.delete(t.id)
@@ -607,6 +745,14 @@ const summary = {
   added_tasks: added.map(x => ({ id: x.id, phase: x.phase, title: x.title })),
   reviews: results.flatMap(x => (x.reviews || []).map(d => ({ task: x.id, review: d }))),
   auto_decisions: autoDecisions, discarded_amendments: discardedRun, open_issues: issues, rulings_applied: rulingsApplied, waiting, waiting_on_prerequisites: waitingOnPrerequisites,
+}
+// Circuit breaker: error, whatever else happened. The interrupted tasks are in "interrupted", outside what run-end reads; the
+// issue that stopped the run before, if any, stays (forget took out those of the interrupted closes). The tasks interrupted after
+// their merge, or at their merge call, are also in "merged_unclosed" (0.19.0), with what their close did not record
+if (breaker) {
+  const known = mergedUnclosed.filter(x => !x.merge).map(x => x.id), unknown = mergedUnclosed.filter(x => x.merge).map(x => x.id)
+  const unrecorded = (known.length ? ` ${known.join(', ')} merged before the trip: their deviations were not recorded, see merged_unclosed.` : '') + (unknown.length ? ` ${unknown.join(', ')} interrupted at their merge, which may have run: see merged_unclosed.` : '')
+  return await finish({ status: 'error', ...summary, ...(stop ? { stop_issue: stop } : {}), interrupted, merged_unclosed: mergedUnclosed, detail: `agents not answering: ${breaker.length} calls in a row without an answer (${breaker.join(', ')}). Login expired, usage limit or network. ${interrupted.join(', ')} interrupted, their branches kept. Launch a new run once claude answers again.${unrecorded}` })
 }
 if (stop) return await finish({ status: 'awaiting-ruling', stop_issue: stop, ...summary })
 if (failed.length || pending.size || waiting.length || waitingOnPrerequisites.length) return await finish({ status: 'partial', ...summary })

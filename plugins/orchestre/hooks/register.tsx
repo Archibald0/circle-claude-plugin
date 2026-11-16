@@ -16,7 +16,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Action, Card, ItemRef, LastAction, Snapshot, Line, Section } from '../types'
 import { FRAME_COUNT, DEMO_FRAME_MS, DEMO_PLAN, demoEnd, demoSnapshot, frameAt } from './demo.mjs'
-import { IMPORTANT_TOAST_MS, DETAILS_GAP, DETAILS_LABEL, DETAILS_RESERVE, HIDE_GAP, HIDE_LABEL, HIDE_RESERVE, CLOSE_LABEL, FORMAT, FORMATS, LEGACY_FORMATS, IMAGE_MS, banner, plainText, changes, cut, since, formatOf, isImportant, statusLine, normalize, news, pane, activeRun, runInProgress, runStartedSince, suffix, stateText, yourTurnItems } from './view-model.mjs'
+import { IMPORTANT_TOAST_MS, DETAILS_GAP, DETAILS_LABEL, DETAILS_RESERVE, HIDE_GAP, HIDE_LABEL, HIDE_RESERVE, CLOSE_LABEL, FORMAT, FORMATS, LEGACY_FORMATS, IMAGE_MS, banner, plainText, changes, cut, since, formatOf, isImportant, statusLine, normalize, news, pane, activeRun, runInProgress, runStartedSince, suffix, stateText, yourTurnItems, mergedTexts } from './view-model.mjs'
 
 const PANE_ID = 'orchestre'
 // The sound played when something waits for you, with /progress sound (afplay on macOS; nothing on a Linux or Windows terminal)
@@ -570,7 +570,7 @@ async function runProgress($: EngineInterface, verb: 'ack' | 'ticket' | 'reopen'
 }
 
 // What Undo cancels, the last first: kept here, so that /clear does not lose it; the plan it was done on
-type Done = { plan: string; op: 'done' | 'ticket' | 'edit'; ref: ItemRef; prev: string | null; text: string }
+type Done = { plan: string; op: 'done' | 'ticket' | 'edit'; ref: ItemRef; prev: string | null; text: string; texts: string[] }
 let undoStack: Done[] = []
 // The text typed in the field of the detail card, so far
 let draft: string | null = null
@@ -596,7 +596,16 @@ async function closeItem($: EngineInterface, action: Action): Promise<void> {
   const inst = await read($, snapshot), ref = action.ref
   if (!inst || !ref) return
   if (inst.demo) { $.ui.toast(`Demo: nothing is written. In a real plan, this button would ${action.help}: ${cut(ref.shown, 60)}.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
-  const r = await runProgress($, action.op === 'done' ? 'ack' : 'ticket', { kind: ref.kind, task: ref.task, text: ref.text })
+  // D5 shows duplicate reviews as one item: every review it stands for is closed, each with its own original text
+  const verb = action.op === 'done' ? 'ack' : 'ticket', closed: string[] = []
+  let r: { ok: boolean; out: string } | null = null, already = true
+  for (const text of mergedTexts(inst, ref)) {
+    r = await runProgress($, verb, { kind: ref.kind, task: ref.task, text })
+    if (!r?.ok) break
+    if (!/ already /.test(r.out)) { already = false; closed.push(text) }
+  }
+  if (closed.length && (!r || !r.ok)) undoStack.push({ plan: inst.plan, op: action.op === 'done' ? 'done' : 'ticket', ref, prev: null, text: `${whoOf(ref)} ${action.op === 'done' ? 'done' : 'moved to tickets'}`, texts: closed })
+  if (closed.length && (!r || !r.ok)) await showLast($)
   if (!r) {
     if (action.prompt) await $.prompt.fill({ text: action.prompt, mode: 'append' }).catch(() => undefined)
     $.ui.toast(`${NODE_MISSING}${action.prompt ? ' /orchestre:done is in the prompt instead: send it.' : ''}`, { timeoutMs: IMPORTANT_TOAST_MS })
@@ -606,9 +615,9 @@ async function closeItem($: EngineInterface, action: Action): Promise<void> {
   await update($, selected, () => null)
   await update($, editing, () => false)
   // Already closed elsewhere (/orchestre:done, another session): nothing to undo
-  if (/ already /.test(r.out)) return written($, null, r.out.replace(/^progress: /, ''))
+  if (already) return written($, null, r.out.replace(/^progress: /, ''))
   const text = `${whoOf(ref)} ${action.op === 'done' ? 'done' : 'moved to tickets'}`
-  return written($, { plan: inst.plan, op: action.op === 'done' ? 'done' : 'ticket', ref, prev: null, text }, text)
+  return written($, { plan: inst.plan, op: action.op === 'done' ? 'done' : 'ticket', ref, prev: null, text, texts: closed }, text)
 }
 
 // Save (or Enter in the field): progress.mjs relabel; the text the item had before goes to Undo
@@ -624,7 +633,7 @@ async function saveEdit($: EngineInterface, value: string): Promise<void> {
   if (!r) { $.ui.toast(`${NODE_MISSING} The text is unchanged.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
   if (!r.ok) { $.ui.toast(`orchestre: ${r.out.replace(/^progress: /, '')}`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
   const text = `${whoOf(ref)}: text changed`
-  return written($, { plan: inst.plan, op: 'edit', ref, prev: ref.edited ? ref.shown : null, text }, text)
+  return written($, { plan: inst.plan, op: 'edit', ref, prev: ref.edited ? ref.shown : null, text, texts: [ref.text] }, text)
 }
 
 // [ Close the plan ] (0.16.1): progress.mjs close-plan. The banner and the status line go at once; the pane shows the card of
@@ -678,7 +687,16 @@ async function undoLast($: EngineInterface): Promise<void> {
   // Another plan is followed now: what was done on the first one is no longer offered
   if (u.plan !== inst.plan) { undoStack = []; await showLast($); return }
   const payload = { kind: u.ref.kind, task: u.ref.task, text: u.ref.text }
-  const r = await runProgress($, u.op === 'edit' ? 'relabel' : 'reopen', u.op === 'edit' ? { ...payload, label: u.prev } : payload)
+  // A press that closed several merged reviews brings every one of them back
+  let r: { ok: boolean; out: string } | null = null
+  const left = [...u.texts]
+  while (left.length) {
+    const text = left[0]
+    r = await runProgress($, u.op === 'edit' ? 'relabel' : 'reopen', u.op === 'edit' ? { ...payload, label: u.prev } : { ...payload, text })
+    if (!r?.ok) break
+    left.shift()
+  }
+  u.texts = left
   if (!r) { $.ui.toast(`${NODE_MISSING} Nothing is undone.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
   if (!r.ok) { $.ui.toast(`orchestre: ${r.out.replace(/^progress: /, '')}`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
   undoStack.pop()

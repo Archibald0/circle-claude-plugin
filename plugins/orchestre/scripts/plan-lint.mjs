@@ -2,6 +2,7 @@
 // plan-lint (orchestre plugin 0.12.0): validates a plan folder and compiles it to JSON. Node 18 or later, no dependencies.
 // Usage: node <plugin root>/scripts/plan-lint.mjs <plan-dir> [--json | --reader] [--phase N] [--integration <branch>] [--base <branch>]
 //        node <plugin root>/scripts/plan-lint.mjs --used-prefixes [<plans folder>]
+//        node <plugin root>/scripts/plan-lint.mjs <plan-dir> --scope <task id> --branch <branch> --integration <branch>
 // With --integration, a task whose merge commit "task <id>: " is on the integration branch, and not on the base branch
 // (--base, else main, else master), counts as merged: git is the source of truth. The base excludes merges of earlier plans
 // already in main. Commits "tâche <id> : " of orchestre 0.11 and earlier count too: git history is never rewritten.
@@ -29,6 +30,16 @@
 // the fields the workflow reads, all, max_phase, and "digest", a fingerprint of these fields (planDigest). The plan-reader,
 // an agent, retypes this JSON; the workflow computes the fingerprint again on its copy and reads the plan a second time,
 // then stops, when they differ. --json does not change: /orchestre:ready, /orchestre:run and /orchestre:prepare read it.
+// --scope (0.19.0): the scope check of a task branch, read-only. It reads `git diff --name-status <integration>...<branch>` (the
+// changes of the branch since it left the integration branch: a merge of the integration branch into it adds nothing) and prints
+// one line of JSON: task, branch, files (every path touched, both sides of a rename), outside (the files outside the task's
+// owned_files: an entry with "*" is matched like the overlap check, by the text before the "*"; an entry without owns its path
+// and what is under it as a directory, so "docs/sc.md" does not own "docs/sc.md.bak"; an entry with nothing before its "*", such
+// as "*.md", owns nothing: the check reports too much rather than hide a file), tests_removed (test files deleted or
+// renamed: a path that contains "test" or "spec", "__tests__" included), skips_added (lines added that carry a marker of a
+// skipped test: file, line, marker) and digest
+// (scopeDigest, FNV-1a as for --reader). Gaps are not an error: exit code 0, 2 for an invalid call. Whether a removed test is
+// legitimate is the evaluator's call.
 import { readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs'
 import { join, dirname, resolve, relative, basename, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -45,16 +56,20 @@ if (argv[0] === '--used-prefixes') {
   console.log(JSON.stringify({ used_prefixes: [...new Set([...others.map(o => prefixOf(o.id)), ...branches.map(prefixOf)])].filter(Boolean).sort(), plans: [...byPlan].map(([plan, prefixes]) => ({ plan, prefixes })), task_branches: [...new Set(branches)].sort() }))
   process.exit(0)
 }
-const dir = argv.find((a, i) => !a.startsWith('--') && !['--phase', '--integration', '--base'].includes(argv[i - 1]))
+const dir = argv.find((a, i) => !a.startsWith('--') && !['--phase', '--integration', '--base', '--scope', '--branch'].includes(argv[i - 1]))
 const ii = argv.indexOf('--integration')
 const integ = ii >= 0 ? argv[ii + 1] : null
 const bi = argv.indexOf('--base')
 const baseArg = bi >= 0 ? argv[bi + 1] : null
+const si = argv.indexOf('--scope')
+const scopeId = si >= 0 ? argv[si + 1] ?? '' : null
+const bri = argv.indexOf('--branch')
+const branchArg = bri >= 0 ? argv[bri + 1] : null
 const asJson = argv.includes('--json')
 const asReader = argv.includes('--reader')
 const pi = argv.indexOf('--phase')
 const phaseF = pi >= 0 ? Number(argv[pi + 1]) : null
-if (!dir) { console.error('usage: plan-lint <plan-dir> [--json | --reader] [--phase N] [--integration <branch>] [--base <branch>] | plan-lint --used-prefixes [<plans folder>]'); process.exit(2) }
+if (!dir) { console.error('usage: plan-lint <plan-dir> [--json | --reader] [--phase N] [--integration <branch>] [--base <branch>] | plan-lint <plan-dir> --scope <task id> --branch <branch> --integration <branch> | plan-lint --used-prefixes [<plans folder>]'); process.exit(2) }
 // A branch name never starts with "-": git would read it as an option (--output=… would write a file)
 for (const [name, b] of [['integration', integ], ['base', baseArg]]) if (b != null && (!b || b.startsWith('-'))) { console.error(`invalid ${name} branch: ${b}`); process.exit(2) }
 if (!existsSync(join(dir, 'tasks'))) {
@@ -78,6 +93,8 @@ function compound(c) {
   if (/(^|\s)\/[^\s'"]+\.(sh|bash|mjs|cjs|js|ts|py|rb|php|pl)(\s|$)/.test(withoutQuotes(s))) reasons.push('script by absolute path')
   return reasons
 }
+// Fixed part of an owned_files entry: what comes before a comment ("#") and before the first "*"
+const root = p => p.split('#')[0].trim().replace(/\*.*$/, '')
 const short = c => (String(c).length > 100 ? String(c).slice(0, 99) + '…' : String(c))
 const done = s => s === 'merged' || s === 'cancelled'
 // Models of a task: /orchestre:prepare picks haiku, sonnet or opus; fable only on the tasks the user designates
@@ -251,6 +268,10 @@ for (const f of readdirSync(tdir).filter(f => f.endsWith('.md')).sort()) {
   for (const k of Object.keys(fm)) if (Object.hasOwn(FRENCH_TASK_KEYS, k)) errors.push(`${fm.id}: French key "${k}" of orchestre 0.11 and earlier: rename it "${FRENCH_TASK_KEYS[k]}"`)
   T.set(fm.id, { ...fm, file: join(tdir, f), phase: Number(fm.phase) })
 }
+// The rest of the check is one labeled block, left at its indentation to keep the diff small: --scope leaves it early
+// (`break lint`) and, like every path here, ends through process.exitCode, never process.exit()
+lint: {
+if (scopeId != null) { scopeReport(T.get(scopeId)); break lint }
 // Files of the French format left next to tasks/: PROGRESS.md would be missing (every task read as todo), or the progress
 // file of 0.11 ignored; migrate.mjs converts what is left
 for (const f of ['SUIVI.md', 'PREREQUIS.md', 'suivi.json']) if (existsSync(join(dir, f))) errors.push(`${f}: file of the French format of orchestre 0.11 next to tasks/: run node "${MIGRATE}" ${dir}, which converts what is left`)
@@ -298,7 +319,6 @@ for (const t of T.values()) {
 }
 const ancestors = (id, seen = new Set()) => { for (const d of arr(T.get(id)?.depends_on)) if (T.has(d) && !seen.has(d)) { seen.add(d); ancestors(d, seen) } return seen }
 for (const id of T.keys()) if (ancestors(id).has(id)) errors.push(`${id}: dependency cycle`)
-const root = p => p.split('#')[0].trim().replace(/\*.*$/, '')
 const overlaps = (a, b) => arr(a).some(x => arr(b).some(y => { const p = root(x), q = root(y); return p === q || p.startsWith(q) || q.startsWith(p) }))
 const ids = [...T.keys()]
 for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
@@ -441,6 +461,7 @@ else {
 if (!asJson && !asReader) for (const a of warnings) console.log('⚠ ' + a)
 // No process.exit() here: in a pipe, it would cut the output at 64 KB (the JSON of a big plan, 0.8.1)
 process.exitCode = errors.length ? 1 : 0
+}
 
 // --reader (0.18.1): the fields of the plan the workflow reads, with their fingerprint. Texts as text, lists of texts, phases
 // as integers or left out: the copy fits the workflow's schema field for field, and the fingerprint reads the same values.
@@ -468,6 +489,106 @@ function planDigest(p) {
   const c = JSON.stringify([p.ok === true, ss(p.errors),
     list(p.tasks).map(t => [s(t.id), s(t.title), s(t.file), n(t.phase), s(t.model), s(t.model_reason), s(t.effort), ss(t.depends_on), ss(t.resources), s(t.status), ss(t.verification), ss(t.open_prerequisites)]),
     list(p.all).map(x => [s(x.id), n(x.phase), s(x.status)]), n(p.max_phase)])
+  let h = 0x811c9dc5
+  for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193)
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
+
+// --scope (0.19.0): see the header. Ends through process.exitCode: 0 with the report, 2 for an invalid call.
+function scopeReport(t) {
+  // Markers of a skipped test, from this list: a line added that carries one is reported. A word is not preceded by a letter, a
+  // digit, "_", "$" or "." ("exit(" is not "xit("); "@Ignore" is not "@IgnoreProperties". (Inside the function: it runs before the
+  // end of the file, where a const would not be set yet.)
+  const BEFORE = '(?<![\\w$.])'
+  const SKIP_MARKERS = [
+    ['.skip(', /\.skip\(/], ['.only(', /\.only\(/], ['xit(', new RegExp(`${BEFORE}xit\\(`)], ['xdescribe(', new RegExp(`${BEFORE}xdescribe\\(`)],
+    ['it.todo(', new RegExp(`${BEFORE}it\\.todo\\(`)], ['@Ignore', /@Ignore(?![\w$])/], ['@pytest.mark.skip', /@pytest\.mark\.skip/],
+    ['t.Skip(', new RegExp(`${BEFORE}t\\.Skip\\(`)], ['#[ignore]', /#\[ignore\]/],
+  ]
+  const isTestPath = p => /test|spec/i.test(p)
+  const fail = m => { console.error(m); process.exitCode = 2 }
+  if (!scopeId || scopeId.startsWith('-')) return fail('--scope needs a task id')
+  if (asJson || asReader) return fail('--scope cannot go with --json or --reader')
+  for (const [name, b] of [['branch', branchArg], ['integration', integ]]) if (!b || b.startsWith('-')) return fail(`--scope needs a valid --${name} <branch>`)
+  if (!t) return fail(`unknown task: ${scopeId}`)
+  const cwd = process.cwd()
+  for (const b of [branchArg, integ]) {
+    try { gitIn(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${b}`]) } catch { return fail(`branch not found: ${b}`) }
+  }
+  // Three dots: from the merge base of the two branches, so the changes of the integration branch since the task branch left it
+  // (or since the last merge of it into the branch) are not the branch's own
+  const range = [`${integ}...${branchArg}`, '--']
+  // -M: renames only, whatever the user's diff.renames (with "copies", git would report a copy, a "C" with two paths)
+  const opts = ['diff', '-M','--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/']
+  let names, patch
+  try {
+    names = gitIn(cwd, [...opts, '--name-status', '-z', ...range])
+    patch = gitIn(cwd, [...opts, '-U0', ...range])
+  } catch { return fail(`cannot diff ${integ}...${branchArg} (no common history?)`) }
+  const touched = new Set(), removed = new Set(), tk = names.split('\0').filter(Boolean)
+  for (let i = 0; i < tk.length;) {
+    const status = tk[i++][0]
+    // A rename carries two paths
+    if (status === 'R') {
+      const from = tk[i++], to = tk[i++]
+      touched.add(from); touched.add(to)
+      if (isTestPath(from)) removed.add(from)
+    } else {
+      const p = tk[i++]
+      touched.add(p)
+      if (status === 'D' && isTestPath(p)) removed.add(p)
+    }
+  }
+  // An entry with a "*" owns the paths that start with the text before it (as the overlap check reads it), and nothing when no
+  // text comes before it ("*.md", "./*"); without, the path itself and what is under it
+  const owned = [].concat(t.owned_files ?? []).map(x => ({ r: root(String(x)).replace(/^\.\//, ''), glob: String(x).split('#')[0].includes('*') })).filter(o => o.r)
+  const owns = f => owned.some(o => (o.glob ? f.startsWith(o.r) : f === o.r || f.startsWith(o.r.endsWith('/') ? o.r : `${o.r}/`)))
+  // A path git quotes in a header ("b/q\"x.js", "b/c\001\303\251.js"): C escapes, one octal escape per byte of a control or
+  // non-ASCII character, which JSON.parse cannot read
+  const cPath = q => {
+    const s = Buffer.from(q.slice(1, -1), 'utf8'), out = []
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] !== 0x5c) { out.push(s[i]); continue }
+      const e = String.fromCharCode(s[++i])
+      if (e >= '0' && e <= '7') { out.push(parseInt(s.toString('latin1', i, i + 3), 8)); i += 2 }
+      else out.push({ a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13 }[e] ?? s[i])
+    }
+    return Buffer.from(out).toString('utf8')
+  }
+  // Lines added, from the patch without context: a header "@@ -a,b +c,d @@" gives the number of the first line added
+  const skips = []
+  // A hunk always follows the header "+++ " of its file, which sets file
+  let file = null, line = 0, inHunk = false
+  for (const l of patch.split('\n')) {
+    if (l.startsWith('diff --git ')) { inHunk = false; continue }
+    const h = l.match(/^@@ -\S+ \+(\d+)/)
+    if (h) { inHunk = true; line = Number(h[1]); continue }
+    if (!inHunk) {
+      // "+++ b/path" (a tab ends a path with spaces; a path with a special character is quoted); "+++ /dev/null" heads a
+      // deletion, whose hunks hold no line added, so its file is never read
+      if (l.startsWith('+++ ')) {
+        let p = l.slice(4).replace(/\t$/, '')
+        if (p.startsWith('"')) p = cPath(p)
+        file = p.slice(2)
+      }
+      continue
+    }
+    // Only an added line ("+") counts
+    if (l[0] !== '+') continue
+    for (const [marker, re] of SKIP_MARKERS) if (re.test(l.slice(1))) skips.push({ file, line, marker })
+    line++
+  }
+  const files = [...touched].sort()
+  const r = { task: scopeId, branch: branchArg, files, outside: files.filter(f => !owns(f)), tests_removed: [...removed].sort(), skips_added: skips }
+  console.log(JSON.stringify({ ...r, digest: scopeDigest(r) }))
+}
+// Fingerprint of the fields of --scope (0.19.0), FNV-1a on 32 bits as for planDigest. Self-contained, so that a script that
+// can load no module may copy it: a field left out, empty or null reads alike.
+function scopeDigest(p) {
+  const s = x => (typeof x === 'string' ? x : ''), ss = x => (Array.isArray(x) ? x.map(s) : [])
+  const list = x => (Array.isArray(x) ? x : []).map(y => (y && typeof y === 'object' ? y : {}))
+  const c = JSON.stringify([s(p.task), s(p.branch), ss(p.files), ss(p.outside), ss(p.tests_removed),
+    list(p.skips_added).map(x => [s(x.file), Number.isInteger(x.line) ? x.line : null, s(x.marker)])])
   let h = 0x811c9dc5
   for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193)
   return (h >>> 0).toString(16).padStart(8, '0')
