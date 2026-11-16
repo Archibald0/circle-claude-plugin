@@ -5,6 +5,10 @@
 // Usage: node <plugin root>/scripts/worktrees.mjs clean [<plan-dir>] [--dry-run] [--run-stopped]
 //   Without a folder: the only plan in plans/. --dry-run: says what would be done, without touching anything.
 //   --run-stopped: the user confirms that the run marked "in-progress" in progress.json is stopped (session closed without a run end).
+// Usage: node <plugin root>/scripts/worktrees.mjs space [<plan-dir>] [--parallelism <n>] [--size-bytes <n>]
+//   Compares the free space of the repository's disk with the size of the working folder (ignored files included, .git excluded)
+//   times the parallelism (default 4). One line, "⚠" only when space is lacking. Code 0 whatever the measure gives, a failed
+//   measure included ("space: not measured (<reason>)"); 2 if the call is invalid (option, plan). --size-bytes injects the size (tests). Needs statfsSync (Node 18.15 or later).
 //
 // A worktree left on the branch task/<id> (or task/<id>-rN, or tache/… of orchestre 0.11 and earlier) of a plan task holds that
 // branch: the next attempt can no longer use it and starts on a -rN branch, sometimes without bringing it up to date. The script
@@ -21,7 +25,8 @@
 // Two plans of the same repository do not share task ids: they would also share the task/<id> branches.
 // Output: one line per worktree removed or kept, then a summary. Code 0, even if worktrees remain; 1 if a run is in progress;
 // 2 if the call is invalid.
-import { readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs'
+import * as nodeFs from 'node:fs'
+const { readFileSync, readdirSync, existsSync, realpathSync, lstatSync } = nodeFs
 import { join, resolve, relative, isAbsolute, dirname, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -134,13 +139,65 @@ export function clean(arg, { dryRun = false, runStopped = false } = {}) {
   return { text: [...lines, summary].join('\n'), removed: removed.map(w => w.branch), kept: kept.map(w => w.branch), prunable }
 }
 
+// Size in bytes of a folder, ignored files included, the .git at its root excluded (a worktree has a .git file, a checkout a
+// folder). Symbolic links are counted for themselves, never followed. Throws on a folder it cannot read.
+function folderSize(root) {
+  let total = 0
+  const stack = [root]
+  while (stack.length) {
+    const d = stack.pop()
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      if (d === root && e.name === '.git') continue
+      const p = join(d, e.name)
+      if (e.isDirectory()) stack.push(p)
+      else total += lstatSync(p).size
+    }
+  }
+  return total
+}
+const gb = b => `${(b / 1e9).toFixed(1)} GB`
+
+// Warning only: the free space of the repository's disk against one copy of the working folder per parallel task.
+// Once the plan is located (locate throws UsageError otherwise), never throws and never blocks: a failed measure gives a
+// "not measured" line. sizeBytes lets a test inject the measured size.
+export function space(arg, { parallelism = 4, sizeBytes } = {}) {
+  const { main } = locate(arg)
+  try {
+    const size = sizeBytes ?? folderSize(main)
+    if (typeof nodeFs.statfsSync !== 'function') throw new Error('this Node version has no statfsSync (18.15 or later)')
+    const fs = nodeFs.statfsSync(main)
+    const free = Number(fs.bavail) * Number(fs.bsize)
+    if (!Number.isFinite(free)) throw new Error('free space unknown')
+    const need = size * parallelism
+    const lacking = free < need
+    return { text: `space: ${lacking ? '⚠ ' : ''}${gb(free)} free, ${gb(need)} needed (${gb(size)} x ${parallelism} in parallel)${lacking ? ': the worktrees may not fit' : ''}`, free, need, lacking }
+  } catch (e) {
+    return { text: `space: not measured (${String(e.code ? `${e.code} ${e.message}` : e.message || e).split('\n')[0]})`, free: null, need: null, lacking: false }
+  }
+}
+
 const launched = process.argv[1] && real(process.argv[1]) === real(fileURLToPath(import.meta.url))
 if (launched) {
   try {
     const argv = process.argv.slice(2)
-    if (argv[0] !== 'clean') throw new UsageError('usage: worktrees.mjs clean [<plan-dir>] [--dry-run] [--run-stopped]')
-    const arg = argv.slice(1).find(a => !a.startsWith('--'))
-    console.log(clean(arg, { dryRun: argv.includes('--dry-run'), runStopped: argv.includes('--run-stopped') }).text)
+    const USAGE = 'usage: worktrees.mjs clean [<plan-dir>] [--dry-run] [--run-stopped] | space [<plan-dir>] [--parallelism <n>]'
+    if (argv[0] === 'space') {
+      const num = (name, min) => {
+        const i = argv.indexOf(name)
+        if (i < 0) return undefined
+        const v = Number(argv[i + 1])
+        if (!Number.isInteger(v) || v < min) throw new UsageError(`${name} expects an integer of ${min} or more`)
+        return v
+      }
+      const parallelism = num('--parallelism', 1), sizeBytes = num('--size-bytes', 0)
+      const used = new Set(['--parallelism', '--size-bytes'].flatMap(n => argv.indexOf(n) < 0 ? [] : [argv.indexOf(n) + 1]))
+      const arg = argv.slice(1).find((a, i) => !a.startsWith('--') && !used.has(i + 1))
+      console.log(space(arg, { parallelism, sizeBytes }).text)
+    } else {
+      if (argv[0] !== 'clean') throw new UsageError(USAGE)
+      const arg = argv.slice(1).find(a => !a.startsWith('--'))
+      console.log(clean(arg, { dryRun: argv.includes('--dry-run'), runStopped: argv.includes('--run-stopped') }).text)
+    }
   } catch (e) {
     console.error(`worktrees: ${e instanceof UsageError || e instanceof Refusal ? e.message : `unexpected error, nothing more is removed: ${(e && e.stack) || e}`}`)
     process.exitCode = e instanceof UsageError ? 2 : 1

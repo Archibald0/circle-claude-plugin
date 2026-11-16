@@ -13,7 +13,24 @@ const run = new AsyncFunction('args', 'agent', 'phase', 'log', body)
 // plan-reader without a "digest" key gets the right one: the scenarios play a faithful copy unless they say otherwise
 // (a digest of another plan, or the key present without a value)
 const planDigest = new Function(src.match(/\nfunction planDigest\(p\) \{\n[\s\S]*?\n\}/)[0] + '\nreturn planDigest')()
-const sealed = (k, a) => (k.startsWith('plan-reader') && a && typeof a === 'object' && !('digest' in a) ? { ...a, digest: planDigest(a) } : a)
+// Likewise (0.19.0): an answer of the verifier without a "scope" key gets a faithful copy of plan-lint --scope for the task and
+// the branch of its instruction, nothing outside the owned files; a pass of the evaluator without a "proofs" key gets a proof
+// by the diff. A scenario that plays something else gives the key, even without a value
+const scopeDigest = new Function(src.match(/\nfunction scopeDigest\(p\) \{\n[\s\S]*?\n\}/)[0] + '\nreturn scopeDigest')()
+const sealScope = s => ({ ...s, digest: scopeDigest(s) })
+const scopeIn = prompt => {
+  const m = String(prompt).match(/ --scope (\S+) --branch (\S+) --integration /)
+  assert.ok(m, 'verifier without a scope command: ' + String(prompt).slice(0, 200))
+  return sealScope({ task: m[1], branch: m[2], files: [], outside: [], tests_removed: [], skips_added: [] })
+}
+const PROOFS = [{ criterion: 'every criterion of the definition of done', by: 'diff', ref: 'src/a.ts:1' }]
+const sealed = (k, a, prompt) => {
+  if (!a || typeof a !== 'object') return a
+  if (k.startsWith('plan-reader') && !('digest' in a)) return { ...a, digest: planDigest(a) }
+  if (k.endsWith(' · verification') && !('scope' in a)) return { ...a, scope: scopeIn(prompt) }
+  if (k.endsWith(' · evaluation') && a.verdict === 'pass' && !('proofs' in a)) return { ...a, proofs: PROOFS }
+  return a
+}
 // lint is required since 0.12.0 (/orchestre:run passes it): no default path any more
 const ARGS = { plan: 'plans/p', phase: 1, mode: 'phase', parallelism: 4, integration: 'plan/p', max_fixes: 2, escalation: ['sonnet', 'opus'], lint: '/plug/scripts/plan-lint.mjs' }
 // T00 without a model (plan from before 0.11.0): worker on sonnet, fixes along the ladder, without the replanner's choice;
@@ -37,7 +54,7 @@ async function scenario(name, q, args = {}) {
     const k = opts.label
     if (!(k in q) || !q[k].length) { unexpected.push(k); throw new Error(`[${name}] unexpected call: ${k}`) }
     const v = q[k].shift()
-    return sealed(k, typeof v === 'function' ? v(prompt, opts) : v)
+    return sealed(k, typeof v === 'function' ? await v(prompt, opts) : v, prompt)
   }
   const res = await run({ ...ARGS, ...args }, agent, () => {}, (m) => logs.push(m))
   last = res
@@ -891,6 +908,8 @@ async function play(name, D, q, args = {}) {
     const k = opts.label
     if (!(k in q) || !q[k].length) { unexpected.push(k); throw new Error(`[${name}] unexpected call: ${k}`) }
     const v0 = q[k].shift(), cs = progressCommands(prompt)
+    // null: an agent that did not answer (expired login, usage limit) ran nothing either (0.19.0)
+    if (v0 === null) return null
     // { before, answer }: what the agent does before its progress commands (the scribe writes the created tasks)
     const v = v0 && typeof v0 === 'object' && 'before' in v0 ? (v0.before(), v0.answer) : v0
     // An agent isolated in a worktree is refused its progress commands by Claude Code's isolation guard (0.18.2): none is launched
@@ -898,7 +917,7 @@ async function play(name, D, q, args = {}) {
       if (opts.isolation === 'worktree') { launched.push({ label: k, code: 1, out: '', err: GUARD }); return 1 }
       const r = spawnSync('sh', ['-c', bashTool(c)], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.status
     })
-    const answer = sealed(k, typeof v === 'function' ? v(prompt, opts) : v)
+    const answer = sealed(k, typeof v === 'function' ? await v(prompt, opts) : v, prompt)
     // The clerk also runs the cleaning of the worktrees: its last line goes in "worktrees"
     const wt = [...prompt.matchAll(/`(node "?[^`"]*worktrees\.mjs"? clean [^`]*)`/g)].map(m => m[1])
     const cleaning = wt.map(c => { const r = spawnSync('sh', ['-c', c], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.stdout.trim() || r.stderr.trim() }).pop()
@@ -1116,7 +1135,7 @@ await test('M2: after each rejected attempt, the replanner chooses the model of 
   const t = res.tasks[0]
   assert.deepEqual([t.status, t.attempts], ['blocked', 3])
   const [c1, c2] = [1, 2].map(i => byLabel(calls, `T05 · model choice ${i}`)[0])
-  assert.deepEqual([c1.opts.agentType, c1.opts.model, c1.opts.schema.required, c1.opts.schema.properties.model.enum], ['orchestre:replanner', 'opus', ['model', 'reason'], ['haiku', 'sonnet', 'opus']])
+  assert.deepEqual([c1.opts.agentType, c1.opts.model, c1.opts.effort, c1.opts.schema.required, c1.opts.schema.properties.model.enum], ['orchestre:replanner', 'opus', 'low', ['model', 'reason'], ['haiku', 'sonnet', 'opus']])
   for (const x of ['Model planned by the plan: sonnet ("routine implementation")', 'floor', 'Attempt 1, on sonnet, was rejected by the evaluation', JSON.stringify([A1]), 'plans/p/tasks/T05.md']) assert.ok(c1.prompt.includes(x), 'choice 1: ' + x)
   assert.ok(!c1.prompt.includes('Attempts rejected before it') && !c1.prompt.includes('progress.mjs'), 'choice 1: no history, no progress command')
   assert.ok(c2.prompt.includes('Attempt 2, on opus') && c2.prompt.includes(`Attempts rejected before it: ${JSON.stringify([{ attempt: 1, model: 'sonnet', by: 'evaluation', gaps: [A1] }])}`), 'choice 2: earlier rejections and their models')
@@ -1514,5 +1533,379 @@ await test('X3: real progress.mjs, under an isolation guard that refuses the pro
     }
     assert.equal(spawnSync(process.execPath, [PROGRESS_SCRIPT, 'validate', 'plans/p'], { cwd: D.root }).status, 0)
   } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+// ——— 0.19.0: circuit breaker, agents not answering ———
+// On a real run (0.18.1) the login expired: every agent came back without an answer, and each close turned that into issues
+// ("Replanning without an answer", "Progress not committed"); the run stayed in progress for hours
+const SILENT = 'agents not answering: 2 calls in a row without an answer'
+const silentDetail = (labels, ids) => `${SILENT} (${labels}). Login expired, usage limit or network. ${ids} interrupted, their branches kept. Launch a new run once claude answers again.`
+// T02 in the main checkout (parallelism 1), T03 independent and ready: the verifier then the fix do not answer
+const y1 = (extra = {}) => ({ 'plan-reader': [planOpened(P2, P3)], 'T02 · worker': [withProgress(report('T02', { branch: 'task/T02' }))], 'T02 · verification': [null], 'T02 · fix 1': [null], 'run end · progress': [COK], ...extra })
+await test('Y1: circuit breaker — two calls in a row without an answer → error, the task interrupted without a close (neither replanner, nor scribe, nor issue), no task starts any more', async () => {
+  const { res, calls, q } = await scenario('Y1', y1(), { ...AP, parallelism: 1 })
+  assert.equal(res.status, 'error')
+  assert.equal(res.detail, silentDetail('T02 · verification, T02 · fix 1', 'T02'))
+  assert.deepEqual(res.interrupted, ['T02']); assert.deepEqual(res.tasks, []); assert.deepEqual(res.not_started, ['T03'])
+  assert.ok(!('stop_issue' in res)); assert.deepEqual(res.open_issues, []); assert.deepEqual(res.progress_failures, [])
+  for (const l of ['T02 · replanning', 'T02 · progress', 'T03 · worker']) assert.equal(idx(calls, l), -1, l)
+  // run-end: the run in error, no task closed (run-end clears the step of T02), no issue; "interrupted" is not for it
+  const [end] = progressOf(calls, 'run end · progress')
+  assert.deepEqual([end.cmd, end.E.status, end.E.detail, end.E.tasks, end.E.open_issues, end.E.not_started], ['run-end', 'error', res.detail, [], [], ['T03']])
+  assert.ok(!('interrupted' in end.E) && !('stop_issue' in end.E))
+  drained('Y1', q)
+  // The second call without an answer throws (API error): the same
+  const t = await scenario('Y1 throws', y1({ 'T02 · fix 1': [() => { throw new Error('401 authentication_error') }] }), { ...AP, parallelism: 1 })
+  assert.deepEqual([t.res.status, t.res.detail, t.res.interrupted, t.res.tasks], ['error', res.detail, ['T02'], []])
+  drained('Y1 throws', t.q)
+})
+await test('Y2: circuit breaker — the run end clerk does not answer either, or throws: the return stays error with the same detail', async () => {
+  for (const [name, answer, error] of [['Y2 null', null, 'clerk without an answer'], ['Y2 throws', () => { throw new Error('401') }, 'clerk failed: Error: 401']]) {
+    const { res, calls, q } = await scenario(name, y1({ 'run end · progress': [answer] }), { ...AP, parallelism: 1 })
+    assert.deepEqual([res.status, res.detail, res.interrupted, res.tasks], ['error', silentDetail('T02 · verification, T02 · fix 1', 'T02'), ['T02'], []], name)
+    assert.deepEqual(res.progress_failures, [{ task: null, step: 'run-end', error }], name)
+    assert.equal(byLabel(calls, 'run end · progress').length, 1, name + ': the clerk is called after the breaker')
+    drained(name, q)
+  }
+})
+await test('Y3: circuit breaker — a task in flight at the threshold is not closed: it stops at its next call and comes out in "interrupted"', async () => {
+  const e = deferred()
+  const { res, calls, q } = await scenario('Y3', { 'plan-reader': [plan(P2, P3)],
+    'T02 · worker': [null],
+    // Second call in a row without an answer: the threshold; the worker of T03 answers afterwards
+    'T02 · progress': [() => { setTimeout(() => e.resolve(), 0); return null }],
+    'T03 · worker': [async () => { await e.promise; return report('T03', { branch: 'task/T03', path: '/wt/T03' }) }] })
+  assert.equal(res.status, 'error'); assert.equal(res.detail, silentDetail('T02 · worker, T02 · progress', 'T02, T03'))
+  assert.deepEqual(res.interrupted, ['T02', 'T03']); assert.deepEqual(res.tasks, [])
+  assert.equal(byLabel(calls, 'T03 · worker')[0].opts.isolation, 'worktree', 'T03 runs in parallel')
+  for (const l of ['T03 · verification', 'T03 · replanning', 'T03 · progress', 'T02 · replanning']) assert.equal(idx(calls, l), -1, l)
+  drained('Y3', q)
+  // The clerks of both task starts do not answer: the start that trips the breaker is not a failure of the clerk, and no worker starts
+  const s = await scenario('Y3 starts', { 'plan-reader': [planOpened(P2, P3)], 'T02 · start': [null], 'T03 · start': [null], 'run end · progress': [COK] }, AP)
+  assert.equal(s.res.status, 'error'); assert.equal(s.res.detail.split(' (')[1].split(')')[0], 'T02 · start, T03 · start')
+  assert.deepEqual([...s.res.interrupted].sort(), ['T02', 'T03']); assert.deepEqual(s.res.tasks, [])
+  assert.deepEqual(s.res.progress_failures, [{ task: 'T02', step: 'worker', error: 'clerk without an answer' }])
+  drained('Y3 starts', s.q)
+})
+await test('Y3r: real progress.mjs — circuit breaker: the interrupted tasks keep their status and branch, their step is cleared, the run is in error', async () => {
+  const D = toyRepo()
+  try {
+    D.writeTask('T02', []); D.writeTask('T03', [])
+    const R2 = { ...T0, id: 'T02', title: 'Task T02', file: 'plans/p/tasks/T02-x.md' }, R3 = { ...T0, id: 'T03', title: 'Task T03', file: 'plans/p/tasks/T03-x.md' }
+    const e = deferred()
+    const { res, launched } = await play('Y3r', D, { 'plan-reader': [plan(R2, R3)], 'T02 · start': [{}], 'T03 · start': [{}],
+      'T02 · worker': [() => { setTimeout(() => e.resolve(), 0); return null }], 'T02 · progress': [null],
+      'T03 · worker': [async () => { await e.promise; return report('T03', { branch: 'task/T03', path: D.root }) }],
+      'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    assert.equal(res.status, 'error'); assert.deepEqual(res.interrupted, ['T02', 'T03']); assert.deepEqual(res.progress_failures, [])
+    const doc = D.doc(), t = id => doc.tasks.find(x => x.id === id)
+    for (const id of ['T02', 'T03']) assert.deepEqual([t(id).status, t(id).branch, t(id).step, t(id).blocker], ['todo', null, null, []], id)
+    assert.deepEqual(launched.filter(l => l.label === 'T02 · progress'), [], 'T02: no close command')
+    assert.deepEqual(doc.issues, [])
+    assert.deepEqual(doc.runs.map(r => [r.status, r.detail]), [['error', res.detail]])
+    assert.ok(doc.log.some(x => x.task === 'T03' && x.text === 'T03: step "worker" without a close at the end of the run'))
+    assert.equal(spawnSync(process.execPath, [PROGRESS_SCRIPT, 'validate', 'plans/p'], { cwd: D.root }).status, 0)
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('Y4: circuit breaker — an answer resets the count: without an answer, an answer, without an answer again → the task goes on as in 0.18.2', async () => {
+  const { res, q } = await scenario('Y4', { 'plan-reader': [plan(T00)], 'T00 · worker': [report(0)],
+    'T00 · verification': [null, null, ok(3)], 'T00 · fix 1': [report(1)], 'T00 · fix 2': [report(2)], 'T00 · evaluation': [{ verdict: 'pass' }], 'T00 · merge': [MOK], 'T00 · progress': [SOK] })
+  assert.equal(res.status, 'finished'); assert.ok(!('interrupted' in res)); assert.equal(res.tasks[0].status, 'merged')
+  assert.deepEqual(res.tasks[0].rejections.map(x => x.gaps), [['verifier without an answer'], ['verifier without an answer']])
+  drained('Y4', q)
+})
+await test('Y5: circuit breaker — a single call without an answer keeps the behavior of 0.18.2: failed, replanning, scribe', async () => {
+  const { res, calls, q } = await scenario('Y5', { 'plan-reader': [plan(T00)], 'T00 · worker': [report(0)], 'T00 · verification': [ok(1)],
+    'T00 · evaluation': [{ verdict: 'fail', gaps: ['M1'] }], 'T00 · fix 1': [null], 'T00 · replanning': [NOTHING], 'T00 · progress': [SOK] })
+  assert.equal(res.status, 'partial'); assert.ok(!('interrupted' in res))
+  assert.deepEqual([res.tasks[0].status, res.tasks[0].blocker], ['failed', ['fix without an answer (usage limit or API error)']])
+  assert.ok(idx(calls, 'T00 · replanning') < idx(calls, 'T00 · progress'))
+  drained('Y5', q)
+})
+await test('Y6: circuit breaker — a close interrupted at its scribe leaves nothing in the summary (issues, auto-decision, discarded amendment, added task); a failed post-merge check stays', async () => {
+  const RP = { major: true, entries: [], issues: [
+    { title: 'Contract', options: [{ id: 'A', description: 'add T02B', recommended: true, added_tasks: [{ id: 'T02B', title: 'Contract test', phase: 1, content: '---\nid: T02B\nphase: 1\n---' }], amendments: [{ id: 'T03', verification: ['pnpm test:x'], reason: 'r' }] }, { id: 'B', description: 'b' }] },
+    { title: 'Prod access', human: true, options: [] }] }
+  // T02 reaches its scribe, which does not answer; just before, the worker of T03 did not answer either
+  const play2 = (name, extra) => {
+    const e = deferred()
+    return scenario(name, { 'plan-reader': [planOpened(P2, P3)], ...iso('T02', { 'T02 · worker': [report('T02', { branch: 'task/T02', path: '/wt/T02', deviations: DEVIATION })],
+      'T02 · progress': [async () => { e.resolve(); await new Promise(r => setTimeout(r, 10)); return null }], ...extra }),
+    'T03 · start': [COK], 'T03 · worker': [async () => { await e.promise; return null }], 'run end · progress': [COK] }, { ...AP, mode: 'auto' })
+  }
+  const { res, calls, q } = await play2('Y6', { 'T02 · replanning': [RP] })
+  assert.equal(res.status, 'error'); assert.equal(res.detail.split(' (')[1].split(')')[0], 'T03 · worker, T02 · progress')
+  assert.deepEqual([...res.interrupted].sort(), ['T02', 'T03']); assert.deepEqual(res.tasks, [])
+  assert.deepEqual([res.stop_issue, res.open_issues, res.auto_decisions, res.discarded_amendments, res.added_tasks], [undefined, [], [], [], []])
+  assert.equal(idx(calls, 'T03 · progress'), -1, 'T03: no close either')
+  const [end] = progressOf(calls, 'run end · progress')
+  assert.deepEqual([end.E.status, end.E.open_issues, end.E.auto_decisions, end.E.discarded_amendments, end.E.added_tasks, 'stop_issue' in end.E], ['error', [], [], [], [], false])
+  drained('Y6', q)
+  // Merge done, post-merge check failed: that issue belongs to the merge, not to the close, and stays
+  const k = await play2('Y6 check', { 'T02 · worker': [report('T02', { branch: 'task/T02', path: '/wt/T02' })], 'T02 · merge': [withProgress({ ok: false, merged: true, check_ok: false, detail: 'tsc: 2 errors' })] })
+  assert.equal(k.res.status, 'error'); assert.deepEqual([...k.res.interrupted].sort(), ['T02', 'T03'])
+  assert.equal(k.res.stop_issue.title, 'Post-merge check failed after T02'); assert.deepEqual(k.res.open_issues, [])
+  drained('Y6 check', k.q)
+})
+await test('Z1: post-merge check skipped (0.19.0) — a task of the main checkout whose merged tree is the verified branch\'s closes as merged without an issue', async () => {
+  const SKIP = 'post-merge check skipped, same tree as the verified branch'
+  const { res, calls, logs, q } = await scenario('Z1', { 'plan-reader': [plan(T00)], ...t00([], { ...MOK, check_skipped: true }), 'T00 · progress': [SOK] })
+  assert.equal(res.status, 'finished'); assert.equal(res.tasks[0].status, 'merged')
+  assert.equal(res.stop_issue, undefined); assert.deepEqual(res.open_issues, [])
+  const m = byLabel(calls, 'T00 · merge')[0]
+  assert.ok(m.opts.schema.properties.check_skipped, 'integrator: check_skipped in the schema')
+  const at = m.prompt.indexOf('`git diff --quiet task/T00 HEAD`')
+  assert.ok(at > m.prompt.indexOf('return merged=true') && at < m.prompt.indexOf('this check command'), 'comparison after the merge, before the check')
+  assert.ok(m.prompt.includes('run neither the setup nor the check below, and return check_skipped=true, check_ok=true and ok=true'))
+  assert.ok(logs.includes(`T00: ${SKIP}`), logs.join('\n'))
+  assert.ok(!byLabel(calls, 'T00 · progress')[0].prompt.includes('needs-human'), 'scribe: no needs-human entry')
+  drained('Z1', q)
+  // Tree differs: the check runs and is reported as before, without the log line
+  const d = await scenario('Z1 checked', { 'plan-reader': [plan(T00)], ...t00(), 'T00 · progress': [SOK] })
+  assert.equal(d.res.status, 'finished'); assert.ok(!d.logs.some(l => l.includes(SKIP)))
+  drained('Z1 checked', d.q)
+  // Skipped, but the check reported failed: a failure, as before
+  const f = await scenario('Z1 failed', { 'plan-reader': [plan(T00)], ...t00([], { ok: false, merged: true, check_ok: false, check_skipped: true, detail: 'x' }), 'T00 · progress': [SOK] })
+  assert.equal(f.res.stop_issue.title, 'Post-merge check failed after T00'); assert.ok(!f.logs.some(l => l.includes(SKIP)))
+  drained('Z1 failed', f.q)
+})
+await test('Z2: post-merge check of a task in a worktree — never offered to skip; skipped all the same, it is a check not done: stop, human issue', async () => {
+  const T02 = { ...T00, id: 'T02', title: 'Other', file: 'plans/p/tasks/T02.md', resources: [] }
+  const T03 = { ...T00, id: 'T03', title: 'Again', file: 'plans/p/tasks/T03.md', resources: [] }
+  const tt = (id, merge = MOK) => ({ [`${id} · worker`]: [report(id, { branch: `task/${id}`, path: `/wt/${id}` })], [`${id} · verification`]: [ok(id)], [`${id} · evaluation`]: [{ verdict: 'pass' }], [`${id} · merge`]: [merge], [`${id} · progress`]: [SOK] })
+  const { res, calls, logs, q } = await scenario('Z2', { 'plan-reader': [plan(T02, T03)], ...tt('T02', { ...MOK, check_skipped: true }), ...tt('T03') })
+  for (const id of ['T02', 'T03']) {
+    const mg = byLabel(calls, `${id} · merge`)[0].prompt
+    assert.ok(mg.includes(`git worktree remove "/wt/${id}"`), `${id}: in a worktree`)
+    assert.ok(!mg.includes('git diff --quiet') && !mg.includes('check_skipped'), `${id}: no offer to skip the check`)
+  }
+  assert.equal(res.status, 'awaiting-ruling'); assert.equal(res.tasks.find(t => t.id === 'T02').status, 'merged')
+  assert.equal(res.stop_issue.title, 'Post-merge check failed after T02'); assert.equal(res.stop_issue.human, true)
+  assert.match(res.stop_issue.context, /^post-merge check not run on plan\/p \(sh scripts\/typecheck\.sh\): skipped by the integrator for a task in a worktree/)
+  assert.ok(byLabel(calls, 'T02 · progress')[0].prompt.includes('"type":"needs-human","severity":"major","description":"post-merge check not run'), 'scribe: needs-human entry')
+  assert.ok(!logs.some(l => l.includes('post-merge check skipped')), logs.join('\n'))
+  drained('Z2', q)
+})
+// ——— 0.19.0: scope of the branch (plan-lint --scope) and proofs of the evaluator ———
+const scopeFor = (task, branch, extra = {}) => sealScope({ task, branch, files: [], outside: [], tests_removed: [], skips_added: [], ...extra })
+const SCOPE_CMD = 'node /plug/scripts/plan-lint.mjs plans/p --scope T00 --branch task/T00 --integration plan/p'
+const OUT = scopeFor('T00', 'task/T00', { files: ['docs/x.md', 'src/a.ts', 'src/b.ts'], outside: ['docs/x.md', 'src/b.ts'] })
+const OUT_GAP = 'files changed outside owned_files: docs/x.md, src/b.ts'
+const UNREAD = 'could not be read: check yourself, in the diff, that it touches no file outside owned_files'
+await test('SC1: scope — a file changed outside owned_files is rejected by the verification, without an evaluation of that attempt; the fix gets the gap', async () => {
+  const { res, calls, logs, q } = await scenario('SC1', { 'plan-reader': [plan(T00)], 'T00 · worker': [report(0)], 'T00 · verification': [{ ...ok(1), scope: OUT }, ok(2)],
+    'T00 · fix 1': [report(1)], 'T00 · evaluation': [{ verdict: 'pass' }], 'T00 · merge': [MOK], 'T00 · progress': [SOK] })
+  assert.equal(res.status, 'finished'); assert.equal(res.tasks[0].status, 'merged')
+  assert.deepEqual(res.tasks[0].rejections, [{ attempt: 1, by: 'verification', gaps: [OUT_GAP] }])
+  assert.equal(byLabel(calls, 'T00 · evaluation').length, 1, 'no evaluation of the rejected attempt')
+  assert.ok(idx(calls, 'T00 · fix 1') < idx(calls, 'T00 · evaluation') && byLabel(calls, 'T00 · fix 1')[0].prompt.includes(OUT_GAP))
+  const vf = byLabel(calls, 'T00 · verification')[0]
+  assert.ok(vf.prompt.includes(`First, from the folder you start in (the main checkout), without a \`cd\`: \`${SCOPE_CMD}\`.`), vf.prompt.slice(0, 400))
+  assert.ok(vf.prompt.includes('return it in "scope" exactly as printed') && vf.prompt.includes('cite it neither among the failures nor in "forbidden"'))
+  assert.ok(vf.prompt.indexOf('--scope') < vf.prompt.indexOf('git status --porcelain'), 'the scope first, then the status')
+  assert.deepEqual(vf.opts.schema.properties.scope.required, ['task', 'branch', 'files', 'outside', 'tests_removed', 'skips_added', 'digest'])
+  assert.equal(idx(calls, 'T00 · scope · second reading'), -1, 'a faithful copy is read once')
+  assert.ok(!logs.some(l => l.includes('--scope')), logs.join('\n'))
+  drained('SC1', q)
+  // The verification fails as well: its failure, then the scope gap
+  const f = await scenario('SC1 failed', { 'plan-reader': [plan(T00)], 'T00 · worker': [report(0)],
+    'T00 · verification': [{ ok: false, results: ok(1).results, failures: [{ command: 'sh scripts/e2e-local.sh', excerpt: '2 failed' }], scope: OUT }], 'T00 · replanning': [NOTHING], 'T00 · progress': [SOK] }, { max_fixes: 0 })
+  assert.deepEqual([f.res.tasks[0].status, f.res.tasks[0].blocker], ['blocked', ['sh scripts/e2e-local.sh: 2 failed', OUT_GAP]])
+  drained('SC1 failed', f.q)
+})
+await test('SC2: scope — a copy that does not match its digest is read again by the plan-reader; unfaithful twice, the task goes on without these facts, with a blind-spot · minor entry, never a rejection', async () => {
+  // The verifier leaves a file out of "outside": the digest no longer matches; the plan-reader copies it faithfully → the facts of the second reading
+  const COPY = { ...OUT, outside: ['src/b.ts'] }
+  const a = await scenario('SC2 second reading', { 'plan-reader': [plan(T00)], 'T00 · worker': [report(0)], 'T00 · verification': [{ ...ok(1), scope: COPY }], 'T00 · scope · second reading': [OUT],
+    'T00 · replanning': [NOTHING], 'T00 · progress': [SOK] }, { max_fixes: 0 })
+  assert.deepEqual(a.res.tasks[0].blocker, [OUT_GAP], 'the faithful copy of the second reading decides')
+  const sr = byLabel(a.calls, 'T00 · scope · second reading')[0]
+  assert.deepEqual([sr.opts.agentType, sr.opts.model, sr.opts.schema.required.at(-1)], ['orchestre:plan-reader', 'haiku', 'digest'])
+  assert.ok(sr.prompt.includes(`Run \`${SCOPE_CMD}\``) && sr.prompt.includes('`digest` included, character for character') && !sr.prompt.includes('--reader'))
+  assert.ok(a.logs.includes('T00: copy of plan-lint --scope that does not match its digest; second reading'), a.logs.join('\n'))
+  drained('SC2 second reading', a.q)
+  // Unfaithful twice: no rejection, evaluation without the facts (it checks the scope itself), merged, blind spot in HANDOFF.md
+  const BLIND = 'scope of T00 not checked: two copies of plan-lint --scope that do not match its digest (verifier, plan-reader); the files outside owned_files and the tests removed or skipped were left to the evaluator, from the diff'
+  const b = await scenario('SC2 twice', { 'plan-reader': [plan(T00)], ...t00(), 'T00 · verification': [{ ...ok(1), scope: COPY }], 'T00 · scope · second reading': [COPY], 'T00 · progress': [SOK] })
+  assert.equal(b.res.status, 'finished'); assert.deepEqual([b.res.tasks[0].status, b.res.tasks[0].attempts, b.res.tasks[0].rejections], ['merged', 1, undefined])
+  const ev = byLabel(b.calls, 'T00 · evaluation')[0].prompt
+  assert.ok(ev.includes(UNREAD) && !ev.includes('tests_removed'), 'evaluation without the facts')
+  assert.ok(byLabel(b.calls, 'T00 · progress')[0].prompt.includes(JSON.stringify({ type: 'blind-spot', severity: 'minor', description: BLIND })), 'blind-spot · minor entry for HANDOFF.md')
+  assert.ok(b.logs.includes(`T00: ${BLIND}`))
+  assert.equal(idx(b.calls, 'T00 · replanning'), -1, 'a blind spot of the scope alone needs no replanning')
+  drained('SC2 twice', b.q)
+  // The scope command refused to the verifier (no scope, cited in forbidden), the plan-reader without an answer: neither a failure, nor a fix; blind spot
+  const c = await scenario('SC2 refused', { 'plan-reader': [plan(T00)], ...t00(), 'T00 · verification': [{ ...ok(1), scope: undefined, forbidden: [`cd "/repo" && ${SCOPE_CMD}`] }], 'T00 · scope · second reading': [null], 'T00 · progress': [SOK] })
+  assert.deepEqual([c.res.status, c.res.tasks[0].status, c.res.tasks[0].rejections, c.res.tasks[0].reviews], ['finished', 'merged', undefined, undefined])
+  assert.ok(byLabel(c.calls, 'T00 · progress')[0].prompt.includes('"type":"blind-spot","severity":"minor","description":"scope of T00 not checked'))
+  drained('SC2 refused', c.q)
+  // A copy faithful to its digest, but of another branch or another task: read again
+  for (const [name, other] of [['branch', scopeFor('T00', 'task/T09')], ['task', scopeFor('T09', 'task/T00')]]) {
+    const d = await scenario('SC2 other ' + name, { 'plan-reader': [plan(T00)], ...t00(), 'T00 · verification': [{ ...ok(1), scope: other }], 'T00 · scope · second reading': [scopeFor('T00', 'task/T00')], 'T00 · progress': [SOK] })
+    assert.equal(d.res.tasks[0].status, 'merged'); assert.ok(!byLabel(d.calls, 'T00 · evaluation')[0].prompt.includes(UNREAD), name)
+    drained('SC2 other ' + name, d.q)
+  }
+  // The verification fails anyway: no second reading, no blind spot
+  const e = await scenario('SC2 failed', { 'plan-reader': [plan(T00)], 'T00 · worker': [report(0)], 'T00 · verification': [{ ok: false, results: [], failures: [{ command: 'sh scripts/typecheck.sh' }], scope: COPY }], 'T00 · replanning': [NOTHING], 'T00 · progress': [SOK] }, { max_fixes: 0 })
+  assert.deepEqual(e.res.tasks[0].blocker, ['sh scripts/typecheck.sh: failure'])
+  assert.ok(!byLabel(e.calls, 'T00 · progress')[0].prompt.includes('blind-spot'))
+  drained('SC2 failed', e.q)
+})
+await test('SC3: scope — tests_removed and skips_added are passed in the evaluator\'s instruction, with the rule and the path heuristic; the evaluator does not read the scope itself', async () => {
+  const S = scopeFor('T00', 'task/T00', { files: ['docs/latest.md', 'src/a.ts', 'tests/a.test.mjs', 'tests/b.test.mjs'], tests_removed: ['docs/latest.md', 'tests/a.test.mjs'], skips_added: [{ file: 'tests/b.test.mjs', line: 4, marker: '.skip(' }] })
+  const { res, calls, q } = await scenario('SC3', { 'plan-reader': [plan(T00)], ...t00(), 'T00 · verification': [{ ...ok(1), scope: S }], 'T00 · progress': [SOK] })
+  assert.equal(res.tasks[0].status, 'merged', 'the workflow rejects nothing for a removed test: the evaluator judges')
+  const ev = byLabel(calls, 'T00 · evaluation')[0].prompt
+  for (const x of ['Test files deleted or renamed (tests_removed): ["docs/latest.md","tests/a.test.mjs"]', 'Skipped-test markers added (skips_added): [{"file":"tests/b.test.mjs","line":4,"marker":".skip("}]',
+    'A test deleted or skipped is a gap, unless the definition of done asks for it.', 'the files outside owned_files are already checked, do not read the scope yourself',
+    'tests_removed lists the paths containing `test` or `spec` (case-insensitive), which can include files that are not tests (such as `docs/latest.md`): such a file is not a gap by itself.']) assert.ok(ev.includes(x), x)
+  assert.ok(!ev.includes(UNREAD))
+  drained('SC3', q)
+})
+await test('SC4: proofs — a pass without proofs is sent back once with the reason; invalid again, an evaluation without an answer; a command proof needs a verifier result of code 0', async () => {
+  const P = (by, ref) => ({ criterion: 'the test passes', by, ref })
+  // Sent back once, with the reason, without a progress command; the second pass holds: merged on the first attempt
+  const a = await scenario('SC4 sent back', { 'plan-reader': [planOpened(T00)], ...s00(), 'T00 · evaluation': [withProgress({ verdict: 'pass', proofs: [] })], 'T00 · evaluation · proofs': [{ verdict: 'pass', proofs: [P('diff', 'src/a.ts:3')] }], 'run end · progress': [COK] }, AP)
+  assert.equal(a.res.status, 'finished'); assert.deepEqual([a.res.tasks[0].status, a.res.tasks[0].attempts], ['merged', 1]); assert.deepEqual(a.res.progress_failures, [])
+  const back = byLabel(a.calls, 'T00 · evaluation · proofs')[0]
+  assert.ok(back.prompt.startsWith('Your first evaluation of this attempt of the task T00 returned pass, refused by the workflow: pass without proofs. Evaluate again, from the start.'), back.prompt.slice(0, 200))
+  assert.deepEqual(progressCommands(back.prompt), [], 'no second step command')
+  assert.deepEqual([back.opts.agentType, back.opts.model, back.opts.schema.properties.proofs.items.properties.by.enum], ['orchestre:evaluator', 'opus', ['diff', 'test', 'command', 'report']])
+  assert.ok(a.logs.includes('T00: pass refused, pass without proofs; evaluation sent back'), a.logs.join('\n'))
+  const first = byLabel(a.calls, 'T00 · evaluation')[0].prompt
+  assert.ok(first.includes('On a pass, return "proofs": one entry per criterion of the definition of done, with "criterion" (its text), "by" and "ref"'))
+  drained('SC4 sent back', a.q)
+  // Invalid twice: treated as an evaluation without an answer → rejected attempt, fix
+  const b = await scenario('SC4 twice', { 'plan-reader': [plan(T00)], ...t00(), 'T00 · evaluation': [{ verdict: 'pass', proofs: undefined }, { verdict: 'pass' }], 'T00 · evaluation · proofs': [{ verdict: 'pass', proofs: [] }], 'T00 · verification': [ok(1), ok(2)], 'T00 · fix 1': [report(1)], 'T00 · progress': [SOK] })
+  assert.deepEqual(b.res.tasks[0].rejections, [{ attempt: 1, by: 'evaluation', gaps: ['evaluator without an answer: pass refused twice, pass without proofs'] }])
+  assert.equal(b.res.tasks[0].status, 'merged'); drained('SC4 twice', b.q)
+  // A command proof: accepted on a result of code 0 (leading cd and echo of the code aside), refused on code 1 or on a command the verifier did not run
+  const V = { ok: true, results: [{ command: 'cd "/repo" && sh scripts/typecheck.sh; echo "code=$?"', code: 0, excerpt: 'ok' }, { command: 'sh scripts/e2e-local.sh', code: 1, excerpt: '1 failed' }] }
+  const c = await scenario('SC4 command ok', { 'plan-reader': [plan(T00)], ...t00(), 'T00 · verification': [V], 'T00 · evaluation': [{ verdict: 'pass', proofs: [P('command', 'sh scripts/typecheck.sh'), P('test', 'tests/a.test.mjs: case x'), P('report', 'mutations named')] }], 'T00 · progress': [SOK] })
+  assert.equal(c.res.tasks[0].status, 'merged'); assert.equal(idx(c.calls, 'T00 · evaluation · proofs'), -1); drained('SC4 command ok', c.q)
+  for (const [name, ref, reason] of [['code 1', 'sh scripts/e2e-local.sh', 'sh scripts/e2e-local.sh'], ['not run', 'npm test', 'npm test']]) {
+    const d = await scenario('SC4 ' + name, { 'plan-reader': [plan(T00)], ...t00(), 'T00 · verification': [V], 'T00 · evaluation': [{ verdict: 'pass', proofs: [P('diff', 'src/a.ts:1'), P('command', ref)] }], 'T00 · evaluation · proofs': [{ verdict: 'pass', proofs: [P('diff', 'src/a.ts:1')] }], 'T00 · progress': [SOK] })
+    assert.ok(byLabel(d.calls, 'T00 · evaluation · proofs')[0].prompt.includes(`refused by the workflow: command proofs that match no result of code 0 of the verifier: ${reason}.`), name)
+    assert.equal(d.res.tasks[0].status, 'merged'); drained('SC4 ' + name, d.q)
+  }
+  // A proof without a ref, or with a "by" outside the four: refused
+  for (const [name, proof] of [['ref', P('diff', ' ')], ['by', P('trust', 'me')]]) {
+    const g = await scenario('SC4 ' + name, { 'plan-reader': [plan(T00)], ...t00(), 'T00 · evaluation': [{ verdict: 'pass', proofs: [proof] }], 'T00 · evaluation · proofs': [{ verdict: 'pass' , proofs: [P('diff', 'src/a.ts:1')] }], 'T00 · progress': [SOK] })
+    assert.ok(byLabel(g.calls, 'T00 · evaluation · proofs')[0].prompt.includes('refused by the workflow: proofs without a criterion, a "by" among diff, test, command, report or a ref:'), name)
+    drained('SC4 ' + name, g.q)
+  }
+  // A fail needs no proofs
+  const h = await scenario('SC4 fail', { 'plan-reader': [plan(T00)], ...t00(), 'T00 · evaluation': [{ verdict: 'fail', gaps: ['M1'] }, { verdict: 'pass' }], 'T00 · verification': [ok(1), ok(2)], 'T00 · fix 1': [report(1)], 'T00 · progress': [SOK] })
+  assert.deepEqual(h.res.tasks[0].rejections, [{ attempt: 1, by: 'evaluation', gaps: ['M1'] }]); assert.equal(idx(h.calls, 'T00 · evaluation · proofs'), -1)
+  drained('SC4 fail', h.q)
+})
+await test('SC5: real plan-lint --scope run by a verifier that copies its output → digest that matches; outside rejected, then skips_added passed to the evaluator', async () => {
+  const D = toyRepo()
+  const LINT_SCRIPT = join(resolve(dirname(SRC), '..'), 'scripts', 'plan-lint.mjs')
+  try {
+    D.git('switch', '-qc', 'task/T00')
+    fs.mkdirSync(join(D.root, 'src', 'T00'), { recursive: true }); fs.mkdirSync(join(D.root, 'docs'))
+    fs.writeFileSync(join(D.root, 'src', 'T00', 'a.test.js'), "it.skip('later', () => {})\n"); fs.writeFileSync(join(D.root, 'docs', 'x.md'), 'x\n')
+    D.git('add', 'src', 'docs'); D.git('commit', '-qm', 'work'); D.git('switch', '-q', 'plan/p')
+    const printed = []
+    const verifier = n => prompt => {
+      const cmd = prompt.match(/without a `cd`: `([^`]*--scope[^`]*)`/)[1]
+      const r = spawnSync('sh', ['-c', cmd], { cwd: D.root, encoding: 'utf8' })
+      assert.equal(r.status, 0, r.stderr)
+      printed.push(JSON.parse(r.stdout))
+      return { ok: true, results: [{ command: 'npm test', code: 0, excerpt: 'ok ' + n }], scope: printed.at(-1) }
+    }
+    const fix = () => { D.git('switch', '-q', 'task/T00'); D.git('rm', '-q', 'docs/x.md'); D.git('commit', '-qm', 'fix'); D.git('switch', '-q', 'plan/p'); return report(1) }
+    const { res } = await play('SC5', D, { 'plan-reader': [plan(T0)], 'T00 · worker': [report(0)], 'T00 · verification': [verifier(1), verifier(2)], 'T00 · fix 1': [fix],
+      'T00 · evaluation': [prompt => { assert.ok(prompt.includes('[{"file":"src/T00/a.test.js","line":1,"marker":".skip("}]'), prompt); return { verdict: 'pass' } }], 'T00 · merge': [MOK], 'T00 · progress': [SOK],
+      'run end · progress': [{ commit: '', detail: '' }] }, { lint: LINT_SCRIPT, parallelism: 1 })
+    assert.deepEqual(printed[0].outside, ['docs/x.md']); assert.equal(printed[0].digest, scopeDigest(printed[0]), 'plan-lint and the workflow compute the same digest')
+    assert.deepEqual([printed[1].outside, printed[1].tests_removed], [[], []])
+    assert.deepEqual(res.tasks.map(t => [t.id, t.status, t.rejections]), [['T00', 'merged', [{ attempt: 1, by: 'verification', gaps: ['files changed outside owned_files: docs/x.md'] }]]])
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('SC6: circuit breaker — a task merged then interrupted at its scribe or at its replanning comes out in merged_unclosed with what its close did not record; one interrupted before its merge does not', async () => {
+  const RP = { major: true, entries: [], issues: [
+    { title: 'Contract', options: [{ id: 'A', description: 'add T02B', recommended: true, added_tasks: [{ id: 'T02B', title: 'Contract test', phase: 1, content: '---\nid: T02B\nphase: 1\n---' }] }, { id: 'B', description: 'b' }] },
+    { title: 'Prod access', human: true, options: [] }] }
+  const R = { type: 'review', description: '.env.example: add MR_MAX' }
+  const UV = 'behavior in a worktree: the task runs in the main checkout'
+  // T02 merged, then its call at `at` does not answer; just before, the worker of T03 did not answer either
+  const trip = (name, at, extra) => {
+    const e = deferred()
+    return scenario(name, { 'plan-reader': [planOpened(P2, P3)], ...iso('T02', { 'T02 · worker': [report('T02', { branch: 'task/T02', path: '/wt/T02', deviations: [...DEVIATION, R] })],
+      'T02 · evaluation': [withProgress({ verdict: 'pass', unverifiable: [UV] })], [at]: [async () => { e.resolve(); await new Promise(r => setTimeout(r, 10)); return null }], ...extra }),
+    'T03 · start': [COK], 'T03 · worker': [async () => { await e.promise; return null }], 'run end · progress': [COK] }, { ...AP, mode: 'auto' })
+  }
+  const SENTENCE = 'T02 merged before the trip: their deviations were not recorded, see merged_unclosed.'
+  const s = await trip('SC6 scribe', 'T02 · progress', { 'T02 · replanning': [RP] })
+  assert.equal(s.res.status, 'error'); assert.deepEqual([...s.res.interrupted].sort(), ['T02', 'T03'])
+  assert.ok(s.res.detail.startsWith('agents not answering: ') && s.res.detail.endsWith(` interrupted, their branches kept. Launch a new run once claude answers again. ${SENTENCE}`), s.res.detail)
+  assert.equal(s.res.merged_unclosed.length, 1, 'T03, interrupted before its merge, is not there')
+  const [u] = s.res.merged_unclosed
+  assert.deepEqual([u.id, u.branch, u.deviations, u.reviews, u.unverifiable], ['T02', 'task/T02', DEVIATION, [R.description], [UV]])
+  assert.deepEqual(u.issues.map(p => [p.task, p.title, p.human]), [['T02', 'Prod access', true], ['T02', 'Contract', false]], 'the human issue and the auto-decision never written')
+  assert.equal(u.issues[1].options[0].added_tasks[0].id, 'T02B', 'options with their actions')
+  assert.deepEqual([s.res.stop_issue, s.res.open_issues, s.res.auto_decisions, s.res.added_tasks], [undefined, [], [], []], 'forget still clears the summary')
+  const [end] = progressOf(s.calls, 'run end · progress')
+  assert.ok(!('merged_unclosed' in end.E) && end.E.detail.endsWith(SENTENCE), 'merged_unclosed is not for run-end')
+  drained('SC6 scribe', s.q)
+  // Interrupted at its own merge call (T11C): the integrator was launched, so git merge may have run. T02 comes out in
+  // merged_unclosed with merge: 'unknown', besides interrupted, with what its close would have recorded
+  const m = await trip('SC6 merge', 'T02 · merge', { 'T02 · progress': [] })
+  assert.equal(m.res.status, 'error'); assert.deepEqual([...m.res.interrupted].sort(), ['T02', 'T03'])
+  assert.deepEqual(m.res.merged_unclosed, [{ id: 'T02', branch: 'task/T02', merge: 'unknown', deviations: DEVIATION, reviews: [R.description], unverifiable: [UV], issues: [] }])
+  assert.ok(m.res.detail.endsWith(' T02 interrupted at their merge, which may have run: see merged_unclosed.') && !m.res.detail.includes('merged before the trip'), m.res.detail)
+  for (const l of ['T02 · replanning', 'T02 · progress']) assert.equal(idx(m.calls, l), -1, l)
+  drained('SC6 merge', m.q)
+  // A post-merge check failed, then the scribe interrupted: the issue of the check stays in stop_issue, and does not come
+  // again in merged_unclosed (mutation W18 of T11R)
+  const w = await trip('SC6 check', 'T02 · progress', { 'T02 · merge': [withProgress({ ...MOK, check_ok: false, detail: 'tests red' })], 'T02 · replanning': [NOTHING] })
+  assert.equal(w.res.status, 'error'); assert.equal(w.res.stop_issue && w.res.stop_issue.title, 'Post-merge check failed after T02')
+  assert.deepEqual(w.res.merged_unclosed.map(u => [u.id, u.merge, u.issues]), [['T02', undefined, []]])
+  drained('SC6 check', w.q)
+  // Interrupted at its replanning: the breaker latches while the integrator of T02 merges (the workers of T03 and T04 do not
+  // answer); the merge done, the replanning never starts. Nothing rated, no issue; deviations, reviews and unverifiable criteria all the same
+  const P4 = { ...T00, id: 'T04', title: 'Fourth', file: 'plans/p/tasks/T04.md', resources: [] }
+  const atMerge = (name, extra, merge = MOK) => {
+    const e = deferred()
+    const silent = async () => { await e.promise; return null }
+    return scenario(name, { 'plan-reader': [planOpened(P2, P3, P4)], ...iso('T02', { 'T02 · worker': [report('T02', { branch: 'task/T02', path: '/wt/T02', deviations: [...DEVIATION, R] })],
+      'T02 · evaluation': [withProgress({ verdict: 'pass', unverifiable: [UV] })], 'T02 · merge': [async () => { e.resolve(); await new Promise(r => setTimeout(r, 10)); return withProgress(merge) }], 'T02 · progress': [], ...extra }),
+    'T03 · start': [COK], 'T03 · worker': [silent], 'T04 · start': [COK], 'T04 · worker': [silent], 'run end · progress': [COK] }, { ...AP, mode: 'auto' })
+  }
+  const p = await atMerge('SC6 replanning', {})
+  assert.equal(p.res.status, 'error'); assert.equal(p.res.detail.split(' (')[1].split(')')[0], 'T03 · worker, T04 · worker'); assert.ok(p.res.detail.endsWith(SENTENCE), p.res.detail)
+  assert.deepEqual(p.res.merged_unclosed, [{ id: 'T02', branch: 'task/T02', deviations: DEVIATION, reviews: [R.description], unverifiable: [UV], issues: [] }])
+  assert.deepEqual([...p.res.interrupted].sort(), ['T02', 'T03', 'T04'])
+  for (const l of ['T02 · replanning', 'T02 · progress', 'T03 · progress']) assert.equal(idx(p.calls, l), -1, l)
+  drained('SC6 replanning', p.q)
+  // The breaker latches while T02 is evaluated: its merge call is refused before any integrator is launched, so the merge did
+  // not run and T02 is only interrupted
+  const b = deferred(), quiet = async () => { await b.promise; return null }
+  const bm = await scenario('SC6 before merge', { 'plan-reader': [planOpened(P2, P3, P4)], ...iso('T02', { 'T02 · evaluation': [async () => { b.resolve(); await new Promise(r => setTimeout(r, 10)); return withProgress({ verdict: 'pass' }) }], 'T02 · merge': [], 'T02 · progress': [] }),
+    'T03 · start': [COK], 'T03 · worker': [quiet], 'T04 · start': [COK], 'T04 · worker': [quiet], 'run end · progress': [COK] }, { ...AP, mode: 'auto' })
+  assert.deepEqual([bm.res.status, bm.res.merged_unclosed, [...bm.res.interrupted].sort()], ['error', [], ['T02', 'T03', 'T04']])
+  assert.equal(idx(bm.calls, 'T02 · merge'), -1, 'no integrator launched')
+  drained('SC6 before merge', bm.q)
+  // A file unreadable for the evaluator and a kept worktree: their reviews too
+  const k = await atMerge('SC6 reviews', { 'T02 · worker': [report('T02', { branch: 'task/T02', path: '/wt/T02', deviations: DEVIATION })],
+    'T02 · evaluation': [withProgress({ verdict: 'pass', unreadable: ['agents/x/.env.example'] })] }, { ...MOK, worktree_kept: 'contains modified or untracked files' })
+  assert.deepEqual(k.res.merged_unclosed[0].reviews, ['agents/x/.env.example: unreadable by the agents, to review by the human before the PR', 'worktree /wt/T02 kept after the merge of T02 (contains modified or untracked files): what it holds uncommitted is not in plan/p; look at it, then remove it'])
+  drained('SC6 reviews', k.q)
+  // No task merged before the trip: merged_unclosed empty, the detail of 0.19.0 without the sentence
+  const n0 = await scenario('SC6 none', y1(), { ...AP, parallelism: 1 })
+  assert.deepEqual([n0.res.merged_unclosed, n0.res.detail], [[], silentDetail('T02 · verification, T02 · fix 1', 'T02')])
+  drained('SC6 none', n0.q)
+})
+await test('SC7: scope — a blind spot of attempt 1 (scope unread twice) does not survive attempt 2, whose scope is read (mutation W21 of T11R)', async () => {
+  const COPY = { ...OUT, outside: ['src/b.ts'] }
+  const { res, calls, q } = await scenario('SC7', { 'plan-reader': [plan(T00)], ...t00(), 'T00 · verification': [{ ...ok(1), scope: COPY }, ok(2)], 'T00 · scope · second reading': [COPY],
+    'T00 · evaluation': [{ verdict: 'fail', gaps: ['G1'] }, { verdict: 'pass' }], 'T00 · fix 1': [report(1)], 'T00 · progress': [SOK] })
+  assert.deepEqual([res.status, res.tasks[0].status, res.tasks[0].attempts], ['finished', 'merged', 2])
+  assert.ok(byLabel(calls, 'T00 · evaluation')[0].prompt.includes(UNREAD) && !byLabel(calls, 'T00 · evaluation')[1].prompt.includes(UNREAD), 'attempt 1 without the facts, attempt 2 with them')
+  const sc = byLabel(calls, 'T00 · progress')[0].prompt
+  assert.ok(!sc.includes('blind-spot') && !sc.includes('scope of T00 not checked'), 'no blind spot of the scope once attempt 2 read it')
+  drained('SC7', q)
 })
 console.log(`scenarios: ALL GREEN (${n} cases)`)

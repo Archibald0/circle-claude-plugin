@@ -2,6 +2,16 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.18.2 to 0.19.0
+
+Nothing to migrate: plans, `progress.json` and the settings keep their format. After the update, `/reload-plugins`, or a new session; the next `/orchestre:ready` or `/orchestre:run` offers the rules of the new version if `settings.mjs check` finds any missing (they name the version of the plugin). No plan to convert.
+
+1. `/orchestre:run` and `/orchestre:ready` print the free disk space (`worktrees.mjs space`), a warning that blocks nothing.
+2. Agents that do not answer (login expired, usage limit) stop the run at once, status `error`; log in again and launch a new run. A task merged just before is listed with what its close did not record.
+3. The verification checks the scope of each task branch, and the evaluator backs each criterion with a proof.
+4. At the end of a run, `/orchestre:run` closes alone the duplicates and what has gone stale (`progress.mjs triage`), and offers you the rest.
+5. "Your turn", the banner, the status line and `/orchestre:status` say when each item can be acted on. Reviews that quote the same first passage show as one.
+
 ## From 0.18.1 to 0.18.2
 
 Nothing to do: plans, `progress.json` and the settings keep their format. The rules of two agents change (`clerk`, `isolated-worker`): after the update, `/reload-plugins`, or a new session.

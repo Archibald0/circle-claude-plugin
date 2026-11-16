@@ -36,6 +36,9 @@
 //   view [--stdout]        regenerates PROGRESS.md (or prints it without writing anything); statuses reread from PROGRESS.md
 //                          and git, as run-start
 //   status                 progress as compact Markdown, like /orchestre:status; read-only, always code 0
+//   triage [<plan-dir>]    end-of-run sorting of the open reviews and auto-decisions, as JSON { plan, base, integration, safe, open };
+//                          read-only. safe: what the pilot closes alone (decision D6), in the input format of ack ({ items: safe }),
+//                          each with its reason: duplicate, superseded, no-diff or worktree-gone; open: the rest, grouped by task
 //   validate [--file <f>]  validates progress.json against the schema
 // Exit codes: 0 done; 1 write refused, progress.json and PROGRESS.md unchanged; 2 invalid call.
 //
@@ -962,6 +965,84 @@ const ago = ts => {
   return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`
 }
 const shorten = (xs, max) => (xs.length > max ? [...xs.slice(0, max - 1), `+${xs.length - max + 1}`] : xs)
+// ── moments:begin ── The moment of what waits for the user (0.19.0) ──────────────────────────────────────────────────────
+// The rules of "Your turn" in hooks/view-model.mjs, written a second time: the scripts load nothing from the mod.
+// tests/status.test.mjs compares them with the mod on the same progress.json, and this block with its copy (status.mjs and
+// progress.mjs carry the same one). Moment and rank, as in the pane:
+//   task that waits for someone (needs-human, blocked, failed) .......... now; at run stop if it carries an open issue, during a run
+//   open issue (also on a waiting task), plan-lint in error ............. now; at run stop during a run (they need the session)
+//   decision to take that holds back a task of the phase in progress .... now; at run stop during a run
+//   manual or environment prerequisite holding back such a task ......... now, run or not
+//   prerequisite that holds back a task of a later phase k ............. before phase k
+//   prerequisite that holds back no task left ........................... before the next (first) run, rank 98
+//   review of a task of phase k ......................................... after phase k
+//   auto-decision of a task of phase k .................................. before phase k + 1
+//   auto-decision of the last phase; review of the source plan, or of a plan all merged ... before the PR
+// P: { now, updated, tasks: [{ id, phase, status, step, start, end }] (cancelled included), runs: [{ status, phase, start, ruled }],
+//      prerequisites: open [{ id, type, blocks }], issues: open [{ task }], reviews: open [{ task, phase, text }],
+//      decisions: open [{ task }], lint: { ok, errors }, tickets, note }; dates in ms. Returns the lines of the answer.
+function momentLines(P) {
+  const WAITS = { 'needs-human': 'waits for a human', blocked: 'blocked', failed: 'failed' }
+  const { tasks, runs } = P
+  const open = tasks.filter(t => t.status !== 'cancelled'), merged = t => t.status === 'merged'
+  const run = runs.at(-1) ?? null, live = !!run && run.status === 'in-progress'
+  // A run in progress that has not written for 45 minutes gives no news: its tasks in a step no longer count as running
+  const active = live && !(P.updated != null && P.now - P.updated >= 45 * 60000)
+  const NOW = { moment: 'now', rank: 0 }, STOP = { moment: 'at run stop', rank: 0.2 }, PR = { moment: 'before the PR', rank: 99 }
+  const after = k => ({ moment: `after phase ${k}`, rank: k }), before = k => ({ moment: `before phase ${k}`, rank: k - 0.5 })
+  const session = live ? STOP : NOW
+  const lineOf = m => (m === 'now' ? 'now' : m === 'at run stop' ? 'stop' : 'later')
+  const phaseOf = id => tasks.find(t => t.id === id)?.phase ?? null
+  const phases = [...new Set(open.map(t => t.phase))].sort((a, b) => a - b)
+  const maxPhase = phases.at(-1) ?? 0, allMerged = open.length > 0 && open.every(merged)
+  // The phase in progress: the one of the run (the highest of the tasks it started or closed), otherwise the first not finished
+  const touched = run && run.start != null ? open.filter(t => (t.start != null && t.start >= run.start) || (t.end != null && t.end >= run.start)) : []
+  const cur = live ? Math.max(run.phase, ...touched.map(t => t.phase)) : phases.find(k => !open.filter(t => t.phase === k).every(merged)) ?? null
+  const items = []
+  const put = (order, at, f) => items.push({ order, ...at, ...f })
+  const seen = new Set()
+  for (const t of open.filter(t => t.status in WAITS && !(active && t.step) && !(live && run.ruled.includes(t.id)))) {
+    const p = P.issues.find(x => x.task === t.id)
+    if (p) seen.add(p)
+    put(1, p ? session : NOW, { text: `${t.id} ${WAITS[t.status]}` })
+  }
+  for (const p of P.issues) if (!seen.has(p)) put(2, session, { count: 'issue' })
+  for (const p of P.prerequisites) {
+    const held = tasks.filter(t => p.blocks.includes(t.id) && t.status !== 'merged' && t.status !== 'cancelled')
+    const first = held.length ? Math.min(...held.map(t => t.phase)) : null
+    const at = first == null ? { moment: runs.length ? 'before the next run' : 'before the first run', rank: 98 } : cur != null && first > cur ? before(first) : NOW
+    const when = p.type === 'decision' && at.moment === 'now' ? session : at
+    put(0, when, { text: lineOf(when.moment) === 'later' ? `${p.id} ${when.moment}` : `${p.id} (${p.type}) blocks ${shorten(p.blocks, 4).join(', ')}` })
+  }
+  if (!P.lint.ok) put(3, session, { text: `plan-lint: ${plural(P.lint.errors, 'error')}` })
+  // Two open reviews of the same task are one when their first backquoted passage is the same (D5)
+  const twins = new Set()
+  for (const r of P.reviews) {
+    const m = /`([^`]+)`/.exec(r.text)
+    if (m) { const k = `${r.task ?? ''}|${m[1]}`; if (twins.has(k)) continue; twins.add(k) }
+    const phase = r.phase ?? phaseOf(r.task)
+    put(4, allMerged || phase == null ? PR : after(phase), { count: 'review' })
+  }
+  for (const d of P.decisions) {
+    const phase = phaseOf(d.task)
+    put(5, allMerged || phase == null || phase >= maxPhase ? PR : before(phase + 1), { count: 'auto-decision' })
+  }
+  // By rank, then prerequisites, tasks, issues, plan-lint, reviews, auto-decisions; the same kind at the same moment is counted
+  items.sort((a, b) => a.rank - b.rank || a.order - b.order)
+  const entries = []
+  for (const it of items) {
+    const same = it.count && entries.find(e => e.count === it.count && e.moment === it.moment)
+    if (same) same.n++
+    else entries.push({ line: lineOf(it.moment), moment: it.moment, count: it.count, n: 1, text: it.text })
+  }
+  if (P.note) entries.push({ line: 'now', text: P.note })
+  if (P.tickets) entries.push({ line: 'later', text: `${plural(P.tickets, 'ticket')} after the PR` })
+  const say = e => (e.count ? `${e.count === 'issue' ? `${plural(e.n, 'issue')} to settle` : plural(e.n, e.count)}${e.line === 'later' ? ` ${e.moment}` : ''}` : e.text)
+  const lines = [['now', 'Now'], ['stop', 'At run stop'], ['later', 'Later']].map(([k, title]) => [title, entries.filter(e => e.line === k).map(say)]).filter(([, xs]) => xs.length)
+    .map(([title, xs]) => `**${title}**: ${shorten(xs, 6).join(' · ')}`)
+  return lines.length ? lines : ['**Your turn**: nothing for now']
+}
+// ── moments:end ──
 
 function status(arg) {
   let ctx
@@ -977,7 +1058,8 @@ function status(arg) {
   const run = doc ? currentRun(doc) : null
   // git is the source of truth for "merged"; otherwise the progress file, fresher than PROGRESS.md during a run
   const statusOf = t => (t.status === 'merged' ? 'merged' : S.get(t.id)?.status ?? t.status)
-  const active = L.tasks.map(t => ({ ...t, status: statusOf(t) })).filter(t => t.status !== 'cancelled')
+  const all = L.tasks.map(t => ({ ...t, status: statusOf(t) }))
+  const active = all.filter(t => t.status !== 'cancelled')
   if (!active.length) return `orchestre:status: no task in ${ctx.rel}`
   const done = t => t.status === 'merged'
   const ATTENTION = { 'needs-human': 'waits for a human', blocked: 'blocked', failed: 'failed' }
@@ -1008,19 +1090,23 @@ function status(arg) {
   const log = attempt(() => git(['log', '--first-parent', '--format=%ct%x09%s', base && base !== integ ? `${base}..${integ}` : integ, '--'], root)) || ''
   const merge = log.split('\n').map(l => l.split('\t')).find(([, s]) => MERGE.test(s || ''))
 
-  const yourTurn = []
-  for (const p of (L.prerequisites || []).filter(x => x.status === 'open' && (x.blocks || []).length)) yourTurn.push(`${p.id} (${p.type}) blocks ${shorten(p.blocks, 4).join(', ')}`)
-  for (const [st, what] of Object.entries(ATTENTION)) for (const t of active.filter(x => x.status === st && !inStep(x))) yourTurn.push(`${t.id} ${what}`)
+  // What waits for the user, by moment (0.19.0). The reviews still open in the progress file (those marked done, 0.15.1, or
+  // moved to tickets, 0.16.0, no longer wait), otherwise those of HANDOFF.md, whose phase is unknown; the tickets of
+  // HANDOFF.md, and the reviews and auto-decisions moved to tickets
   const counts = parseHandoff(handoff).counts
   const count = type => Object.values(counts).reduce((n, c) => n + (c[type] ? c[type].minor + c[type].major : 0), 0)
-  // The reviews still open in the progress file (those marked done, 0.15.1, or moved to tickets, 0.16.0, no longer wait),
-  // otherwise those of HANDOFF.md; the tickets of HANDOFF.md, and the reviews and auto-decisions moved to tickets
-  const reviews = doc ? doc.reviews.filter(r => !closedAs(r)).length : count('review')
-  const tickets = count('ticket') + (doc ? [...doc.reviews, ...doc.auto_decisions].filter(x => closedAs(x) === 'ticket').length : 0)
-  if (reviews) yourTurn.push(`${plural(reviews, 'review')} before the PR`)
-  if (tickets) yourTurn.push(`${plural(tickets, 'ticket')} after the PR`)
-  if (!L.ok) yourTurn.push(`plan-lint: ${plural((L.errors || []).length, 'error')}`)
-  if (note) yourTurn.push(note)
+  const ms = x => { const t = typeof x === 'string' ? Date.parse(x) : NaN; return Number.isNaN(t) ? null : t }
+  const yourTurn = momentLines({
+    now: Date.now(), updated: doc ? ms(doc.updated) : null,
+    tasks: all.map(t => { const s = S.get(t.id); return { id: t.id, phase: t.phase, status: t.status, step: typeof s?.step === 'string' ? s.step : null, start: ms(s?.start), end: ms(s?.end) } }),
+    runs: doc ? doc.runs.map(r => ({ status: r.status, phase: Number.isInteger(r.phase) ? r.phase : 0, start: ms(r.start), ruled: (r.rulings_applied || []).map(a => a.task) })) : [],
+    prerequisites: (L.prerequisites || []).filter(x => x.status === 'open').map(p => ({ id: p.id, type: p.type, blocks: p.blocks || [] })),
+    issues: doc ? doc.issues.filter(p => p.status !== 'settled').map(p => ({ task: p.task })) : [],
+    reviews: doc ? doc.reviews.filter(r => !closedAs(r)).map(r => ({ task: r.task ?? null, phase: Number.isInteger(r.phase) ? r.phase : null, text: String(r.text ?? '') })) : parseHandoff(handoff).reviews.map(r => ({ task: r.task, phase: null, text: r.text })),
+    decisions: doc ? doc.auto_decisions.filter(d => !closedAs(d)).map(d => ({ task: d.task })) : [],
+    lint: { ok: !!L.ok, errors: (L.errors || []).length },
+    tickets: count('ticket') + (doc ? [...doc.reviews, ...doc.auto_decisions].filter(x => closedAs(x) === 'ticket').length : 0), note,
+  })
 
   const phases = [...new Set(active.map(t => t.phase))].sort((a, b) => a - b)
   const started = ph => active.some(t => t.phase === ph && (done(t) || inProgress.some(e => e.id === t.id)))
@@ -1040,8 +1126,73 @@ function status(arg) {
     out.push(`| ${sym} ${ph} | \`${bar(f / ts.length, 10)}\` ${pct(f, ts.length)}% | ${f}/${ts.length} |`)
   }
   if (inProgress.length) out.push('', `**In progress**: ${shorten(inProgress.map(e => e.text), 5).join(' · ')}`)
-  out.push('', `**Your turn**: ${yourTurn.length ? shorten(yourTurn, 6).join(' · ') : 'nothing for now'}`)
+  out.push('', ...yourTurn)
   return out.join('\n')
+}
+
+// ─── Read: end-of-run triage ─────────────────────────────────────────────────────────────────────────────────────
+// What the pilot may close alone (D6) is decided here, by four cases; everything else is offered, never closed. Writes nothing.
+//   duplicate      two open reviews of one task (or of the source plan) with the same first backquoted passage (D5): the later one
+//   superseded     an open auto-decision whose issue a ruling of the user settled in a later run
+//   no-diff        a review "<file>: unreadable by the agents…" whose file no longer differs between the base and the integration branch
+//   worktree-gone  a review "worktree <path> kept…" whose folder no longer exists
+// A review that asks to change a file forbidden to the agents is free text: it matches none of them and stays open.
+const FIRST_TICKS = /`([^`]+)`/
+const UNREADABLE = /^`?([^\s`:]+)`?: unreadable by the agents\b/
+const WORKTREE_KEPT = /^worktree (.+?) kept\b/
+function triage(arg) {
+  const ctx = locate(arg)
+  const handoff = readOrNull(join(ctx.dir, 'HANDOFF.md')) || ''
+  let doc = load(ctx)
+  if (!doc) {
+    const L = planLint(ctx)
+    if (!L.tasks) refuse(`${L.errors[0]}: progress.json missing, it cannot be rebuilt without plan-lint`)
+    doc = rebuild(ctx, L, handoff, now())
+  }
+  const entries = [...doc.reviews.filter(x => !closedAs(x)).map(x => ({ kind: 'review', x })), ...doc.auto_decisions.filter(x => !closedAs(x)).map(x => ({ kind: 'decision', x }))]
+  const textOf = e => (e.kind === 'review' ? e.x.text : e.x.title)
+  const item = e => ({ kind: e.kind, task: e.x.task ?? null, text: textOf(e) })
+  // What ack matches on: kind, task and the text squashed
+  const ackKey = e => `${e.kind}\0${e.x.task ?? ''}\0${squash(textOf(e))}`
+  const seen = new Set()
+  const candidates = []
+  const settle = (e, reason, detail, of) => { if (!seen.has(e)) { seen.add(e); candidates.push({ e, safe: { ...item(e), reason, detail, ...(of ? { of: item(of) } : {}) } }) } }
+
+  const firstOf = new Map()
+  for (const e of entries.filter(e => e.kind === 'review')) {
+    const passage = e.x.text.match(FIRST_TICKS)?.[1]
+    if (!passage) continue
+    const k = `${e.x.task ?? ''}\0${passage}`
+    if (!firstOf.has(k)) firstOf.set(k, e)
+    else settle(e, 'duplicate', `same first passage \`${passage}\` as an earlier review`, firstOf.get(k))
+  }
+  for (const e of entries.filter(e => e.kind === 'decision')) {
+    const ruling = doc.runs.filter(r => r.number > e.x.run).flatMap(r => r.rulings_applied.map(a => ({ ...a, run: r.number }))).find(a => a.task === e.x.task && squash(a.title) === squash(e.x.title))
+    if (ruling) settle(e, 'superseded', `settled by the user in run ${ruling.run}: option ${ruling.option}, instead of ${e.x.option}`)
+  }
+  const exists = b => attempt(() => git(['rev-parse', '--verify', '--quiet', `refs/heads/${b}`], ctx.root)) != null
+  const base = ctx.base || ['main', 'master'].find(exists) || null
+  // git diff --quiet: 0 no difference, 1 a difference, anything else (unknown branch or path) is not known
+  const same = file => spawnSync('git', ['--literal-pathspecs', 'diff', '--quiet', base, ctx.integration, '--', file], { cwd: ctx.root, env: ENV, stdio: 'ignore' }).status === 0
+  for (const e of entries.filter(e => e.kind === 'review')) {
+    const file = e.x.text.match(UNREADABLE)?.[1]
+    if (file && base && base !== ctx.integration && same(file)) settle(e, 'no-diff', `${file} has no difference between ${base} and ${ctx.integration}`)
+    const path = e.x.text.match(WORKTREE_KEPT)?.[1]
+    if (path && !existsSync(resolve(ctx.root, path))) settle(e, 'worktree-gone', `${path} no longer exists`)
+  }
+  // ack closes every open item that has the same key: a candidate is safe only when all of them are candidates
+  const kept = candidates.filter(c => entries.filter(e => ackKey(e) === ackKey(c.e)).every(e => seen.has(e)))
+  const safe = kept.map(c => c.safe), closing = new Set(kept.map(c => c.e))
+  const groups = new Map()
+  for (const e of entries) {
+    if (closing.has(e)) continue
+    if (!groups.has(e.x.task ?? null)) groups.set(e.x.task ?? null, [])
+    groups.get(e.x.task ?? null).push(item(e))
+  }
+  const order = [null, ...doc.tasks.map(t => t.id)]
+  const rank = t => (order.includes(t) ? order.indexOf(t) : order.length)
+  const open = [...groups].sort((a, b) => rank(a[0]) - rank(b[0])).map(([task, items]) => ({ task, items }))
+  return { plan: ctx.name, base, integration: ctx.integration, safe, open }
 }
 
 // ─── Entry ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1058,7 +1209,7 @@ function input(json) {
 }
 
 const WRITES = { 'run-start': runStart, step, close, ruling, 'run-end': runEnd, pilot, ack, ticket, reopen, relabel, 'close-plan': closePlan, 'reopen-plan': reopenPlan }
-const USAGE = 'usage: progress.mjs <run-start|step|close|ruling|run-end|pilot|ack|ticket|reopen|relabel|close-plan|reopen-plan|view|status|validate> [<plan-dir>] [--stdout] [--file <progress.json>] [--json <object>]; for writes, JSON in --json or on standard input'
+const USAGE = 'usage: progress.mjs <run-start|step|close|ruling|run-end|pilot|ack|ticket|reopen|relabel|close-plan|reopen-plan|view|status|triage|validate> [<plan-dir>] [--stdout] [--file <progress.json>] [--json <object>]; for writes, JSON in --json or on standard input'
 
 function main() {
   const argv = process.argv.slice(2), cmd = argv[0]
@@ -1071,6 +1222,10 @@ function main() {
     let text
     try { text = status(arg) } catch (e) { text = `orchestre:status: ${String((e && e.message) || e).split('\n')[0]}` }
     console.log(text)
+    return 0
+  }
+  if (cmd === 'triage') {
+    console.log(JSON.stringify(triage(arg), null, 2))
     return 0
   }
   if (cmd === 'validate') {

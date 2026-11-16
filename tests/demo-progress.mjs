@@ -140,8 +140,8 @@ await play(RUN1, 1)
 summary()
 console.log(`
 Run 1 stopped awaiting a ruling. In the session, try:
-  /progress         the pane in cards: y (your turn), r (the run), t (the tasks), l (the log); 1 to 9, c and p prepare an
-                    action in the prompt; Esc closes it
+  /progress         the pane in cards: y (your turn: what is for "now" first, then "later"), r (the run), t (the tasks),
+                    l (the log); 1 to 9, c and p prepare an action in the prompt; Esc closes it
   /progress text    the same state as text
   ✕ Hide            at the end of the banner, to click: the end banner goes away until the next run`)
 await entry('\nEnter to start run 2… ')

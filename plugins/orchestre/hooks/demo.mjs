@@ -178,8 +178,8 @@ const TO_TRY = /** @type {Record<number, string>} */ ({
   1: "each task's timeline fills in step by step",
   4: 'the fix turns amber in the timeline of T02, its model shows "sonnet → opus" (log: l)',
   6: '"⚑ 1 to review" can be clicked in the banner',
-  10: 'the "Your turn" card comes first; key 1 shows the detail of its line and its buttons',
-  11: 'the run stops: the run card gives what comes next, [ Resume command in the prompt ]',
+  10: 'the "Your turn" card comes first, T03 "at run stop" under the grey "later" line; key 1 shows its detail',
+  11: 'the run stops: T03 is now "now", the review and the auto-decision stay below "later"; the run card gives what comes next',
   12: 'the issue is settled: T03 no longer waits for anyone',
   20: '[ PR draft in the prompt ] in the run card; [ ✓ Done ] in the detail of a review',
 })

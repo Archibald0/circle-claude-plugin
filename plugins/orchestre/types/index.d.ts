@@ -105,8 +105,10 @@ export type LastAction = { text: string; kind: 'done' | 'ticket' | 'edit' }
 // when the mod cannot run progress.mjs itself (0.16.0); ref: what progress.mjs needs to find it
 // For the detail card (0.17.0): kind, what it is ("manual action", "review"…); what, its text without the id in front;
 // when, the moment to act ("Now", "Before phase 3"…), and where, the place to act from, both drawn from the state of the
-// plan; blocks, the tasks a prerequisite holds back; how and check, the steps and the evidence of a prerequisite
-export type YourTurnItem = { key: string; group: 'settle' | 'review' | 'decision'; task: string; g: Piece; text: string; detail?: string; prompt: string; help: string; ack?: string; toTicket?: string; ref?: ItemRef; kind: string; what: string; when: string; where: string; blocks?: string[]; how?: string[]; check?: string }
+// plan; blocks, the tasks a prerequisite holds back; how and check, the steps and the evidence of a prerequisite;
+// moment and rank (0.19.0), the label drawn on the right of the line ("now", "at run stop", "after phase 1"…) and the rank
+// that sorts the list (0 for now, 0.2 at run stop, 99 before the PR)
+export type YourTurnItem = { key: string; group: 'settle' | 'review' | 'decision'; task: string; g: Piece; text: string; detail?: string; prompt: string; help: string; ack?: string; toTicket?: string; ref?: ItemRef; kind: string; what: string; when: string; moment: string; rank: number; where: string; blocks?: string[]; how?: string[]; check?: string }
 
 // The cards of the pane, in order; the banner opens the pane at one of them
 // closed: the card of a plan closed by the pilot (0.16.1)
