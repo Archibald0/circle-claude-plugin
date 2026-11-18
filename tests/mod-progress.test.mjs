@@ -86,7 +86,7 @@ try {
     const waiting = (doc, id) => M.yourTurnItems(M.normalize(doc), tA).items.filter(it => it.kind === 'issue to settle' && it.task === id).length
     const X = M.normalize(four)
     assert.deepEqual(X.issues.map(p => [p.id, p.withoutActions]), [['T02-1', false], ['T03-1', true]])
-    assert.deepEqual(X.issues[0].options[1], { id: 'B', description: 'Option B', valid: false, invalidReason: 'amends a task of another phase', effect: 'adds T09', amends: ['T09'] })
+    assert.deepEqual(X.issues[0].options[1], { id: 'B', description: 'Option B', recommended: false, valid: false, invalidReason: 'amends a task of another phase', effect: 'adds T09', amends: ['T09'] })
     assert.deepEqual(X.issues[0].options[0].valid, null, 'valid stays null until the dry run')
     assert.deepEqual(X.pendingRulings, [])
     assert.deepEqual([waiting(four, 'T02'), waiting(four, 'T03')], [1, 1])
@@ -106,7 +106,7 @@ try {
     const three = M.normalize(doc3)
     assert.deepEqual(three.issues.map(p => [p.id, p.withoutActions]), [['T02-2', true], ['T03-1', true]])
     assert.deepEqual(three.issues.map(p => p.id), convertV3(doc3).issues.filter(p => p.status !== 'settled').map(p => p.id), 'the ids progress.mjs writes')
-    assert.deepEqual(three.issues[0].options, [{ id: 'A', description: 'Option A', valid: false, invalidReason: INHERITED, effect: '', amends: [] }])
+    assert.deepEqual(three.issues[0].options, [{ id: 'A', description: 'Option A', recommended: false, valid: false, invalidReason: INHERITED, effect: '', amends: [] }])
     assert.deepEqual(three.pendingRulings, [])
   })
 
@@ -157,7 +157,8 @@ try {
     assert.match(tt, /^⇒ T01 · Retry threshold: A \(cap at 30 s\) +before phase 2$/m)
     const actions = yourTurn.lines.flat().filter(m => m.x).map(m => m.x)
     assert.deepEqual(actions.map(x => x.hotkey), ['1', '2', '3', '4', '5'])
-    assert.equal(actions[0].prompt, '/orchestre:run plans/demo --resume', 'an issue for a human: resume the run, which asks it')
+    // 0.21.0: an issue is answered from its detail card; the prompt of the item is the one of [ Ask Claude ]
+    assert.equal(actions[0].prompt, 'Explain the issue of T02 ("Missing secret") and its options.', 'an issue for a human: Ask Claude')
     assert.equal(actions[1].prompt, 'Review with me, before the PR (review of T01): agents/x/.env.example: add MR_MAX')
     assert.equal(actions[4].prompt, 'Go over the auto-decision for T01 with me: "Retry threshold", option A (cap at 30 s).')
     // Blocked without an issue: ask the pilot; open prerequisite: /orchestre:ready
@@ -194,6 +195,8 @@ try {
 
   progress('run-end', { ...EMPTY_SUMMARY, status: 'awaiting-ruling', phase: 1, mode: 'auto', stop_issue: SECRET, waiting: ['T02'] })
   const C = readFile()
+  // The file itself, for the cases that answer an issue (0.21.0)
+  const rawC = rawFile()
 
   testCase('end of run: notification, end banner, no more suffix nor task in progress', () => {
     assert.deepEqual(rawFile().issues.map(p => [p.title, p.role]), [['Missing secret', 'stop']], 'the scribe notes the issue at the close, the run end makes it the stop issue')
@@ -732,7 +735,7 @@ try {
       assert.deepEqual([d.lines[0][0].c, d.lines[0][0].b, d.lines[0][1].c], ['suggestion', true, 'suggestion'], 'when and where in the color of what waits for you')
       assert.ok(d.lines[4 + where.length].every(m => m.b), 'what it is: in bold')
       const at = re => L.findIndex(l => re.test(l))
-      const order = [/^ {2}blocks T04$/, /^ {2}1\. Ask the contracts team/, /^ {2}2\. Add it to/, /^ {2}check {2}`grep -c TOKEN \.env\.local`$/, /^ {2}› \/orchestre:ready plans\/demo$/, /^\[ Settle the prerequisites \]$/, /^The button fills the prompt;/]
+      const order = [/^ {2}blocks T04$/, /^ {2}1\. Ask the contracts team/, /^ {2}2\. Add it to/, /^ {2}check {2}`grep -c TOKEN \.env\.local`$/, /^ {2}› \/orchestre:ready plans\/demo$/, /^\[ Settle the prerequisites \]/, /^First button: fills the prompt, sends/]
       const places = order.map(at)
       assert.ok(places.every((x, i) => x > 0 && (i === 0 || x > places[i - 1])), `${columns} columns, in this order: ${JSON.stringify(places)}\n${L.join('\n')}`)
       // A long step: its words wrapped under its first word
@@ -744,11 +747,13 @@ try {
     const r = M.detailCard(H, tA, 80, items.find(x => x.group === 'review').key).lines.map(M.plainText)
     assert.ok(!r.some(l => /^ {2}› /.test(l)), r.join('\n'))
     assert.equal(r.at(-1), 'First button: fills the prompt, sends nothing. Others: apply at once.')
-    assert.ok(M.detailCard(H, tA, 80, item('T02').key).lines.map(M.plainText).includes('  › /orchestre:run plans/demo --resume'))
+    // 0.21.0: T02 carries an issue, answered from its card: no command line, the answer buttons
+    const t02 = M.detailCard(H, tA, 80, item('T02').key).lines.map(M.plainText)
+    assert.ok(!t02.some(l => /^ {2}› /.test(l)) && t02.includes('[ Other… ]  [ Ask Claude ]'), t02.join('\n'))
     // The run stopped: where and when change; no run yet; all merged; a review of the source plan; a decision of the last phase
     const stopped = { ...H, run: { ...H.run, status: 'awaiting-ruling' } }
     const sItems = M.yourTurnItems(stopped, tA).items, sItem = id => sItems.find(x => x.task === id)
-    assert.deepEqual([sItem('T02').where, sItem('E1').when, sItem('H1').when], ['This session: the run is stopped, resume it here', 'Now', 'Before phase 2'])
+    assert.deepEqual([sItem('T02').where, sItem('E1').when, sItem('H1').when], ['Here: applied when the next run starts', 'Now', 'Before phase 2'])
     const blocked = { ...stopped, issues: [], tasks: stopped.tasks.map(t => (t.id === 'T02' ? { ...t, status: 'blocked' } : t)) }
     assert.deepEqual(['kind', 'when', 'where'].map(k => M.yourTurnItems(blocked, tA).items[0][k]), ['blocked task', 'Now', 'This session: the run is stopped, ask the pilot'])
     assert.equal(M.yourTurnItems({ ...H, runs: [], run: null }, tA).items.find(x => x.task === 'H1').when, 'Before phase 2', 'the label says before phase 2: so does the card')
@@ -914,9 +919,9 @@ try {
     assert.equal(review.ack, `/orchestre:done plans/demo review ${review.task} ${B.reviews.find(r => r.task === review.task).text}`)
     assert.equal(decision.ack, `/orchestre:done plans/demo decision ${decision.task} ${B.decisions[0].title}`)
     assert.equal(settle.ack, undefined)
-    // No Done on an item to settle: it leaves the list with the run; its one button prepares its action (0.16.0)
+    // No Done on an item to settle. An issue (0.21.0): no option (SECRET has none), Other… opens the text field, Ask Claude fills the prompt
     const settleButtons = M.detailCard(B, tA, 100, settle.key).lines.flat().filter(m => m.x)
-    assert.deepEqual(settleButtons.map(m => [m.t, m.x.op ?? null, m.x.prompt]), [['[ Resume the run ]', null, '/orchestre:run plans/demo --resume']])
+    assert.deepEqual(settleButtons.map(m => [m.t, m.x.op ?? null, m.x.prompt]), [['[ Other… ]', 'other', ''], ['[ Ask Claude ]', null, 'Explain the issue of T02 ("Missing secret") and its options.']])
     // The source plan: "-"
     const source = { ...B, reviews: [{ task: null, phase: null, text: 'README: relire', at: null }] }
     assert.equal(M.yourTurnItems(source, tA).items.find(it => it.group === 'review').ack, '/orchestre:done plans/demo review - README: relire')
@@ -1117,6 +1122,319 @@ try {
     assert.deepEqual([w.moment, /once the run stops/.test(w.where)], ['now', false])
     const nr = M.yourTurnItems({ ...sets.liveNoIssue, tasks: sets.liveNoIssue.tasks.map(t => (t.id === 'T02' ? { ...t, status: 'needs-human' } : t)) }, tA).items.find(x => x.task === 'T02' && x.group === 'settle')
     assert.deepEqual([nr.moment, /once the run stops/.test(nr.where)], ['now', false])
+  })
+
+  // ── Answering an issue from the pane (0.21.0, T25) ──
+  // rawC: run 1 stopped (awaiting-ruling), T01 merged, T02 needs-human, T03 and T04 to do. The issues are those of T01, which
+  // waits for no one: each one is an item of its own
+  const opt = (id, o = {}) => ({ id, description: `Option ${id} of the issue`, impact: '', recommended: false, valid: true, invalid_reason: null, effect: '', amends: [], ...o })
+  const OPTIONS = [opt('A', { recommended: true, effect: 'amends T03, T04', amends: ['T03', 'T04'] }), opt('B'), opt('C', { valid: false, invalid_reason: 'plan-lint: T09 overlaps T03' })]
+  const issueOf = (id, o = {}) => ({ id, run: 1, task: 'T01', title: `Issue ${id}`, context: '', human: false, role: 'open', status: 'open', chosen_option: null, options: OPTIONS, ...o })
+  const lastRun = rawC.runs.at(-1)
+  const withRun = (doc, status) => ({ ...doc, runs: [...doc.runs.slice(0, -1), { ...lastRun, status, end: status === 'in-progress' ? null : lastRun.end }] })
+  const registerOf = (...ids) => ({ format: 'orchestre-issues/1', issues: ids.map(id => ({ id, status: 'open', ruling: null })) })
+  const itemOf = (I, id) => M.yourTurnItems(I, tA).items.find(x => x.issue?.id === id)
+  const cardOf = (I, id, o) => M.detailCard(I, tA, 100, itemOf(I, id).key, o)
+  const buttonsOf = card => card.lines.flat().filter(m => m.x).map(m => [m.t, m.x.op ?? null, m.x.issue ?? null, m.x.option ?? null])
+
+  testCase('answer an issue (0.21.0): its options, the effect of the recommended one, the buttons; an option the dry run refuses in grey with its reason; Decide later only when it holds a task', () => {
+    const doc = { ...rawC, issues: [issueOf('T01-1')], pending_rulings: [] }
+    const I = M.normalize(doc, registerOf('T01-1'))
+    assert.deepEqual(I.issues[0].options.map(o => [o.id, o.recommended, o.valid]), [['A', true, true], ['B', false, true], ['C', false, false]])
+    const d = cardOf(I, 'T01-1'), L = d.lines.map(M.plainText)
+    for (const l of d.lines) assert.ok(M.width(l) <= 96, M.plainText(l))
+    assert.equal(M.plainText(d.title), '▸ Detail · 2 · T01 · issue to settle')
+    assert.deepEqual(L.slice(0, 6), ['when     Now', '', 'where    Here: applied when the next run starts', '', '─'.repeat(96), 'Issue T01-1'])
+    const at = re => L.findIndex(l => re.test(l))
+    // The effect of the recommended option, in grey under the title; the options; C refused: grey, its reason under it
+    const effect = at(/^ {2}recommended option: amends T03, T04$/)
+    assert.ok(effect === 6 && d.lines[effect].every(m => m.d), L.join('\n'))
+    assert.deepEqual(L.slice(7, 11), ['  A  Option A of the issue  recommended', '  B  Option B of the issue', '  C  Option C of the issue', '      plan-lint: T09 overlaps T03'])
+    assert.deepEqual(d.lines[7].map(m => [m.t.trim(), m.c ?? null]).at(-1), ['recommended', 'success'])
+    assert.ok(d.lines[7].every(m => !m.d) && d.lines[9].every(m => m.d) && d.lines[10].every(m => m.d), 'A in normal weight, C and its reason in grey')
+    // The buttons: the valid options, Other…, Ask Claude; no Decide later (it holds no task); C has none
+    assert.deepEqual(buttonsOf(d), [['[ A · recommended ]', 'rule', 'T01-1', 'A'], ['[ B ]', 'rule', 'T01-1', 'B'], ['[ Other… ]', 'other', 'T01-1', null], ['[ Ask Claude ]', null, null, null]])
+    assert.ok(L.includes('[ A · recommended ]  [ B ]  [ Other… ]  [ Ask Claude ]'), L.join('\n'))
+    assert.equal(L.at(-1), 'A, B: recorded at once, applied before the next task starts. Ask Claude: fills the prompt.')
+    // Ask Claude fills the prompt and writes nothing: no op, its prompt
+    const ask = d.lines.flat().find(m => m.t === '[ Ask Claude ]').x
+    assert.deepEqual([ask.op, ask.prompt, ask.bracket], [undefined, 'Explain the issue of T01 ("Issue T01-1") and its options.', true])
+    // It holds T03: Decide later, release
+    const held = M.normalize({ ...doc, issues: [issueOf('T01-1', { holds: ['T03'] })] }, registerOf('T01-1'))
+    assert.deepEqual(buttonsOf(cardOf(held, 'T01-1')).at(-1), ['[ Decide later ]', 'release', 'T01-1', null])
+    assert.ok(M.detailCard(held, tA, 100, itemOf(held, 'T01-1').key).lines.map(M.plainText).includes('[ A · recommended ]  [ B ]  [ Other… ]  [ Ask Claude ]  [ Decide later ]'))
+    // Released (holds emptied by release): no Decide later
+    const released = M.normalize({ ...doc, issues: [issueOf('T01-1', { holds: [], released: rawC.updated })] }, registerOf('T01-1'))
+    assert.ok(!buttonsOf(cardOf(released, 'T01-1')).some(b => b[1] === 'release'))
+    // A dry run not done yet (valid null) on an issue with an entry: rule takes it, a button
+    const pendingDry = M.normalize({ ...doc, issues: [issueOf('T01-1', { options: [opt('A', { valid: null })] })] }, registerOf('T01-1'))
+    assert.deepEqual(buttonsOf(cardOf(pendingDry, 'T01-1'))[0], ['[ A ]', 'rule', 'T01-1', 'A'])
+  })
+
+  testCase('answer an issue (0.21.0): inherited from /3, or without an entry in ISSUES.json, its options are grey with their reason and without a button; only Other… answers it, a free ruling in the field of Edit text', () => {
+    // /3: the options of an inherited issue, valid false with the reason of convertV3
+    const doc3 = { ...rawC, format: 'orchestre-progress/3', issues: [{ ...issueOf('T01-1'), id: undefined }].map(({ id, ...p }) => p), pending_rulings: undefined }
+    const three = M.normalize(doc3, registerOf())
+    assert.equal(three.issues[0].withoutActions, true)
+    let d = cardOf(three, 'T01-1'), L = d.lines.map(M.plainText)
+    assert.deepEqual(buttonsOf(d), [['[ Other… ]', 'other', 'T01-1', null], ['[ Ask Claude ]', null, null, null]])
+    assert.deepEqual([L[6], d.lines[6].every(m => m.d), d.lines[7].every(m => m.d)], ['  A  Option A of the issue', true, true], 'grey, its reason under it')
+    assert.ok(L.join('\n').replace(/\n {6}/g, ' ').includes(INHERITED), L.join('\n'))
+    assert.ok(!L.some(l => /recommended option:/.test(l)), 'no option it can record: no effect')
+    assert.equal(L.at(-1), 'Other…: recorded at once, applied before the next task starts. Ask Claude: fills the prompt.')
+    // /4, no entry in ISSUES.json (a stop issue raised by run-end before 0.21.0, valid null): the reason apply gives
+    const doc = { ...rawC, issues: [issueOf('T01-1', { options: [opt('A', { valid: null, recommended: true, effect: 'amends T03' }), opt('B', { valid: null })] })], pending_rulings: [] }
+    const none = M.normalize(doc, registerOf('T09-1'))
+    assert.equal(none.issues[0].entry, false)
+    d = cardOf(none, 'T01-1'); L = d.lines.map(M.plainText)
+    assert.deepEqual(buttonsOf(d), [['[ Other… ]', 'other', 'T01-1', null], ['[ Ask Claude ]', null, null, null]])
+    assert.ok(L.includes('      no entry in ISSUES.json: the actions of option A are unknown; answer with a text'), L.join('\n'))
+    assert.ok(L.includes('      no entry in ISSUES.json: the actions of option B are unknown; answer with a text'), L.join('\n'))
+    assert.deepEqual(M.acceptable(none), [], 'no recommended option it can record')
+    // The reason is the one progress.mjs apply gives (same template, same register name)
+    const src = readFileSync(PROGRESS, 'utf8')
+    assert.ok(src.includes("export const REGISTER = 'ISSUES.json'") && src.includes('reject(`no entry in ${REGISTER}: the actions of option ${r.option} are unknown; answer with a text`)'), 'apply says the same')
+    assert.equal(M.noEntry('A'), 'no entry in ISSUES.json: the actions of option A are unknown; answer with a text')
+    // RAISED (0.21.0, run-end): valid false with its reason, as any option refused
+    const raised = M.normalize({ ...doc, issues: [issueOf('T01-1', { options: [opt('A', { valid: false, invalid_reason: 'raised without its actions (its close was not written): settle it with a free answer' })] })] }, registerOf())
+    assert.ok(cardOf(raised, 'T01-1').lines.map(M.plainText).includes('      raised without its actions (its close was not written): settle it with a free answer'))
+    // The register not read (a snapshot of the demo, by hand): nothing said of it, the options as their dry run says
+    assert.equal(M.normalize(doc).issues[0].entry, undefined)
+    assert.deepEqual(buttonsOf(cardOf(M.normalize(doc), 'T01-1')).map(b => b[0]).slice(0, 2), ['[ A · recommended ]', '[ B ]'])
+    // Other…: the text field of Edit text, empty; Save records a free ruling on the issue
+    d = cardOf(none, 'T01-1', { editing: true })
+    const field = d.lines.flat().find(m => m.in)
+    assert.deepEqual([field.in.key, field.in.value], ['detail-input', ''])
+    assert.deepEqual(buttonsOf(d), [['[ Save ]', 'save', 'T01-1', null], ['[ Cancel ]', 'cancel', null, null]])
+    assert.equal(M.plainText(d.lines.at(-1)), 'Save records your answer as a free ruling, applied before the next task starts.')
+    assert.equal(M.plainText(M.detailCard(none, tA, 100, itemOf(none, 'T01-1').key, { editing: true, draft: 'Keep it' }).lines[0]), 'Text Keep it')
+  })
+
+  testCase('answer an issue (0.21.0): during a run, an issue that has options is now, answered here; one without options waits for the run to stop (D2)', () => {
+    const doc = { ...rawC, issues: [issueOf('T01-1'), issueOf('T01-2', { options: [] })], pending_rulings: [] }
+    const live = M.normalize(withRun(doc, 'in-progress'), registerOf('T01-1', 'T01-2'))
+    const stopped = M.normalize(doc, registerOf('T01-1', 'T01-2'))
+    assert.deepEqual([itemOf(live, 'T01-1').moment, itemOf(live, 'T01-1').where], ['now', 'Here, while the run goes on (nothing is sent to the chat)'])
+    assert.deepEqual([itemOf(live, 'T01-2').moment, itemOf(live, 'T01-2').where], ['at run stop', 'This session, once the run stops'])
+    assert.deepEqual([itemOf(stopped, 'T01-1').moment, itemOf(stopped, 'T01-1').where, itemOf(stopped, 'T01-2').moment, itemOf(stopped, 'T01-2').where], ['now', 'Here: applied when the next run starts', 'now', 'Here: applied when the next run starts'])
+    // It counts in the title, the badge and the banner: the card is not quiet
+    const card = M.yourTurnCard(live, tA, 100)
+    assert.equal(M.plainText(card.title), '⚠ Your turn')
+    assert.ok(card.urgent >= 1)
+    // On a waiting task (T02, needs-human) the issue decides: with options now, without at run stop
+    const onT02 = o => M.yourTurnItems(M.normalize(withRun({ ...doc, issues: [issueOf('T02-1', { task: 'T02', human: true, ...o })] }, 'in-progress'), registerOf('T02-1')), tA).items.find(x => x.task === 'T02')
+    assert.deepEqual([onT02({}).moment, onT02({}).kind, onT02({}).issue.id], ['now', 'waits for you', 'T02-1'])
+    assert.equal(onT02({ options: [] }).moment, 'at run stop')
+    // A blocked or failed task, a needs-human task with no issue, during a run: now, and a where that is true during a run (T07 review)
+    for (const [status, where] of [['blocked', 'This session: ask the pilot, the run goes on meanwhile'], ['failed', 'This session: ask the pilot, the run goes on meanwhile'], ['needs-human', 'This session: do what it waits for, then resume the run with the others']]) {
+      const I = M.normalize(withRun({ ...doc, issues: [], tasks: rawC.tasks.map(t => (t.id === 'T02' ? { ...t, status } : t)) }, 'in-progress'))
+      const it = M.yourTurnItems(I, tA).items.find(x => x.task === 'T02')
+      assert.deepEqual([it.moment, it.where, M.plainText(M.detailCard(I, tA, 100, it.key).lines[2])], ['now', where, `where    ${where}`], status)
+    }
+  })
+
+  testCase('answer an issue (0.21.0): the last line, recorded with Undo from pendingRulings, then applied once the issue is settled (never ruling.commit); Accept the N recommended', () => {
+    const at = rawC.updated
+    const doc = { ...rawC, issues: [issueOf('T01-1'), issueOf('T01-2')], pending_rulings: [] }
+    const lastOf = (I, last) => { const c = M.yourTurnCard(I, tA, 100, null, { last }); return c ? c.lines.filter(l => M.plainText(l).startsWith('  last: ')) : [] }
+    // Recorded: T01-1 is out of issues, its ruling in pendingRulings gives the issue and the option (B there, whatever the pane kept)
+    const last = { text: 'T01-1 · option A recorded', kind: 'rule', rulings: [{ issue: 'T01-1', option: 'A' }] }
+    const recorded = M.normalize({ ...doc, pending_rulings: [{ issue: 'T01-1', option: 'B', text: null, at }] }, registerOf('T01-1', 'T01-2'))
+    assert.deepEqual(recorded.issues.map(p => p.id), ['T01-2'], 'the issue left the list')
+    let l = lastOf(recorded, last)
+    assert.deepEqual(l.map(M.plainText), ['  last: T01-1 · option B recorded  [ Undo ]'])
+    assert.equal(l[0].at(-1).x.op, 'undo')
+    // Applied: the ruling left pendingRulings, the copy in progress.json is settled; ISSUES.json gives ruling.commit null
+    const settledReg = { format: 'orchestre-issues/1', issues: [{ id: 'T01-1', status: 'settled', ruling: { option: 'A', text: null, author: 'user', at, commit: null } }, { id: 'T01-2', status: 'open', ruling: null }] }
+    const applied = M.normalize({ ...doc, issues: [issueOf('T01-1', { status: 'settled', chosen_option: 'A' }), issueOf('T01-2')] }, settledReg)
+    assert.deepEqual(applied.settledIssues, ['T01-1'])
+    l = lastOf(applied, last)
+    assert.deepEqual(l.map(M.plainText), ['  last: T01-1 · option A applied'])
+    assert.ok(!l[0].some(m => m.x), 'no Undo once applied')
+    // The copy of progress.json alone (no register) says it too; settled only in ISSUES.json (dropped) too
+    assert.deepEqual(lastOf(M.normalize({ ...doc, issues: [issueOf('T01-1', { status: 'settled' }), issueOf('T01-2')] }), last).map(M.plainText), ['  last: T01-1 · option A applied'])
+    assert.deepEqual(lastOf(M.normalize(doc, { format: 'orchestre-issues/1', issues: [{ id: 'T01-1', status: 'dropped', ruling: null }] }), last).map(M.plainText), ['  last: T01-1 · option A applied'])
+    // Withdrawn elsewhere (unrule), or refused by apply (open again): no line
+    assert.deepEqual(lastOf(M.normalize(doc, registerOf('T01-1', 'T01-2')), last), [])
+    // A free answer
+    const free = M.normalize({ ...doc, pending_rulings: [{ issue: 'T01-2', option: null, text: 'Keep it', at }] }, registerOf('T01-1', 'T01-2'))
+    assert.deepEqual(lastOf(free, { text: '', kind: 'rule', rulings: [{ issue: 'T01-2', option: null }] }).map(M.plainText), ['  last: T01-2 · free answer recorded  [ Undo ]'])
+    // Accept the N recommended: from two open issues with a recommended option the pane can record, before the page line
+    const both = M.normalize(doc, registerOf('T01-1', 'T01-2'))
+    const card = M.yourTurnCard(both, tA, 100), C2 = card.lines.map(M.plainText)
+    const accept = card.lines.flat().find(m => m.x?.op === 'acceptAll')
+    assert.deepEqual([accept.t, accept.x.rulings, accept.x.bracket], ['[ Accept the 2 recommended ]', [{ issue: 'T01-1', option: 'A' }, { issue: 'T01-2', option: 'A' }], true])
+    assert.ok(C2.includes('  [ Accept the 2 recommended ]'), C2.join('\n'))
+    const many = M.normalize({ ...doc, issues: [...doc.issues, ...Array.from({ length: 9 }, (_, i) => issueOf(`T01-${i + 3}`, { options: [] }))] }, registerOf('T01-1', 'T01-2'))
+    const ML = M.yourTurnCard(many, tA, 100).lines.map(M.plainText)
+    assert.ok(ML.findIndex(x => x.includes('Accept the 2 recommended')) === ML.findIndex(x => /^ {2}page 1\/2/.test(x)) - 1, 'right before the page line')
+    // One alone, or a recommended option refused: no button
+    for (const I of [M.normalize({ ...doc, issues: [issueOf('T01-1')] }, registerOf('T01-1')), M.normalize({ ...doc, issues: [issueOf('T01-1'), issueOf('T01-2', { options: [opt('A', { recommended: true, valid: false, invalid_reason: 'x' })] })] }, registerOf('T01-1', 'T01-2'))]) {
+      assert.ok(!M.yourTurnCard(I, tA, 100).lines.flat().some(m => m.x?.op === 'acceptAll'))
+    }
+    // Its last line: N recommended options recorded, with Undo; applied once both are settled
+    const bulk = { text: '2 recommended options recorded', kind: 'rule', bulk: true, rulings: [{ issue: 'T01-1', option: 'A' }, { issue: 'T01-2', option: 'A' }] }
+    const twoPending = M.normalize({ ...doc, pending_rulings: ['T01-1', 'T01-2'].map(issue => ({ issue, option: 'A', text: null, at })) }, registerOf('T01-1', 'T01-2'))
+    assert.deepEqual(lastOf(twoPending, bulk).map(M.plainText), ['  last: 2 recommended options recorded  [ Undo ]'])
+    assert.equal(M.yourTurnCard(twoPending, tA, 100, null, { last: bulk }).lines.flat().filter(m => m.x?.op === 'acceptAll').length, 0, 'both recorded: no button any more')
+    const twoApplied = M.normalize({ ...doc, issues: doc.issues.map(p => ({ ...p, status: 'settled' })) })
+    assert.deepEqual(lastOf(twoApplied, bulk).map(M.plainText), ['  last: 2 recommended options applied'])
+  })
+
+  testCase('[ ✓ I did it ] (0.21.0): on a manual action or an environment, not on a decision; the last line with Undo while apply has not written it', () => {
+    const PRE = [{ id: 'H1', type: 'manual', status: 'open', text: 'API token', evidence: '—', how: [], blocks: ['T04'] }, { id: 'E1', type: 'environment', status: 'open', text: 'Docker', evidence: '—', how: [], blocks: ['T02'] }, { id: 'D5', type: 'decision', status: 'open', text: 'Pick', evidence: '—', how: [], blocks: ['T04'] }]
+    const doc = { ...rawC, issues: [], prerequisites: PRE, pending_done: [] }
+    const I = M.normalize(doc)
+    const card = id => M.detailCard(I, tA, 100, M.yourTurnItems(I, tA).items.find(x => x.task === id).key)
+    const H = card('H1'), HL = H.lines.map(M.plainText)
+    assert.deepEqual(buttonsOf(H), [['[ Settle the prerequisites ]', null, null, null], ['[ ✓ I did it ]', 'did', null, null]])
+    assert.equal(H.lines.flat().find(m => m.x?.op === 'did').x.prerequisite, 'H1')
+    assert.ok(HL.includes('[ Settle the prerequisites ]  [ ✓ I did it ]'), HL.join('\n'))
+    assert.equal(HL.slice(-2).join(' '), 'First button: fills the prompt, sends nothing. I did it: recorded at once, PREREQUISITES.md at the run stop.')
+    assert.ok(buttonsOf(card('E1')).some(b => b[1] === 'did'), 'an environment too')
+    assert.deepEqual(buttonsOf(card('D5')), [['[ Settle the prerequisites ]', null, null, null]], 'a decision: did refuses it')
+    // Noted done: pendingDone; no second button; the last line, with Undo (undid)
+    const noted = M.normalize({ ...doc, pending_done: [{ prerequisite: 'H1', at: '2026-11-18T10:00:00+01:00' }] })
+    assert.deepEqual(noted.pendingDone, [{ prerequisite: 'H1', day: '2026-11-18' }])
+    assert.ok(!buttonsOf(M.detailCard(noted, tA, 100, M.yourTurnItems(noted, tA).items.find(x => x.task === 'H1').key)).some(b => b[1] === 'did'))
+    const last = { text: 'H1 noted done on 2026-11-18', kind: 'did', did: { prerequisite: 'H1', day: '2026-11-18' } }
+    const lastOf = (J, l) => M.yourTurnCard(J, tA, 100, null, { last: l }).lines.filter(x => M.plainText(x).startsWith('  last: '))
+    const ln = lastOf(noted, last)
+    assert.deepEqual(ln.map(M.plainText), ['  last: H1 noted done on 2026-11-18  [ Undo ]'])
+    assert.equal(ln[0].at(-1).x.op, 'undo')
+    // Written by apply (no longer open, out of pending_done): no Undo; withdrawn (undid) and still open: no line
+    assert.deepEqual(lastOf(M.normalize({ ...doc, prerequisites: PRE.slice(1) }), last).map(M.plainText), ['  last: H1 noted done on 2026-11-18'])
+    assert.deepEqual(lastOf(I, last), [])
+    // The other actions keep their line and Undo
+    assert.deepEqual(M.lastLine(I, { text: 'T01 · review done', kind: 'done' }), { text: 'T01 · review done', undo: true })
+    assert.equal(M.lastLine(I, null), null)
+  })
+
+  // ── The wait for a ruling (0.21.0, T26) ──
+  // run 1 in progress, T01-1 (of T01) holds T03 until `until`: T03 waits for it. Times come from `until` and the clock given
+  const UNTIL = new Date(tA + 14 * 60000 + 47000).toISOString()
+  const waitDoc = (o = {}, status = 'in-progress') => ({ ...withRun(rawC, status), pending_rulings: [], issues: [issueOf('T01-1', { holds: ['T03'], waiting: ['T03'], until: UNTIL, ...o })] })
+  const waitOf = (o, status) => M.normalize(waitDoc(o, status), registerOf('T01-1'))
+  const taskLine = (I, id, now = tA, columns = 100) => M.taskLines(I, now, columns).find(l => !/Phase/.test(M.plainText(l)) && new RegExp(`^ {2}\\S ${id}\\b`).test(M.plainText(l)))
+  const whenOf2 = (I, now = tA) => M.detailCard(I, now, 100, itemOf(I, 'T01-1').key).lines.map(M.plainText)[0]
+
+  testCase('wait for a ruling (0.21.0): what is read from progress.json; the time left comes from `until` and the clock, never below 0:00', () => {
+    const I = waitOf()
+    const p = I.issues[0]
+    assert.deepEqual([p.holds, p.waiting, p.startedWithout, p.released, p.until], [['T03'], ['T03'], [], false, Date.parse(UNTIL)])
+    assert.deepEqual(M.rulingWaits(I, tA), [{ task: 'T03', until: Date.parse(UNTIL) }])
+    // The clock moves, not a counter: 1 minute later, 1 minute less; after the deadline, 0:00
+    assert.equal(whenOf2(I, tA), 'when     Now: T03 waits for it 14:47, then starts without it')
+    assert.equal(whenOf2(I, tA + 60000), 'when     Now: T03 waits for it 13:47, then starts without it')
+    assert.equal(whenOf2(I, Date.parse(UNTIL) + 5000), 'when     Now: T03 waits for it 0:00, then starts without it')
+    assert.equal(whenOf2(waitOf({ waiting: ['T03', 'T04'] }), tA), 'when     Now: T03, T04 wait for it 14:47, then start without it')
+    // The run stopped (run-end empties waiting; a stale file too): nothing waits, `when` is Now alone and where says so
+    for (const stale of [waitOf({}, 'awaiting-ruling'), waitOf({ waiting: [] })]) {
+      assert.equal(whenOf2(stale), 'when     Now')
+      assert.deepEqual(M.rulingWaits(stale, tA), [])
+    }
+    assert.match(M.detailCard(I, tA, 100, itemOf(I, 'T01-1').key).lines.map(M.plainText)[2], /^where {4}Here, while the run goes on \(nothing is sent to the chat\)$/)
+    assert.match(M.detailCard(waitOf({}, 'awaiting-ruling'), tA, 100, itemOf(waitOf({}, 'awaiting-ruling'), 'T01-1').key).lines.map(M.plainText)[2], /^where {4}Here: applied when the next run starts$/)
+    // The task started without it: it waits no more
+    assert.deepEqual(M.rulingWaits(waitOf({ started_without: ['T03'] }), tA), [])
+    assert.equal(whenOf2(waitOf({ started_without: ['T03'] })), 'when     Now')
+    // An issue with a ruling recorded is no longer open: its tasks no longer wait for it
+    assert.deepEqual(M.rulingWaits(M.normalize({ ...waitDoc(), pending_rulings: [{ issue: 'T01-1', option: 'A', text: null, at: UNTIL }] }), tA), [])
+    // Two issues for one task: the later deadline
+    const two = M.normalize({ ...waitDoc(), issues: [issueOf('T01-1', { holds: ['T03'], waiting: ['T03'], until: UNTIL }), issueOf('T01-2', { holds: ['T03'], waiting: ['T03'], until: new Date(tA + 20 * 60000).toISOString() })] }, registerOf('T01-1', 'T01-2'))
+    assert.deepEqual(M.rulingWaits(two, tA), [{ task: 'T03', until: tA + 20 * 60000 }])
+  })
+
+  testCase('wait for a ruling (0.21.0): under the issue in Your turn, the grey line with the time in warning; once the task left without it, the other line', () => {
+    const lines = (I, now = tA) => M.yourTurnCard(I, now, 100, null).lines
+    const find = (I, re, now) => lines(I, now).find(l => re.test(M.plainText(l)))
+    const held = find(waitOf(), /holds/)
+    assert.equal(M.plainText(held), '     holds T03 · starts without it in 14:47')
+    assert.deepEqual(held.map(m => [m.t.trim(), m.c ?? null, !!m.d]), [['holds T03 · starts without it in', null, true], ['14:47', 'warning', false]])
+    assert.equal(M.plainText(find(waitOf(), /holds/, tA + 60000)), '     holds T03 · starts without it in 13:47')
+    assert.equal(M.plainText(find(waitOf(), /holds/, Date.parse(UNTIL) + 90000)), '     holds T03 · starts without it in 0:00', 'never below 0:00')
+    assert.equal(M.plainText(find(waitOf({ holds: ['T03', 'T04'] }), /holds/)), '     holds T03, T04 · starts without it in 14:47')
+    // Under its issue: right after the item's line
+    const all = lines(waitOf()).map(M.plainText), i = all.findIndex(l => /holds T03/.test(l))
+    assert.match(all[i - 1], /T01 · Issue T01-1/)
+    // Started without it: its mark by step, in grey; no more holds line
+    const gone = waitOf({ started_without: ['T03'] })
+    assert.equal(M.plainText(find(gone, /started/)), '     T03 started without it: its amendment may come too late')
+    assert.ok(find(gone, /started/).every(m => m.d))
+    assert.equal(find(gone, /holds/), undefined)
+    // The run stopped, or an issue that holds nothing: no holds line
+    assert.equal(find(waitOf({}, 'awaiting-ruling'), /holds/), undefined)
+    assert.equal(find(waitOf({ holds: [] }), /holds/), undefined)
+    for (const l of lines(waitOf({ holds: ['T03', 'T04', 'T05', 'T06'] }, 'in-progress'))) assert.ok(M.width(l) <= 96, M.plainText(l))
+  })
+
+  testCase('wait for a ruling (0.21.0): tasks card (glyph ‖ in warning, "waits for your ruling m:ss" in place of the step), run card, banner', () => {
+    const I = waitOf()
+    const line = taskLine(I, 'T03')
+    assert.ok(line, M.taskLines(I, tA, 100).map(M.plainText).join('\n'))
+    assert.match(M.plainText(line), /^ {2}‖ T03 {2}.*waits for your ruling 14:47$/)
+    assert.deepEqual([line[1].t, line[1].c], ['‖', 'warning'])
+    assert.deepEqual(line.at(-1), { t: 'waits for your ruling 14:47', c: 'warning' })
+    assert.match(M.plainText(taskLine(I, 'T03', tA + 60000)), /waits for your ruling 13:47$/)
+    assert.match(M.plainText(taskLine(I, 'T03', Date.parse(UNTIL) + 60000)), /waits for your ruling 0:00$/)
+    // Not while the run is stopped, nor once the task started without it: the usual line of a task to do
+    assert.ok(!/‖|ruling/.test(M.plainText(taskLine(waitOf({}, 'awaiting-ruling'), 'T03') ?? [])))
+    assert.ok(!/waits for your ruling/.test(M.taskLines(waitOf({ started_without: ['T03'] }), tA, 100).map(M.plainText).join('\n')))
+    // A narrow pane: shorter, the time last to go; whole lines within the width
+    for (const w of [50, 58, 70, 100, 140]) {
+      for (const l of M.taskLines(I, tA, w)) assert.ok(M.width(l) <= w, `${w}: ${M.plainText(l)}`)
+      assert.match(M.plainText(taskLine(I, 'T03', tA, w)), /14:47$/, String(w))
+    }
+    // Run card: right of the title, singular and plural
+    const run = M.runCard(I, tA, 100, false)
+    assert.deepEqual(run.meta.map(m => m.t), ['‖ 1 waits for you', '  ', '◐ 0 in progress'])
+    assert.equal(run.meta[0].c, 'warning')
+    assert.equal(M.plainText(M.runCard(waitOf({ holds: ['T03', 'T04'], waiting: ['T03', 'T04'] }), tA, 100, false).meta), '‖ 2 wait for you  ◐ 0 in progress')
+    assert.equal(M.plainText(M.runCard(waitOf({}, 'awaiting-ruling'), tA, 100, false).meta), 'awaiting-ruling')
+    // Banner: in place of the current step; +1 with others
+    assert.match(M.plainText(M.banner(I, tA, 140)), /1\/4 .*‖ T03 +waits for you +⏱/)
+    assert.ok(!/◐/.test(M.plainText(M.banner(I, tA, 140))), 'in place of the step')
+    assert.match(M.plainText(M.banner(waitOf({ holds: ['T03', 'T04'], waiting: ['T03', 'T04'] }), tA, 140)), /‖ T03 +waits for you \+1 +⏱/)
+    assert.ok(!/‖/.test(M.plainText(M.banner(waitOf({}, 'awaiting-ruling'), tA, 140))))
+    for (const w of [60, 80, 100, 140]) assert.ok(M.width(M.banner(I, tA, w)) <= w || w < 70, `${w}`)
+    // The slot keeps its width, with or without a waiting task: nothing after it moves
+    const b0 = M.plainText(M.banner({ ...I, issues: [] }, tA, 140))
+    assert.equal(M.plainText(M.banner(I, tA, 140)).indexOf('⏱'), b0.indexOf('⏱'))
+  })
+
+  testCase('wait for a ruling (0.21.0): the log glyphs ‖ and ▶, and the two notifications, which follow /progress sound', () => {
+    const log = [
+      { at: tA - 3000, kind: 'wait', task: 'T03', text: 'T03 waits for 3 rulings (15 min at most)' },
+      { at: tA - 1000, kind: 'task', task: 'T03', text: 'T03 starts (main checkout) without 2 rulings' },
+    ]
+    const I = M.normalize({ ...waitDoc(), log })
+    const rows = M.logCard(I, tA, 100, false).lines.map(l => [M.plainText(l), l.find(m => m.t === '‖' || m.t === '▶')])
+    const wait = rows.find(([t]) => /waits for 3 rulings/.test(t)), start = rows.find(([t]) => /without 2 rulings/.test(t))
+    assert.deepEqual([wait[1].t, wait[1].c], ['‖', 'warning'])
+    assert.equal(start[1].t, '▶')
+    assert.match(wait[0], /T03 +‖ T03 waits for 3 rulings \(15 min at most\)$/)
+    // Arrival: one notification per task; the minutes from `until` and the write that raised them
+    const none = M.normalize({ ...waitDoc(), issues: [] }, registerOf())
+    const raised = (o = {}) => M.normalize({ ...waitDoc(), updated: new Date(Date.parse(UNTIL) - 15 * 60000).toISOString(), issues: [issueOf('T01-1', { holds: ['T05'], until: UNTIL }), issueOf('T01-2', { holds: ['T06'], until: UNTIL }), issueOf('T01-3', { holds: ['T05', 'T06', 'T07'], until: UNTIL })], ...o }, registerOf('T01-1', 'T01-2', 'T01-3'))
+    assert.deepEqual(M.changes(none, raised()).filter(x => x.startsWith('?')), ['? T01: 3 issues to settle now — T05, T06 and T07 wait for them 15 min'])
+    const one = M.normalize({ ...waitDoc(), updated: new Date(Date.parse(UNTIL) - 15 * 60000).toISOString(), issues: [issueOf('T01-1', { holds: ['T03'], until: UNTIL })] }, registerOf('T01-1'))
+    assert.deepEqual(M.changes(none, one), ['? T01: 1 issue to settle now — T03 waits for it 15 min'])
+    assert.deepEqual(M.changes(one, one), [], 'nothing twice')
+    assert.deepEqual(M.changes(null, one), [], 'nothing at the first read')
+    // No notification for an issue that holds nothing, for the stop issue, nor for an answer withdrawn (unrule)
+    assert.deepEqual(M.changes(none, M.normalize({ ...waitDoc(), issues: [issueOf('T01-1', { holds: [] })] }, registerOf('T01-1'))), [])
+    const ruled = M.normalize({ ...waitDoc(), pending_rulings: [{ issue: 'T01-1', option: 'A', text: null, at: UNTIL }] }, registerOf('T01-1'))
+    assert.deepEqual(M.changes(ruled, one), [])
+    // Start without a ruling: the minutes of the wait, from the log entry of the task
+    const went = M.normalize({ ...waitDoc({ started_without: ['T03'] }), log: [{ at: tA - 5000, kind: 'wait', task: 'T03', text: 'T03 waits for 1 ruling (15 min at most)' }] }, registerOf('T01-1'))
+    const before = M.normalize({ ...waitDoc(), log: [{ at: tA - 5000, kind: 'wait', task: 'T03', text: 'T03 waits for 1 ruling (15 min at most)' }] }, registerOf('T01-1'))
+    assert.deepEqual(M.changes(before, went), ['▶ T03 starts without your ruling: 15 min passed'])
+    assert.deepEqual(M.changes(went, went), [])
+    // Released by [ Decide later ]: the task was not left waiting, no notification
+    assert.deepEqual(M.changes(before, M.normalize({ ...waitDoc({ started_without: ['T03'], released: UNTIL, holds: [] }) }, registerOf('T01-1'))), [])
+    // Both ask for someone: toast, and the sound if /progress sound is on
+    for (const m of ['? AH04: 3 issues to settle now — AH05 and AH05B wait for them 15 min', '? AH04: 1 issue to settle now — AH05 waits for it 15 min', '▶ AH04 starts without your ruling: 15 min passed']) assert.ok(M.isImportant(m), m)
+    for (const m of ['? something else', '▶ T01 starts (main checkout)']) assert.ok(!M.isImportant(m), m)
   })
 
   console.log(`progress mod: ALL GREEN (${n} cases)`)

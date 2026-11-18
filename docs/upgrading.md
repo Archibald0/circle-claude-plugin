@@ -2,11 +2,21 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.20.0 to 0.21.0
+
+`progress.json` stays `orchestre-progress/4`: 0.21.0 only adds optional fields, and the plans keep their format. After the update, `/reload-plugins`, or a new session. Update between two runs, never during one.
+
+1. A file written by 0.21.0 is refused by 0.20.0 (`field unknown`): going back to 0.20.0 means deleting the new fields of `progress.json`, or the file, which is rebuilt from PROGRESS.md, HANDOFF.md and git.
+2. `orchestre.config.json` accepts `ruling_wait_minutes`, an integer from 0 to 60, 15 when absent: how long a task, or a run in `deviation` mode, waits for the ruling of an issue. `0` keeps the behavior of 0.20.0. Nothing to add if 15 minutes suits you.
+3. `/orchestre:run` applies at its pre-flight the rulings recorded and the prerequisites noted done outside a run; `/orchestre:ready` only reports them.
+4. You can settle an issue during a run, from the `/progress` pane or with `rule`: the run applies the ruling itself and the task starts with the amendment. The pilot still touches neither the checkout nor git during a run.
+5. In `deviation` mode, a major issue that is not human no longer stops the run at once: the run waits for the ruling, then stops as before if none comes.
+
 ## From 0.19.0 to 0.20.0
 
 `progress.json` moves from `orchestre-progress/3` to `/4`; the plans and the settings keep their format. After the update, `/reload-plugins`, or a new session.
 
-1. Before updating, settle the open issues of your plans. A `/3` file is read and converted at the first write of 0.20.0, and an issue left open in it no longer has its actions: it can only be settled by a free-text answer. An issue you settle before the update, in 0.19.0, is applied by that version as before.
+1. Before updating, settle the open issues of your plans. A `/3` file is read and converted at the first write of 0.20.0, and an issue left open in it no longer has its actions: it can only be settled by a free-text answer. An issue you settle before the update, in 0.19.0, is applied by that version as before, with one limit: only the next 0.19.0 run applies a ruling settled on 0.19.0, at its start. When that next run is on 0.20.0, the ruling is never applied: write the actions of the chosen option by hand (the entry `decision · major · <title>: option <id> settled by the user — <description>` under `## <task>` of HANDOFF.md, the amendments of the tasks not started), mark the issue settled with 0.19's `progress.mjs ruling` (`{ task, title, option }`), run plan-lint and commit, before the update; or leave it open and answer it with a text after the update.
 2. Update between two runs, never during one. The first command that writes `progress.json` (`/orchestre:run`, a button of `/progress`) converts the file; `/orchestre:status` and the pane read both formats.
 3. Answers are now recorded, not passed to the run: the pilot settles an issue with the question tool, then `progress.mjs rule` notes the answer in `progress.json`, and the next run applies it at its start (`progress.mjs apply`). `args.rulings` no longer exists. An answer not applied yet can be withdrawn with `progress.mjs unrule`. If you delete `progress.json` before it is applied, the answer is lost and the issue stays open.
 4. A new file, `plans/<name>/ISSUES.json`, appears in the plan, tracked by git: commit it with the plan. Do not edit it by hand.

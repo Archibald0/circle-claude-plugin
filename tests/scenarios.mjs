@@ -904,17 +904,27 @@ async function play(name, D, q, args = {}) {
     const v = v0 && typeof v0 === 'object' && 'before' in v0 ? (v0.before(), v0.answer) : v0 && typeof v0 === 'object' && 'tamper' in v0 ? v0.answer : v0
     const tamper = v0 && typeof v0 === 'object' && 'tamper' in v0 ? v0.tamper : c => c
     // An agent isolated in a worktree is refused its progress commands by Claude Code's isolation guard (0.18.2): none is launched
+    // wait (0.21.0): run again while it answers again, as the clerk does; ORCHESTRE_WAIT_SECONDS keeps each run short
     const codes = cs.map(c => {
       if (opts.isolation === 'worktree') { launched.push({ label: k, code: 1, out: '', err: GUARD }); return 1 }
-      const r = spawnSync('sh', ['-c', bashTool(tamper(c))], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.status
+      const once = () => { const r = spawnSync('sh', ['-c', bashTool(tamper(c))], { cwd: D.root, encoding: 'utf8', env: { ...process.env, ORCHESTRE_WAIT_SECONDS: '2' } }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r }
+      let r = once()
+      while (r.status === 0 && /progress\.mjs"? wait /.test(c) && JSON.parse(r.stdout).again) r = once()
+      return r.status
     })
-    // The output of close, copied as printed (0.20.0), and the first line of the error of the last command
+    // The output of close or of wait, copied as printed (0.20.0, 0.21.0), and the first line of the error of the last command
     const lastRun = launched[launched.length - 1]
-    const closeOutput = cs.length && /progress\.mjs"? close /.test(cs[cs.length - 1]) && codes[codes.length - 1] === 0 ? JSON.parse(lastRun.out) : null
+    const outputOf = cmd => (cs.length && new RegExp(`progress\\.mjs"? ${cmd} `).test(cs[cs.length - 1]) && codes[codes.length - 1] === 0 ? JSON.parse(lastRun.out) : null)
+    const closeOutput = outputOf('close'), waitOutput = outputOf('wait')
     const answer = sealed(k, typeof v === 'function' ? await v(prompt, opts) : v, prompt)
     // The clerk also runs the cleaning of the worktrees: its last line goes in "worktrees"
     const wt = [...prompt.matchAll(/`(node "?[^`"]*worktrees\.mjs"? clean [^`]*)`/g)].map(m => m[1])
     const cleaning = wt.map(c => { const r = spawnSync('sh', ['-c', c], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.stdout.trim() || r.stderr.trim() }).pop()
+    // apply during the run (0.21.0), by the clerk, without JSON: its output copied as printed, or its error
+    if (!cs.length && applyCmdIn(prompt) && !('apply' in answer)) {
+      const r = spawnSync('sh', ['-c', applyCmdIn(prompt)], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() })
+      return { ...answer, ...(r.status === 0 ? { progress_ok: true, apply: JSON.parse(r.stdout) } : { progress_ok: false, progress_error: r.stderr.trim().split('\n')[0] }) }
+    }
     if (!cs.length) return answer
     const failed = codes[codes.length - 1] !== 0 && opts.isolation !== 'worktree' ? { progress_error: lastRun.err.split('\n')[0] } : {}
     const opens = cs[0].includes('progress.mjs" run-start') || cs[0].includes('progress.mjs run-start')
@@ -924,7 +934,7 @@ async function play(name, D, q, args = {}) {
       const r = spawnSync('sh', ['-c', applyCmdIn(prompt)], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() })
       applied = r.status === 0 ? { apply_ok: true, apply: JSON.parse(r.stdout) } : { apply_ok: false, apply_error: r.stderr.trim().split('\n')[0] }
     }
-    return { ...answer, ...(opens ? { run_start_ok: codes[0] === 0 } : {}), ...applied, progress_ok: codes[codes.length - 1] === 0, ...failed, ...(closeOutput && !('close' in answer) ? { close: closeOutput } : {}), ...(cleaning ? { worktrees: cleaning } : {}) }
+    return { ...answer, ...(opens ? { run_start_ok: codes[0] === 0 } : {}), ...applied, progress_ok: codes[codes.length - 1] === 0, ...failed, ...(closeOutput && !('close' in answer) ? { close: closeOutput } : {}), ...(waitOutput && !('wait' in answer) ? { wait: waitOutput } : {}), ...(cleaning ? { worktrees: cleaning } : {}) }
   }
   last = null
   const res = await run({ ...ARGS, progress: PROGRESS_SCRIPT, ...args }, agent, () => {}, () => {})
@@ -2297,14 +2307,76 @@ await test('CL9: real progress.mjs, autonomous — the decided option gives T01 
       'T00 · replanning': [{ major: true, entries: [], issues: [AUTO] }], 'T00 · progress': [SOK], 'run end · progress': [{ commit: '', detail: '' }] }, { mode: 'auto' })
     assert.deepEqual(launched.filter(l => l.code !== 0), [])
     const reason = `inconsistent auto-decision on issue "${AUTO.title}", option A: ${MISSING} does not exist and no task creates it`
-    assert.deepEqual(closeOf(launched).rejected, [{ id: MISSING, reason }])
-    assert.deepEqual([res.status, res.stop_issue.title, res.stop_issue.human, JSON.parse(res.stop_issue.context)], ['awaiting-ruling', 'Progress of T00: tasks, amendments or decisions rejected', true, [{ id: MISSING, reason }]])
+    // The rejected item names its issue (0.21.0): its id and its title
+    const rej = { id: MISSING, issue: 'T00-1', title: AUTO.title, reason }
+    assert.deepEqual(closeOf(launched).rejected, [rej])
+    assert.deepEqual([res.status, res.stop_issue.title, res.stop_issue.human, JSON.parse(res.stop_issue.context)], ['awaiting-ruling', 'Progress of T00: tasks, amendments or decisions rejected', true, [rej]])
+    // The decision is not taken (0.21.0): neither the return nor progress.json after run-end counts it; its issue is open in
+    // progress.json, in ISSUES.json (below) and in open_issues, with its options
+    assert.deepEqual(res.auto_decisions, [], 'the rejected decision is not in the return')
+    assert.deepEqual(D.doc().auto_decisions, [], 'run-end did not count the rejected decision again')
+    assert.deepEqual(D.doc().issues.filter(p => p.title === AUTO.title).map(p => [p.id, p.status, p.chosen_option]), [['T00-1', 'open', null]])
+    assert.deepEqual(res.open_issues.map(p => [p.title, p.options.map(o => o.id)]), [[AUTO.title, ['A', 'B']]])
     // Nothing of the option is written: T01 as it was, no decision nor entry of the option; the needs-human entry instead
     assert.equal(fs.readFileSync(join(P, 'tasks', 'T01-x.md'), 'utf8'), t01)
     assert.deepEqual(section(D, 'T00'), [`needs-human · major · inconsistent auto-decision: ${MISSING} does not exist and no task creates it`])
     assert.deepEqual(register(D).issues.map(p => [p.title, p.status, p.ruling]), [[AUTO.title, 'open', null]])
     assert.deepEqual(D.git('log', '--format=%s', `${head}..HEAD`).trim().split('\n'), ['progress(T00): merged'])
   } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('CL11: real progress.mjs, autonomous — the close of CL8 refused twice: its context lists every HANDOFF line the accepted close writes; the automatic decision is not taken, its issue open in open_issues and progress.json', async () => {
+  const GAP = 'the guard of rule (d) has no test', UV = 'rule (d) in a worktree: not provable from the main checkout', FLAKY = 'journal.spec.ts:53'
+  const R = { type: 'review', description: '.env.example: add MR_MAX' }
+  const AUTO = { title: 'UpdateUserSchema contract', context: 'isSuperAdmin optional', options: [
+    { id: 'A', description: 'Keep optional and test rule (d)', recommended: true, entries: [{ type: 'debt', severity: 'minor', description: 'document the contract' }], amendments: [{ id: 'T01', verification: ['pnpm test:rule-d'], reason: 'security rule without a test' }] },
+    { id: 'B', description: 'Make the field required', recommended: false }] }
+  const RP = { major: true, entries: [{ type: 'deviation', severity: 'major', description: 'contract widened' }], issues: [AUTO] }
+  const alter = c => c.replace('"status":"merged"', '"status":"failed"')
+  const run = async (name, progress) => {
+    const D = toyRepo()
+    const out = await play(name, D, {
+      'plan-reader': [onlyT0()], 'T00 · worker': [report(0, { deviations: [...DEVIATION, R] })], 'T00 · verification': [ok(1), { ...ok(2), flaky: [FLAKY] }],
+      'T00 · evaluation': [{ verdict: 'fail', gaps: [GAP] }, { verdict: 'pass', unverifiable: [UV] }], 'T00 · fix 1': [report(1)], 'T00 · merge': [MOK], 'T00 · replanning': [RP],
+      'T00 · progress': progress, 'run end · progress': [{ commit: '', detail: '' }] }, { mode: 'auto' })
+    return { D, ...out }
+  }
+  const A = await run('CL11 accepted', [SOK]), B = await run('CL11 refused', [{ tamper: alter, answer: SOK }, { tamper: alter, answer: SOK }])
+  try {
+    const written = section(A.D, 'T00')
+    assert.equal(A.res.status, 'finished')
+    assert.ok(written.length >= 8 && written.some(l => l.startsWith('decision · major · UpdateUserSchema contract: option A taken automatically')), `the accepted close: ${written}`)
+    assert.deepEqual(A.res.auto_decisions.map(d => d.title), [AUTO.title])
+    // Refused twice: nothing written, a human stop whose context lists each line of the accepted close
+    assert.deepEqual([B.res.status, B.res.stop_issue.title, section(B.D, 'T00')], ['awaiting-ruling', 'Progress of T00 not committed', []])
+    const [head, tail] = B.res.stop_issue.context.split(' Automatic decisions not taken, their issues back in open_issues: ')
+    const lost = JSON.parse(head.slice(head.indexOf('HANDOFF entries not written: ') + 'HANDOFF entries not written: '.length)), undecided = JSON.parse(tail)
+    for (const l of written) assert.ok([...lost, ...undecided].includes(l), `a line of the accepted close missing from the context of the refused one: ${l}`)
+    // The decision line and the actions of its option apart: they are not to be written, the issue is open again
+    assert.deepEqual(undecided, written.filter(l => !lost.includes(l)))
+    assert.ok(undecided[0].startsWith('decision · major · UpdateUserSchema contract: option A'), undecided[0])
+    // Not taken: neither the return nor progress.json after run-end lists it; its issue open, in open_issues with its options
+    assert.deepEqual(B.res.auto_decisions, [], 'the decision of a refused close is not in the return')
+    assert.deepEqual(B.D.doc().auto_decisions, [], 'run-end did not record the decision of a refused close')
+    assert.deepEqual(B.res.open_issues.map(p => [p.title, p.options.map(o => [o.id, (o.entries || []).length])]), [[AUTO.title, [['A', 1], ['B', 0]]]])
+    const p = B.D.doc().issues.find(x => x.title === AUTO.title)
+    assert.deepEqual([p.status, p.options.map(o => o.valid)], ['open', [false, false]], 'open, its options invalid: no ISSUES.json entry')
+  } finally { for (const x of [A, B]) fs.rmSync(x.D.root, { recursive: true, force: true }) }
+  // A task that fails (its fix without an answer): the blocker line too
+  const failing = async (name, progress) => {
+    const D = toyRepo()
+    const out = await play(name, D, { 'plan-reader': [onlyT0()], 'T00 · worker': [report(0)], 'T00 · verification': [ok(1)], 'T00 · evaluation': [{ verdict: 'fail', gaps: ['M1'] }], 'T00 · fix 1': [null],
+      'T00 · replanning': [NOTHING], 'T00 · progress': progress, 'run end · progress': [{ commit: '', detail: '' }] })
+    return { D, ...out }
+  }
+  const toBlocked = c => c.replace('"status":"failed"', '"status":"blocked"')
+  const FA = await failing('CL11 failed, accepted', [SOK]), FB = await failing('CL11 failed, refused', [{ tamper: toBlocked, answer: SOK }, { tamper: toBlocked, answer: SOK }])
+  try {
+    const written = section(FA.D, 'T00'), ctx = FB.res.stop_issue.context
+    assert.ok(written.includes('blocker · major · fix without an answer (usage limit or API error)'), `the accepted close: ${written}`)
+    assert.deepEqual([FB.res.stop_issue.title, section(FB.D, 'T00')], ['Progress of T00 not committed', []])
+    const lost = JSON.parse(ctx.slice(ctx.indexOf('HANDOFF entries not written: ') + 'HANDOFF entries not written: '.length))
+    assert.deepEqual(lost, written, 'the context of the refused close lists the lines of the accepted one, in its order')
+  } finally { for (const x of [FA, FB]) fs.rmSync(x.D.root, { recursive: true, force: true }) }
 })
 await test('CL10: real progress.mjs — the replanner adds a task that shares files with a task of its phase, without a dependency: close gives it a depends_on and its HANDOFF line, rejects nothing; no stop, and the task does not start in this run', async () => {
   const D = toyRepo()
@@ -2320,6 +2392,379 @@ await test('CL10: real progress.mjs — the replanner adds a task that shares fi
     assert.ok(!calls.some(c => c.label.startsWith('T00D ')), 'the added task does not start in this run')
     assert.match(fs.readFileSync(join(D.root, 'plans', 'p', 'tasks', 'T00D-shares-t01.md'), 'utf8'), /^depends_on: \[T00, T01\]$/m)
     assert.deepEqual(section(D, 'T00'), ['amendment · minor · T00D: depends on T01, added automatically: the two tasks of phase 1 share src/T01/**'])
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+
+// ——— 0.21.0: answering during the run. close gives an open issue that is not human a deadline and the tasks it holds (waits); a held
+// task, once ready, waits for the ruling (progress.mjs wait, by the clerk), then starts, after an apply when it was ruled ———
+const sealWait = o => ({ ...o, digest: payloadDigest(o, 'digest') })
+const waitAnswer = (task, x = {}) => withProgress({ wait: sealWait({ task, settled: [], released: [], timeout: [], again: false, ...x }) })
+// The output of close, faithful to the input of its instruction, with its waits and pending
+const closeWith = (x = {}) => prompt => { const E = closeIn(prompt), o = { task: E.task, status: E.status, commit: 'p1', rejected: [], discarded: [], issues: [], pending: [], waits: [], message: `${E.task} ${E.status}`, ...x }; return withProgress({ close: { ...o, digest: payloadDigest(o, 'digest') } }) }
+const applyAnswer = (x = {}) => withProgress({ apply: sealApply({ applied: [], rejected: [], discarded: [], amended: [], added_tasks: [], commit: 'a1', message: 'applied', ...x }) })
+const HOLD = { issue: 'T00-1', until: '2026-11-18T10:15:00.000Z', holds: ['T01'] }
+const RULED = { issue: 'T00-1', task: 'T00', option: 'A', text: null }
+const W0 = { ...T00, resources: [] }, W1 = { ...T01, resources: [] }, W2 = { ...W1, id: 'T02', title: 'Other', file: 'plans/p/tasks/T02.md' }, W3 = { ...W1, id: 'T03', title: 'Third', file: 'plans/p/tasks/T03.md' }
+const flow = (id, extra = {}) => ({ [`${id} · worker`]: [withProgress(report(id, { branch: `task/${id}` }))], [`${id} · verification`]: [withProgress(ok(id))], [`${id} · evaluation`]: [withProgress({ verdict: 'pass' })], [`${id} · merge`]: [withProgress(MOK)], [`${id} · progress`]: [withProgress(SOK)], ...extra })
+const stepOf = (calls, label) => progressOf(calls, label)[0].E
+const labels = calls => calls.map(c => c.opts.label)
+await test('WA1: a ruling in time — the held task waits (clerk, outside the exclusive queue) while another task runs in the main checkout; apply waits for that task, then the amendment is in the held task before its worker', async () => {
+  const seen = deferred(), over = deferred(), order = []
+  const { res, calls, q } = await scenario('WA1', {
+    'plan-reader': [planOpened(W0, W1, W2, W3)], ...s00({ 'T00 · progress': [closeWith({ issues: ['T00-1'], waits: [HOLD] })] }),
+    'T01 · wait': [async () => { await seen.promise; setTimeout(() => over.resolve(), 0); return waitAnswer('T01', { settled: ['T00-1'] }) }],
+    ...flow('T02', { 'T02 · worker': [() => { order.push('T02 worker'); seen.resolve(); return withProgress(report(2, { branch: 'task/T02' })) }], 'T02 · progress': [async () => { await over.promise; order.push('T02 closed'); return withProgress(SOK) }] }),
+    'rulings · apply': [() => { order.push('apply'); return applyAnswer({ applied: [RULED], amended: [{ id: 'T01', verification: ['pnpm test:rule'], depends_on: ['T03'] }] }) }],
+    ...flow('T03', { 'T03 · worker': [() => { order.push('T03 worker'); return withProgress(report(3, { branch: 'task/T03' })) }] }),
+    ...flow('T01', { 'T01 · worker': [() => { order.push('T01 worker'); return withProgress(report(1, { branch: 'task/T01' })) }] }),
+    'run end · progress': [COK] }, { ...AP, parallelism: 1 })
+  // T02 ran in the main checkout while T01 waited; the ruling came in, apply waited for the end of T02 (the lock of the main checkout)
+  assert.deepEqual(order, ['T02 worker', 'T02 closed', 'apply', 'T03 worker', 'T01 worker'])
+  assert.ok(idx(calls, 'T01 · wait') < idx(calls, 'T02 · worker') && byLabel(calls, 'T02 · worker')[0].opts.agentType === 'orchestre:worker', 'T02 started in the main checkout during the wait')
+  const w = byLabel(calls, 'T01 · wait')[0]
+  assert.deepEqual([w.opts.agentType, w.opts.model, progressOf(calls, 'T01 · wait')[0].cmd, progressOf(calls, 'T01 · wait')[0].E], ['orchestre:clerk', 'haiku', 'wait', { task: 'T01', issues: ['T00-1'] }])
+  const a = byLabel(calls, 'rulings · apply')[0]
+  assert.deepEqual([a.opts.agentType, applyCmdIn(a.prompt)], ['orchestre:clerk', APPLY_CMD])
+  assert.ok(a.prompt.includes('1. `git switch plan/p`'), 'apply on the integration branch')
+  // The verification and the dependency added: T01 after T03, its verifier runs the new command, its worker reads the ruling
+  assert.ok(byLabel(calls, 'T01 · verification')[0].prompt.includes('pnpm test:rule'))
+  assert.ok(byLabel(calls, 'T01 · worker')[0].prompt.includes('"T00-1: option A (settled by the user)"'))
+  assert.ok(!('without' in stepOf(calls, 'T01 · worker')), 'ruled: T01 starts with it, not without it')
+  assert.deepEqual([res.status, res.rulings_applied, res.open_issues], ['finished', [RULED], []])
+  drained('WA1', q)
+})
+await test('WA2: the deadline passes — the task starts without the ruling (step "without"); a ruling applied while it runs is late: not in its verification, an amendment not applied at its close', async () => {
+  const applied = deferred()
+  const LATE = { id: 'T01', verification: ['pnpm test:late'], depends_on: [] }
+  const { res, calls, q } = await scenario('WA2', {
+    'plan-reader': [planOpened(W0, W1, W2)], ...s00({ 'T00 · progress': [closeWith({ issues: ['T00-1'], waits: [HOLD] })] }),
+    'T01 · wait': [waitAnswer('T01', { timeout: ['T00-1'] })],
+    ...iso('T02', { 'T02 · progress': [closeWith({ pending: ['T00-1'] })] }),
+    'rulings · apply': [() => { setTimeout(() => applied.resolve(), 0); return applyAnswer({ applied: [RULED], amended: [LATE] }) }],
+    ...iso('T01', { 'T01 · worker': [async () => { await applied.promise; return report(1, { branch: 'task/T01', path: '/wt/T01' }) }] }),
+    'run end · progress': [COK] }, AP)
+  assert.deepEqual(stepOf(calls, 'T01 · start'), { task: 'T01', step: 'worker', isolated: true, model: 'opus', without: ['T00-1'] })
+  assert.ok(idx(calls, 'rulings · apply') > idx(calls, 'T02 · progress') && idx(calls, 'rulings · apply') < idx(calls, 'T01 · verification'), 'apply at the close of T02, while T01 runs')
+  assert.ok(!byLabel(calls, 'T01 · verification')[0].prompt.includes('pnpm test:late'), 'not in the verification of a task already started')
+  const E = closeIn(byLabel(calls, 'T01 · progress')[0].prompt)
+  assert.equal(E.discarded_amendments.length, 1)
+  assert.match(E.discarded_amendments[0].reason, /^ruled during the run after T01 started \(T00-1\): pnpm test:late$/)
+  assert.deepEqual(res.discarded_amendments.map(d => [d.task, d.id]), [['T01', 'T01']])
+  assert.equal(res.status, 'finished')
+  drained('WA2', q)
+})
+await test('WA3: Decide later (release) — the task starts without waiting more, without the ruling, and no apply; an answer after a wait without an answer goes on', async () => {
+  const { res, calls, q } = await scenario('WA3', {
+    'plan-reader': [planOpened(W0, W1)], ...s00({ 'T00 · progress': [closeWith({ issues: ['T00-1'], waits: [HOLD] })] }),
+    'T01 · wait': [null, waitAnswer('T01', { again: true }), waitAnswer('T01', { released: ['T00-1'] })], ...flow('T01'), 'run end · progress': [COK] }, AP)
+  assert.deepEqual(stepOf(calls, 'T01 · worker').without, ['T00-1'])
+  assert.deepEqual([byLabel(calls, 'T01 · wait').length, idx(calls, 'rulings · apply'), res.status, res.progress_failures.length], [3, -1, 'finished', 0], 'a wait cut short (again) goes on in a new call')
+  drained('WA3', q)
+  // A copy of the output of wait that does not match its digest: the task starts without its rulings, as in 0.20, and no apply
+  const lie = { ...waitAnswer('T01').wait, settled: ['T00-1'] }
+  const r = await scenario('WA3 unfaithful', { 'plan-reader': [planOpened(W0, W1)], ...s00({ 'T00 · progress': [closeWith({ issues: ['T00-1'], waits: [HOLD] })] }), 'T01 · wait': [withProgress({ wait: lie })], ...flow('T01'), 'run end · progress': [COK] }, AP)
+  assert.deepEqual([stepOf(r.calls, 'T01 · worker').without, idx(r.calls, 'rulings · apply'), r.res.status], [['T00-1'], -1, 'finished'])
+  assert.ok(r.logs.some(m => m.startsWith('T01: wait failed (output of wait not read, the copy does not match its digest)')), JSON.stringify(r.logs))
+  drained('WA3 unfaithful', r.q)
+})
+await test('WA4: a wait without an answer twice trips the circuit breaker — error, the held task does not start', async () => {
+  const { res, calls, logs, q } = await scenario('WA4', {
+    'plan-reader': [planOpened(W0, W1)], ...s00({ 'T00 · progress': [closeWith({ issues: ['T00-1'], waits: [HOLD] })] }),
+    'T01 · wait': [null, null], 'run end · progress': [COK] }, AP)
+  assert.equal(res.status, 'error')
+  assert.ok(res.detail.startsWith(`${SILENT} (T01 · wait, T01 · wait).`), res.detail)
+  assert.deepEqual([res.not_started, idx(calls, 'T01 · worker'), idx(calls, 'T01 · start')], [['T01'], -1, -1])
+  // The breaker is not a failed wait: the task does not start, and the log does not say it starts without its rulings
+  assert.ok(!logs.some(m => m.startsWith('T01: wait failed')), JSON.stringify(logs))
+  drained('WA4', q)
+})
+await test('WA5: a copy of the output of close that does not match its digest triggers neither wait nor apply: a stop for a human', async () => {
+  const tampered = prompt => { const x = closeWith({ issues: ['T00-1'], waits: [HOLD], pending: ['T00-1'] })(prompt); return { ...x, close: { ...x.close, pending: [] } } }
+  const { res, calls, q } = await scenario('WA5', { 'plan-reader': [planOpened(W0, W1)], ...s00({ 'T00 · progress': [tampered] }), 'run end · progress': [COK] }, AP)
+  assert.deepEqual([res.status, res.stop_issue.title], ['awaiting-ruling', 'Progress of T00: output of close not read'])
+  assert.ok(!calls.some(c => / · wait$/.test(c.opts.label) || c.opts.label === 'rulings · apply'))
+  assert.deepEqual(res.not_started, ['T01'])
+  drained('WA5', q)
+})
+await test('WA6: a pending ruling at a close is applied at once; a dependency on a task apply creates in this run postpones the task to the next run; a refused ruling, a failed apply or an output not read stop the run', async () => {
+  const added = { applied: [RULED], added_tasks: [{ id: 'T00D', title: 'Prerequisite', phase: 1 }], amended: [{ id: 'T01', verification: [], depends_on: ['T00D'] }] }
+  let { res, calls, q } = await scenario('WA6', { 'plan-reader': [planOpened(W0, W1)], ...s00({ 'T00 · progress': [closeWith({ pending: ['T00-1'] })] }), 'rulings · apply': [applyAnswer(added)], 'run end · progress': [COK] }, AP)
+  assert.equal(idx(calls, 'rulings · apply'), idx(calls, 'T00 · progress') + 1)
+  assert.deepEqual([res.status, res.deferred, res.not_started, res.added_tasks.map(x => x.id), idx(calls, 'T01 · worker')], ['rerun', ['T01'], [], ['T00D'], -1])
+  drained('WA6', q)
+  const stops = [
+    ['refused', applyAnswer({ rejected: [{ issue: 'T00-1', option: 'A', text: null, reason: 'plan-lint: x' }] }), 'Rulings refused by apply during the run', `rulings refused by apply: T00-1 (option A: plan-lint: x). ${REOPENED}`],
+    ['failed', { progress_ok: false, progress_error: 'progress: apply: not on plan/p' }, 'Rulings not applied during the run', 'progress.mjs apply failed: progress: apply: not on plan/p. Nothing of it is written; the rulings stay recorded: the next run applies them.'],
+    ['unread', withProgress({ apply: { ...applyAnswer(added).apply, applied: [] } }), 'Rulings applied during the run: output of apply not read', null],
+  ]
+  for (const [name, answer, title, context] of stops) {
+    ;({ res, calls, q } = await scenario(`WA6 ${name}`, { 'plan-reader': [planOpened(W0, W1)], ...s00({ 'T00 · progress': [closeWith({ pending: ['T00-1'] })] }), 'rulings · apply': [answer], 'run end · progress': [COK] }, AP))
+    assert.deepEqual([res.status, res.stop_issue.title, res.stop_issue.task, res.stop_issue.human, idx(calls, 'T01 · worker')], ['awaiting-ruling', title, 'T00', true, -1], name)
+    if (context) assert.equal(res.stop_issue.context, context, name)
+    drained(`WA6 ${name}`, q)
+  }
+})
+await test('WA10: the ruling arrives while the task waits, through the close of a task in parallel: one apply only; the wait ends settled and the task starts with the amendment', async () => {
+  const applied = deferred()
+  const { res, calls, q } = await scenario('WA10', {
+    'plan-reader': [planOpened(W0, W1, W2)], ...s00({ 'T00 · progress': [closeWith({ issues: ['T00-1'], waits: [HOLD] })] }),
+    'T01 · wait': [async () => { await applied.promise; return waitAnswer('T01', { settled: ['T00-1'] }) }],
+    ...iso('T02', { 'T02 · progress': [closeWith({ pending: ['T00-1'] })] }),
+    'rulings · apply': [() => { setTimeout(() => applied.resolve(), 0); return applyAnswer({ applied: [RULED], amended: [{ id: 'T01', verification: ['pnpm test:w10'], depends_on: [] }] }) }],
+    ...flow('T01'), 'run end · progress': [COK] }, AP)
+  assert.deepEqual([byLabel(calls, 'rulings · apply').length, idx(calls, 'T01 · wait') < idx(calls, 'rulings · apply'), idx(calls, 'rulings · apply') < idx(calls, 'T01 · worker')], [1, true, true])
+  assert.ok(byLabel(calls, 'T01 · verification')[0].prompt.includes('pnpm test:w10'))
+  assert.ok(!('without' in stepOf(calls, 'T01 · worker')))
+  assert.deepEqual([res.status, res.rulings_applied], ['finished', [RULED]])
+  drained('WA10', q)
+})
+await test('WA11: a held task waits only once its dependencies are done; a ruling applied before its wait settles it: the task starts with the amendment, without a wait', async () => {
+  const D2 = { ...W2, depends_on: ['T01'] }
+  const { res, calls, q } = await scenario('WA11', {
+    'plan-reader': [planOpened(W0, W1, D2)], ...s00({ 'T00 · progress': [closeWith({ issues: ['T00-1'], waits: [{ ...HOLD, holds: ['T02'] }] })] }),
+    ...flow('T01', { 'T01 · progress': [closeWith({ pending: ['T00-1'] })] }),
+    'rulings · apply': [applyAnswer({ applied: [RULED], amended: [{ id: 'T02', verification: ['pnpm test:w11'], depends_on: [] }] })],
+    ...flow('T02'), 'run end · progress': [COK] }, { ...AP, parallelism: 1 })
+  // No wait while T01 runs (a dependency of T02), nor after the apply that settled its issue
+  assert.equal(idx(calls, 'T02 · wait'), -1)
+  assert.ok(idx(calls, 'T01 · progress') < idx(calls, 'rulings · apply') && idx(calls, 'rulings · apply') < idx(calls, 'T02 · worker'))
+  assert.ok(byLabel(calls, 'T02 · verification')[0].prompt.includes('pnpm test:w11'))
+  assert.ok(!('without' in stepOf(calls, 'T02 · worker')))
+  assert.deepEqual([res.status, res.rulings_applied], ['finished', [RULED]])
+  drained('WA11', q)
+})
+await test('WA12: a task does not start while its wait runs, even when another task ends meanwhile', async () => {
+  const closed = deferred()
+  const { res, calls, q } = await scenario('WA12', {
+    'plan-reader': [planOpened(W0, W1, W2)], ...s00({ 'T00 · progress': [closeWith({ issues: ['T00-1'], waits: [HOLD] })] }),
+    'T01 · wait': [async () => { await closed.promise; return waitAnswer('T01', { released: ['T00-1'] }) }],
+    ...iso('T02', { 'T02 · progress': [() => { setTimeout(() => closed.resolve(), 0); return withProgress(SOK) }] }),
+    ...flow('T01'), 'run end · progress': [COK] }, AP)
+  assert.ok(idx(calls, 'T02 · progress') < idx(calls, 'T01 · worker'))
+  assert.deepEqual(stepOf(calls, 'T01 · worker').without, ['T00-1'], 'T01 started after its wait, without the released ruling')
+  assert.equal(res.status, 'finished')
+  drained('WA12', q)
+})
+await test('WA13: the circuit breaker trips while apply runs: the run waits for the apply in flight before its end; an apply cut by the breaker is no human stop', async () => {
+  // T01 (a worktree) fails while apply runs: its fix and its replanner do not answer, the breaker trips and T01 ends without a
+  // close; apply, in flight, answers after
+  const order = [], asked = deferred(), gone = deferred()
+  const t01 = (go, fix, replanning) => ({ 'T01 · start': [COK], 'T01 · worker': [async () => { await go.promise; return report(1, { branch: 'task/T01', path: '/wt/T01' }) }],
+    'T01 · verification': [withProgress(ok(1))], 'T01 · evaluation': [withProgress({ verdict: 'fail', gaps: ['M1'] })], 'T01 · model choice 1': [{ model: 'sonnet', reason: 'r' }], 'T01 · fix 1': [fix], 'T01 · replanning': [replanning] })
+  const r = await scenario('WA13', {
+    'plan-reader': [planOpened(W0, W1, W2)], ...s00(),
+    ...iso('T02', { 'T02 · progress': [closeWith({ pending: ['T00-1'] })] }),
+    'rulings · apply': [async () => { asked.resolve(); await gone.promise; order.push('apply'); return applyAnswer({ applied: [RULED] }) }],
+    ...t01(asked, null, () => { setTimeout(() => gone.resolve(), 10); return null }),
+    'run end · progress': [() => { order.push('run end'); return COK }] }, AP)
+  assert.deepEqual([r.res.status, order, r.res.rulings_applied], ['error', ['apply', 'run end'], [RULED]])
+  drained('WA13', r.q)
+  // The breaker trips on apply itself (a second silence in a row, after the fix of T01): the run ends on the breaker, without a
+  // stop for a human
+  const silenced = deferred(), asked2 = deferred()
+  const s = await scenario('WA13 apply', {
+    'plan-reader': [planOpened(W0, W1, W2)], ...s00(),
+    ...iso('T02', { 'T02 · progress': [closeWith({ pending: ['T00-1'] })] }),
+    'rulings · apply': [async () => { asked2.resolve(); await silenced.promise; return null }],
+    ...t01(asked2, () => { setTimeout(() => silenced.resolve(), 0); return null }, async () => { await new Promise(x => setTimeout(x, 20)); return NOTHING }),
+    'run end · progress': [COK] }, AP)
+  assert.deepEqual([s.res.status, s.res.stop_issue], ['error', undefined])
+  assert.ok(s.res.detail.startsWith(SILENT), s.res.detail)
+  drained('WA13 apply', s.q)
+})
+await test('WA14: the stop of a refused ruling names the task that first asked for the apply', async () => {
+  const seen = deferred(), over = deferred()
+  const { res, q } = await scenario('WA14', {
+    'plan-reader': [planOpened(W0, W1, W2)], ...s00({ 'T00 · progress': [closeWith({ issues: ['T00-1'], waits: [HOLD] })] }),
+    'T01 · wait': [async () => { await seen.promise; setTimeout(() => over.resolve(), 0); return waitAnswer('T01', { settled: ['T00-1'] }) }],
+    ...flow('T02', { 'T02 · worker': [() => { seen.resolve(); return withProgress(report(2, { branch: 'task/T02' })) }], 'T02 · progress': [async prompt => { await over.promise; return closeWith({ pending: ['T00-1'] })(prompt) }] }),
+    'rulings · apply': [applyAnswer({ rejected: [{ issue: 'T00-1', option: 'A', text: null, reason: 'plan-lint: x' }] })],
+    'run end · progress': [COK] }, { ...AP, parallelism: 1 })
+  assert.deepEqual([res.status, res.stop_issue.title, res.stop_issue.task], ['awaiting-ruling', 'Rulings refused by apply during the run', 'T01'])
+  drained('WA14', q)
+})
+// The real progress.mjs: the replanner of T00 raises an issue whose option A adds a verification to T01, not started
+const RP_W = { major: true, entries: [], issues: [{ title: 'Lint rule', context: 'c', options: [{ id: 'A', description: 'Lint T01', recommended: true, amendments: [{ id: 'T01', verification: ['npm run lint'], reason: 'lint the rule' }] }, { id: 'B', description: 'Leave it' }] }] }
+const issueId = D => D.doc().issues.find(p => p.title === 'Lint rule').id
+const t1 = (worker = report(1, { branch: 'task/T01', findings: [] })) => ({ 'T01 · worker': [worker], 'T01 · verification': [ok(2)], 'T01 · evaluation': [{ verdict: 'pass' }], 'T01 · merge': [MOK], 'T01 · progress': [SOK] })
+const t0w = () => ({ 'plan-reader': [plan(T0, T1)], 'T00 · worker': [report(0, { findings: [], deviations: DEVIATION })], 'T00 · verification': [ok(1)], 'T00 · evaluation': [{ verdict: 'pass' }], 'T00 · merge': [MOK], 'T00 · replanning': [RP_W], 'T00 · progress': [SOK] })
+await test('WA7: real progress.mjs — the user rules during the wait: wait settles it, apply commits it, T01 starts with the verification added; the log says it waited', async () => {
+  const D = toyRepo()
+  try {
+    const { res, launched, calls } = await play('WA7', D, { ...t0w(), 'T01 · wait': [{ before: () => script(D, 'rule', { issue: issueId(D), option: 'A' }), answer: {} }], 'rulings · apply': [{}], ...t1(), 'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    const id = issueId(D), close = closeOf(launched)
+    assert.deepEqual([close.waits.map(w => [w.issue, w.holds]), close.pending], [[[id, ['T01']]], []])
+    assert.deepEqual(JSON.parse(launched.find(l => l.label === 'T01 · wait').out).settled, [id])
+    assert.ok(calls.findIndex(c => c.label === 'rulings · apply') < calls.findIndex(c => c.label === 'T01 · worker'))
+    assert.ok(calls.find(c => c.label === 'T01 · verification').prompt.includes('npm run lint'))
+    assert.deepEqual([res.status, res.rulings_applied, res.open_issues], ['finished', [{ issue: id, task: 'T00', option: 'A', text: null }], []])
+    const doc = D.doc(), log = doc.log.map(e => [e.kind, e.task, e.text])
+    const at = x => log.findIndex(e => JSON.stringify(e) === JSON.stringify(x))
+    const marks = [['wait', 'T01', 'T01 waits for 1 ruling (15 min at most)'], ['ruling', 'T00', `${id}: option A applied`], ['task', 'T01', 'T01 starts (main checkout)']].map(at)
+    assert.ok(marks.every(i => i >= 0) && marks[0] < marks[1] && marks[1] < marks[2], JSON.stringify(log))
+    assert.deepEqual([doc.issues.find(p => p.id === id).status, doc.issues.find(p => p.id === id).waiting || []], ['settled', []])
+    assert.ok(D.git('log', '--format=%s').includes(`progress: rulings ${id}\n`))
+    assert.ok(fs.readFileSync(join(D.root, 'plans', 'p', 'tasks', 'T01-x.md'), 'utf8').includes('  - "npm run lint"'))
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('WA8: real progress.mjs — the deadline passes: T01 starts without the ruling (log), the user rules while it runs; at its close apply discards the late amendment with a blind-spot', async () => {
+  const D = toyRepo()
+  try {
+    const past = () => { const f = join(D.root, 'plans', 'p', 'progress.json'), doc = D.doc(); doc.issues.find(p => p.title === 'Lint rule').until = '2000-01-01T00:00:00.000Z'; fs.writeFileSync(f, JSON.stringify(doc, null, 2)) }
+    const { res, launched, calls } = await play('WA8', D, { ...t0w(), 'T01 · wait': [{ before: past, answer: {} }],
+      ...t1({ before: () => script(D, 'rule', { issue: issueId(D), option: 'A' }), answer: report(1, { branch: 'task/T01', findings: [] }) }), 'rulings · apply': [{}], 'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    const id = issueId(D)
+    assert.deepEqual(JSON.parse(launched.find(l => l.label === 'T01 · wait').out).timeout, [id])
+    assert.deepEqual(progressCommands(calls.find(c => c.label === 'T01 · worker').prompt).map(parse)[0].E.without, [id])
+    assert.ok(calls.findIndex(c => c.label === 'rulings · apply') > calls.findIndex(c => c.label === 'T01 · progress'), 'apply after the close of T01')
+    assert.ok(!calls.find(c => c.label === 'T01 · verification').prompt.includes('npm run lint'))
+    const log = D.doc().log.filter(e => e.task === 'T01').map(e => e.text)
+    assert.ok(log.includes('T01 waits for 1 ruling (15 min at most)') && log.includes('T01 starts (main checkout) without 1 ruling'), JSON.stringify(log))
+    assert.ok(section(D, 'T00').includes('blind-spot · major · amendment not applied to T01: lint the rule'), JSON.stringify(section(D, 'T00')))
+    assert.deepEqual([res.status, res.discarded_amendments], ['finished', [{ task: null, id: 'T01', reason: 'lint the rule' }]])
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('WA9: real progress.mjs — ruling_wait_minutes 0 behaves as 0.20: no deadline, no wait, no apply; T01 starts at once, the issue open', async () => {
+  const D = toyRepo()
+  try {
+    fs.writeFileSync(join(D.root, 'plans', 'p', 'orchestre.config.json'), JSON.stringify({ integration_branch: 'plan/p', ruling_wait_minutes: 0 }))
+    D.git('commit', '-qam', 'no wait')
+    const { res, launched, calls } = await play('WA9', D, { ...t0w(), ...t1(), 'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    assert.deepEqual(closeOf(launched).waits, [])
+    assert.deepEqual(calls.map(c => c.label), ['plan-reader', 'T00 · worker', 'T00 · verification', 'T00 · evaluation', 'T00 · merge', 'T00 · replanning', 'T00 · progress', 'T01 · worker', 'T01 · verification', 'T01 · evaluation', 'T01 · merge', 'T01 · progress', 'run end · progress'])
+    assert.deepEqual([res.status, res.open_issues.map(p => p.title)], ['finished', ['Lint rule']])
+    assert.ok(!D.doc().log.some(e => e.kind === 'wait'))
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+// ——— 0.21.0, mode deviation (D3): a major issue that is not human, given a deadline by close, waits for its ruling once the tasks
+// in flight end, on behalf of the task whose close raised it; ruled in time, it is applied and the run goes on ———
+const DV = { mode: 'deviation', progress: PROG }
+const STOPS = '2026-11-18T10:15:00.000Z'
+const DUE = (issue, holds = []) => ({ issue, until: STOPS, holds })
+const X2 = { ...W2, depends_on: [] }
+// T00 (a worktree) raises the issues of rp at its close, which gives them their ids and deadlines; T02 (a worktree) runs meanwhile
+// and ends only after that close
+const dev = (rp, close, extra = {}) => {
+  const closed = deferred()
+  return {
+    'plan-reader': [planOpened(W0, W1, X2)],
+    ...iso('T00', { 'T00 · worker': [report('T00', { branch: 'task/T00', path: '/wt/T00', deviations: DEVIATION })], 'T00 · replanning': [rp], 'T00 · progress': [prompt => { setTimeout(() => closed.resolve(), 0); return closeWith(close)(prompt) }] }),
+    ...iso('T02', { 'T02 · worker': [async () => { await closed.promise; return report('T02', { branch: 'task/T02', path: '/wt/T02' }) }] }),
+    'run end · progress': [COK], ...extra,
+  }
+}
+const RP_D = { major: true, entries: [], issues: [issueN(1)] }
+const RULED_D = { issue: 'T00-1', task: 'T00', option: 'A', text: null }
+await test('WD1: mode deviation, ruled in time — no task starts while the issue waits; the task in flight ends, then the run waits for the ruling, applies it and goes on', async () => {
+  const { res, calls, logs, q } = await scenario('WD1', dev(RP_D, { issues: ['T00-1'], waits: [DUE('T00-1')] }, {
+    'T00 · wait': [waitAnswer('T00', { settled: ['T00-1'] })],
+    'rulings · apply': [applyAnswer({ applied: [RULED_D], amended: [{ id: 'T01', verification: ['pnpm test:wd1'], depends_on: [] }] })],
+    ...flow('T01') }), DV)
+  // The task in flight (T02) ended before the wait; T01, ready since T00 merged, started only after the apply
+  assert.ok(idx(calls, 'T00 · progress') < idx(calls, 'T02 · progress') && idx(calls, 'T02 · progress') < idx(calls, 'T00 · wait'), JSON.stringify(labels(calls)))
+  assert.ok(idx(calls, 'T00 · wait') < idx(calls, 'rulings · apply') && idx(calls, 'rulings · apply') < idx(calls, 'T01 · worker'), JSON.stringify(labels(calls)))
+  const w = byLabel(calls, 'T00 · wait')[0]
+  assert.deepEqual([w.opts.agentType, w.opts.model, progressOf(calls, 'T00 · wait')[0].cmd, progressOf(calls, 'T00 · wait')[0].E], ['orchestre:clerk', 'haiku', 'wait', { task: 'T00', issues: ['T00-1'] }])
+  assert.ok(w.prompt.includes('Wait of the run of the plan plans/p (mode deviation): the issues T00-1, raised at the close of T00, stop it unless the user rules on them first.'), w.prompt)
+  assert.ok(byLabel(calls, 'T01 · verification')[0].prompt.includes('pnpm test:wd1'))
+  assert.ok(logs.includes('T00-1: ruled in time, the run goes on'), JSON.stringify(logs))
+  assert.deepEqual([res.status, res.stop_issue, res.open_issues, res.rulings_applied], ['finished', undefined, [], [RULED_D]])
+  drained('WD1', q)
+  // Ruled before its wait (pending in the output of the close that recorded it): the apply runs first and settles it, no wait
+  const p = await scenario('WD1 pending', dev(RP_D, { issues: ['T00-1'], waits: [DUE('T00-1')], pending: ['T00-1'] }, {
+    'rulings · apply': [applyAnswer({ applied: [RULED_D] })], ...iso('T01') }), DV)
+  assert.deepEqual([p.res.status, p.res.open_issues, p.calls.some(c => / · wait$/.test(c.opts.label)), idx(p.calls, 'rulings · apply') < idx(p.calls, 'T01 · worker')], ['finished', [], false, true])
+  drained('WD1 pending', p.q)
+})
+await test('WD2: mode deviation, no ruling by the deadline — the run stops in awaiting-ruling, as before; released, a failed wait or a close without a deadline likewise', async () => {
+  const cases = [
+    ['timeout', [waitAnswer('T00', { timeout: ['T00-1'] })], 'T00: wait over; the run stops on T00-1'],
+    ['released', [waitAnswer('T00', { released: ['T00-1'] })], 'T00: wait over; the run stops on T00-1'],
+    ['failed', [{ progress_ok: false, progress_error: 'progress: wait: unknown issue' }], 'T00: wait failed (progress: wait: unknown issue); the run stops on T00-1'],
+  ]
+  for (const [name, wait, line] of cases) {
+    const { res, calls, logs, q } = await scenario(`WD2 ${name}`, dev(RP_D, { issues: ['T00-1'], waits: [DUE('T00-1')] }, { 'T00 · wait': wait }), DV)
+    assert.deepEqual([res.status, res.stop_issue.title, res.stop_issue.human, res.open_issues, res.not_started], ['awaiting-ruling', 'P1', false, [], ['T01']], name)
+    assert.deepEqual([idx(calls, 'rulings · apply'), idx(calls, 'T01 · worker')], [-1, -1], name)
+    assert.ok(logs.includes(line), `${name}: ${JSON.stringify(logs)}`)
+    drained(`WD2 ${name}`, q)
+  }
+  // Without a deadline (ruling_wait_minutes 0), no wait: the issue stops the run at its close, as before
+  const n = await scenario('WD2 no deadline', dev(RP_D, { issues: ['T00-1'], waits: [] }), DV)
+  assert.deepEqual([n.res.status, n.res.stop_issue.title, n.res.not_started, n.calls.some(c => / · wait$/.test(c.opts.label))], ['awaiting-ruling', 'P1', ['T01'], false])
+  drained('WD2 no deadline', n.q)
+  // Two issues: P1 ruled, P2 not; the run stops on P2, without an apply; P1 stays open, its ruling for the next run start
+  const two = await scenario('WD2 two', dev({ ...RP_D, issues: [issueN(1), issueN(2)] }, { issues: ['T00-1', 'T00-2'], waits: [DUE('T00-1'), DUE('T00-2')] }, {
+    'T00 · wait': [waitAnswer('T00', { settled: ['T00-1'], timeout: ['T00-2'] })] }), DV)
+  assert.deepEqual(progressOf(two.calls, 'T00 · wait')[0].E, { task: 'T00', issues: ['T00-1', 'T00-2'] })
+  assert.deepEqual([two.res.status, two.res.stop_issue.title, two.res.open_issues.map(p => p.title), idx(two.calls, 'rulings · apply')], ['awaiting-ruling', 'P2', ['P1'], -1])
+  drained('WD2 two', two.q)
+})
+await test('WD3: mode deviation, a human issue — the run stops at once, without a wait; an issue that is not human of the same close stays open', async () => {
+  const HUMAN = { ...issueN(9), human: true }
+  for (const [name, rp] of [['alone', { ...RP_D, issues: [HUMAN] }], ['with another', { ...RP_D, issues: [issueN(1), HUMAN] }]]) {
+    const { res, calls, q } = await scenario(`WD3 ${name}`, dev(rp, { issues: rp.issues.map((_, i) => `T00-${i + 1}`), waits: rp.issues.filter(p => !p.human).map((_, i) => DUE(`T00-${i + 1}`)) }), DV)
+    assert.deepEqual([res.status, res.stop_issue.title, res.stop_issue.human, res.open_issues.map(p => p.title), res.not_started], ['awaiting-ruling', 'P9', true, rp.issues.length > 1 ? ['P1'] : [], ['T01']], name)
+    assert.ok(!calls.some(c => / · wait$/.test(c.opts.label)), `${name}: no wait`)
+    assert.ok(idx(calls, 'T02 · progress') > idx(calls, 'T00 · progress'), `${name}: the task in flight ends`)
+    drained(`WD3 ${name}`, q)
+  }
+})
+await test('WD4: mode deviation — an issue waits twice at most: ruled, then an apply that does not settle it, twice, and the run stops on it', async () => {
+  const { res, calls, q } = await scenario('WD4', dev(RP_D, { issues: ['T00-1'], waits: [DUE('T00-1')] }, {
+    'T00 · wait': [waitAnswer('T00', { settled: ['T00-1'] }), waitAnswer('T00', { settled: ['T00-1'] })],
+    'rulings · apply': [applyAnswer(), applyAnswer()] }), DV)
+  assert.deepEqual([byLabel(calls, 'T00 · wait').length, byLabel(calls, 'rulings · apply').length], [2, 2])
+  assert.deepEqual([res.status, res.stop_issue.title, res.not_started, idx(calls, 'T01 · worker')], ['awaiting-ruling', 'P1', ['T01'], -1])
+  drained('WD4', q)
+})
+await test('WD5: mode deviation — the circuit breaker trips during the wait: error, the issue in stop_issue, no task starts', async () => {
+  const { res, calls, q } = await scenario('WD5', dev(RP_D, { issues: ['T00-1'], waits: [DUE('T00-1')] }, { 'T00 · wait': [null, null] }), DV)
+  assert.equal(res.status, 'error')
+  assert.ok(res.detail.startsWith(`${SILENT} (T00 · wait, T00 · wait).`), res.detail)
+  assert.deepEqual([res.stop_issue && res.stop_issue.title, res.not_started, idx(calls, 'T01 · worker')], ['P1', ['T01'], -1])
+  drained('WD5', q)
+})
+await test('WD7: mode deviation — one wait per task whose close raised an issue, once the last task ends; the run stops on the first issue past its deadline and ends only after the other wait', async () => {
+  const closed = deferred(), order = []
+  const { res, calls, q } = await scenario('WD7', {
+    'plan-reader': [planOpened(W0, X2)],
+    ...iso('T00', { 'T00 · worker': [report('T00', { branch: 'task/T00', path: '/wt/T00', deviations: DEVIATION })], 'T00 · replanning': [RP_D], 'T00 · progress': [prompt => { setTimeout(() => closed.resolve(), 0); return closeWith({ issues: ['T00-1'], waits: [DUE('T00-1')] })(prompt) }] }),
+    ...iso('T02', { 'T02 · worker': [async () => { await closed.promise; return report('T02', { branch: 'task/T02', path: '/wt/T02', deviations: DEVIATION }) }], 'T02 · replanning': [{ ...RP_D, issues: [issueN(2)] }], 'T02 · progress': [closeWith({ issues: ['T02-1'], waits: [DUE('T02-1')] })] }),
+    'T00 · wait': [waitAnswer('T00', { timeout: ['T00-1'] })],
+    'T02 · wait': [async () => { await new Promise(x => setTimeout(x, 20)); order.push('T02 wait'); return waitAnswer('T02', { settled: ['T02-1'] }) }],
+    'run end · progress': [() => { order.push('run end'); return COK }] }, DV)
+  assert.deepEqual([progressOf(calls, 'T00 · wait')[0].E, progressOf(calls, 'T02 · wait')[0].E], [{ task: 'T00', issues: ['T00-1'] }, { task: 'T02', issues: ['T02-1'] }])
+  assert.ok(idx(calls, 'T02 · progress') < idx(calls, 'T00 · wait'), 'the waits start once no task runs')
+  // Stopped: P2, ruled, is not applied during the run; it stays open, its ruling for the next run start
+  assert.deepEqual([res.status, res.stop_issue.title, res.open_issues.map(p => p.title), idx(calls, 'rulings · apply'), order], ['awaiting-ruling', 'P1', ['P2'], -1, ['T02 wait', 'run end']])
+  drained('WD7', q)
+})
+await test('WD6: real progress.mjs, mode deviation — the user rules during the wait: apply commits it and T01 starts with the verification added, without a wait of its own; past the deadline, the run stops', async () => {
+  let D = toyRepo()
+  try {
+    const { res, launched, calls } = await play('WD6', D, { ...t0w(), 'T00 · wait': [{ before: () => script(D, 'rule', { issue: issueId(D), option: 'A' }), answer: {} }], 'rulings · apply': [{}], ...t1(), 'run end · progress': [{ commit: '', detail: '' }] }, { mode: 'deviation' })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    const id = issueId(D)
+    assert.deepEqual(closeOf(launched).waits.map(w => [w.issue, w.holds]), [[id, ['T01']]])
+    assert.deepEqual(JSON.parse(launched.find(l => l.label === 'T00 · wait').out).settled, [id])
+    assert.ok(!calls.some(c => c.label === 'T01 · wait'), 'T01, held by the same issue, starts after the apply without a wait')
+    assert.ok(calls.findIndex(c => c.label === 'rulings · apply') < calls.findIndex(c => c.label === 'T01 · worker'))
+    assert.ok(calls.find(c => c.label === 'T01 · verification').prompt.includes('npm run lint'))
+    assert.deepEqual([res.status, res.stop_issue, res.open_issues, res.rulings_applied], ['finished', undefined, [], [{ issue: id, task: 'T00', option: 'A', text: null }]])
+    assert.ok(D.doc().log.some(e => e.kind === 'wait' && e.task === 'T00'), 'the log says the run waited')
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+  D = toyRepo()
+  try {
+    const past = () => { const f = join(D.root, 'plans', 'p', 'progress.json'), doc = D.doc(); doc.issues.find(p => p.title === 'Lint rule').until = '2000-01-01T00:00:00.000Z'; fs.writeFileSync(f, JSON.stringify(doc, null, 2)) }
+    const { res, launched, calls } = await play('WD6 deadline', D, { ...t0w(), 'T00 · wait': [{ before: past, answer: {} }], 'run end · progress': [{ commit: '', detail: '' }] }, { mode: 'deviation' })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    assert.deepEqual(JSON.parse(launched.find(l => l.label === 'T00 · wait').out).timeout, [issueId(D)])
+    assert.deepEqual([res.status, res.stop_issue.title, res.not_started, calls.some(c => c.label === 'T01 · worker' || c.label === 'rulings · apply')], ['awaiting-ruling', 'Lint rule', ['T01'], false])
+    assert.equal(D.doc().runs[0].status, 'awaiting-ruling')
   } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
 })
 console.log(`scenarios: ALL GREEN (${n} cases)`)

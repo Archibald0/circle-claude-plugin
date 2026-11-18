@@ -399,7 +399,7 @@ try {
     assert.deepEqual([...discovery.matchAll(/^## (.+)$/gm)].map(m => m[1]), Object.values(LEGACY.discoverySections).filter(s => s !== 'Context recommendations'))
     // orchestre.config.json: the keys of 0.12, and the values plan-lint accepts
     const config = JSON.parse(blocks.find(b => b.lang === 'json').body)
-    assert.deepEqual(sorted(Object.keys(config)), sorted([...Object.values(LEGACY.configKeys), 'fable', 'language']))
+    assert.deepEqual(sorted(Object.keys(config)), sorted([...Object.values(LEGACY.configKeys), 'fable', 'language', 'ruling_wait_minutes']))
     assert.equal(config.evaluator, 'always'); assert.equal(config.language, 'en'); assert.equal(config.integration_branch, 'plan/<name>')
     // /orchestre:run reads every key of the config it uses (evaluator is indicative, fable is for plan-lint)
     const p5 = point(text.run, 5, 'Read `orchestre.config.json`')
@@ -628,7 +628,7 @@ try {
     for (const x of ['progress.mjs step', 'progress.mjs run-end', 'Start of a task: the progress command is your only command']) assert.ok(agent('clerk').includes(x), `clerk.md: ${x}`)
     // The workflow gives the step to the clerk, and none to the isolated worker
     assert.ok(WF.includes("if (isolated) await noteStart(t, workerModel)") && WF.includes("label: `${t.id} · start`, agentType: AG('clerk')"), 'run-phase.js: the clerk notes the start')
-    assert.ok(WF.includes("`${isolated ? '' : pStep(t.id, 'worker', { isolated: false, model })}Task"), 'run-phase.js: no step in the instructions of the isolated worker')
+    assert.ok(WF.includes("`${isolated ? '' : pStep(t.id, 'worker', { isolated: false, model, ...withoutOf(wo) })}Task"), 'run-phase.js: no step in the instructions of the isolated worker')
   })
 
   test('digest of the scope (0.19.0): the same scopeDigest in plan-lint and in the workflow, which reads the copy of plan-lint --scope; each field changes it, marker included', () => {
@@ -746,8 +746,10 @@ try {
     const notCommitted = stopText('Progress of <id> not committed')
     for (const w of ['whose context lists `HANDOFF entries not written`', 'before the new run, write these entries under `## <id>` in HANDOFF.md', 'then commit them on the integration branch, together with `<plan>/DISCOVERY.md` if `git status` shows it modified']) assert.ok(notCommitted.includes(w), `run: close not committed without "${w}"`)
     assert.ok(WF.includes('HANDOFF entries not written: ${JSON.stringify(lost)}'), 'run-phase.js: the context of a refused close lists the entries not written')
-    // An issue without an entry in ISSUES.json: a free answer only. A refused ruling: open again only when apply reopened it
-    assert.ok(text.run.includes('an issue of `progress.json` that has no entry in `ISSUES.json`') && text.run.includes('offer no option and ask for a free answer, since `apply` refuses an option whose actions it does not know'), 'run: free answer for an issue without an ISSUES.json entry')
+    // An issue without an entry in ISSUES.json: an answer recorded as a text; its options offered only when the workflow return gives them. A refused ruling: open again only when apply reopened it
+    const noEntry = text.run.slice(text.run.indexOf('So does an issue of `progress.json` that has no entry in `ISSUES.json`'), text.run.indexOf(' With at least two issues'))
+    for (const w of ['since `apply` refuses an option whose actions it does not know: its answer is always recorded as a text', 'When the workflow return gives its options', 'offer them, write the actions of the chosen option by hand as said above, then record `rule` with the text `option <id>: <description>`', 'otherwise, offer no option and ask for a free answer']) assert.ok(noEntry.includes(w), `run: an issue without an ISSUES.json entry without "${w}"`)
+    assert.ok(!noEntry.includes('offer no option and ask for a free answer, since'), 'run: an issue without an ISSUES.json entry is no longer always a free answer without options')
     for (const w of ['An issue is open again only when apply reopened it', 'is dropped, and nothing is reopened']) assert.ok(text.run.includes(w) && WF.includes(w),`run and run-phase.js: "${w}"`)
     // merged_unclosed: rule refuses these issues, the pilot writes them by hand, plan-lint before the commit
     const mu = text.run.slice(text.run.indexOf('A non-empty `merged_unclosed`'), text.run.indexOf('An entry with `merge: "unknown"`'))
@@ -766,7 +768,78 @@ try {
     const prefixes = [...REF.matchAll(/`detail` that starts with "([^"]+)"/g)].map(m => m[1])
     for (const x of ['progress: rulings not applied (apply)', 'progress: output of apply not read']) assert.ok(prefixes.includes(x), `docs/reference.md: the detail "${x}"`)
     for (const x of prefixes) assert.ok(WF.includes(x), `docs/reference.md cites a detail the workflow does not write: ${x}`)
-    assert.ok(REF.includes('then records the answer with `rule`; the next run start applies it with `apply`') && REF.includes('the issues of `merged_unclosed` (a circuit breaker return) reached neither `progress.json` nor ISSUES.json, so `rule` refuses them') && REF.includes('runs plan-lint until "valid plan", then commits on the integration branch'), 'docs/reference.md: the two paths')
+    assert.ok(REF.includes('then records the answer with `rule`; `apply` writes it into the plan at the pre-flight of the next run, or during a run') && REF.includes('those of `merged_unclosed` (a circuit breaker return) reached neither `progress.json` nor ISSUES.json, so `rule` refuses them') && REF.includes('runs plan-lint until "valid plan", then commits on the integration branch'), 'docs/reference.md: the two paths')
+  })
+
+  test('fixes after EV2 (0.21.0): upgrading.md says which run applies a ruling of 0.19.0; the skill run settles the issues of a task whose progress was not committed by a free answer; docs/reference.md names the issue of a rejected automatic decision', () => {
+    const UP = read(join(ROOT, 'docs', 'upgrading.md')), REF = read(join(ROOT, 'docs', 'reference.md'))
+    const step1 = UP.slice(UP.indexOf('## From 0.19.0 to 0.20.0'), UP.indexOf('\n2. ', UP.indexOf('## From 0.19.0 to 0.20.0')))
+    assert.ok(step1.includes('only the next 0.19.0 run applies a ruling settled on 0.19.0'), 'upgrading.md, step 1: only the next 0.19.0 run applies a ruling settled on 0.19.0')
+    for (const w of ['write the actions of the chosen option by hand', "mark the issue settled with 0.19's `progress.mjs ruling`", 'answer it with a text after the update']) assert.ok(step1.includes(w), `upgrading.md, step 1: ${w}`)
+    assert.ok(text.run.includes('The issues of a task whose progress was not committed are settled by a free answer'), 'run: the issues of a task whose progress was not committed are settled by a free answer')
+    assert.ok(text.run.includes('then write the actions of the chosen option by hand, as for `merged_unclosed`'), 'run: the pilot writes the actions of the chosen option by hand')
+    assert.ok(text.run.includes('A context that also lists `Automatic decisions not taken`: do not write those lines') && WF.includes(' Automatic decisions not taken, their issues back in open_issues: '), 'run and run-phase.js: the automatic decisions of a refused close')
+    assert.ok(REF.includes('`{ id, issue, title, reason }` for each path an automatic decision cites'), 'docs/reference.md: the issue of a rejected automatic decision in the output of close')
+    assert.ok(REF.includes('`raised without its actions (its close was not written): settle it with a free answer`') && SRC.progress.includes("'raised without its actions (its close was not written): settle it with a free answer'"), 'docs/reference.md: the reason run-end gives')
+  })
+
+  test('answering during the run (0.21.0): the clerk runs wait again while it says again, outside the exclusive queue, and apply in it; the outputs of close and apply declare waits and done; no new arg', () => {
+    const clerk = read(join(PLUGIN, 'agents', 'clerk.md'))
+    const def = name => { const i = WF.indexOf(`const ${name} = `); assert.ok(i >= 0, `run-phase.js: ${name}`); return WF.slice(i, WF.indexOf('\nconst ', i + 1)) }
+    // The rules of the clerk are those its instructions give
+    for (const x of ['`node …/progress.mjs wait …`', 'while that line says `"again":true`, run the same command again, unchanged, in a new call, without a timeout of your own', 'Once it says `"again":false`, return that last line in `wait`', 'Rulings of the run (`node …/progress.mjs apply …`, without JSON): first `git switch <integration branch>`']) assert.ok(clerk.includes(x), `clerk.md: ${x}`)
+    assert.match(clerk, /^description: [^\n]*scripts\/progress\.mjs wait[^\n]*scripts\/progress\.mjs apply/m, 'clerk.md: its description names wait and apply')
+    const pw = def('pWait'), pa = def('pApplyRun')
+    for (const x of ['While that line says "again":true, run the same command again, unchanged, without a timeout of your own', 'Once it says "again":false, return that last line in "wait"', "progressCmd('wait', { task: t.id, issues: ids })"]) assert.ok(pw.includes(x), `pWait: ${x}`)
+    assert.ok(pa.includes("\\`git switch ${INTEG}\\`. If it fails, run nothing else") && pa.includes('block(APPLY_CMD)'), 'pApplyRun: the switch, then apply')
+    // The wait outside the exclusive queue, apply in it; both by the clerk
+    assert.ok(WF.includes("ask(pWait(t, ids, again), { label: `${t.id} · wait`, agentType: AG('clerk')") && !/exclusive\(\(\) => ask\(pWait/.test(WF), 'run-phase.js: the wait, by the clerk, outside the exclusive queue')
+    assert.ok(WF.includes("exclusive(() => ask(pApplyRun(), { label: 'rulings · apply', agentType: AG('clerk')"), 'run-phase.js: apply, by the clerk, in the exclusive queue')
+    // The outputs the workflow reads, as progress.mjs prints them: waits of close, the fields of wait, done of apply
+    assert.match(def('CLOSE_OUT_S'), /waits: WAITS_S/, 'CLOSE_OUT_S declares waits')
+    assert.ok(SRC.progress.includes('pending: r.doc.pending_rulings.map(x => x.issue), waits: r.waits,'), 'progress.mjs: close prints waits')
+    assert.ok(WF.includes("commit: nullable('string'), done: strs,") && SRC.progress.includes('if (dids.length) result.done = []'), 'APPLY_S declares done')
+    const outKeys = (WF.match(/const WAIT_OUT_S = S\(\{[^\n]*\}, \[([^\]]+)\]\)/) || [])[1] || ''
+    assert.deepEqual(outKeys.split(/,\s*/).map(x => x.replace(/'/g, '')), ['task', 'settled', 'released', 'timeout', 'again', 'digest'], 'WAIT_OUT_S')
+    assert.ok(SRC.progress.includes('out = { task: t.id, settled: [], released: [], timeout: [] }') && SRC.progress.includes('const res = { ...out, again: next !== Infinity }'), 'progress.mjs: the output of wait')
+    // The duration and the deadline come from progress.mjs: the workflow reads no arg for them
+    assert.ok(!/\bA\.(ruling_wait|wait|until|deadline)/.test(WF), 'run-phase.js: an arg for the wait')
+  })
+
+  test('pilot skills (0.21.0): the commands, the config key and the fields the skills and docs cite exist in the scripts and the workflow', () => {
+    const REF = read(join(ROOT, 'docs', 'reference.md')), CONF = read(join(ROOT, 'docs', 'configuration.md')), UPG = read(join(ROOT, 'docs', 'upgrading.md'))
+    const usage = (SRC.progress.match(/const USAGE = '([^']+)'/) || [])[1] || ''
+    const cmds = usage.slice(usage.indexOf('<') + 1, usage.indexOf('>')).split('|')
+    // The commands the docs and the skill run cite are commands of progress.mjs, and the docs describe the four added
+    for (const c of ['wait', 'release', 'did', 'undid', 'rule', 'unrule', 'apply']) assert.ok(cmds.includes(c), `progress.mjs: command ${c}`)
+    for (const c of ['wait', 'release', 'did', 'undid']) assert.ok(REF.includes('`progress.mjs ' + c + ' <plan>`'), `reference.md describes ${c}`)
+    for (const m of text.run.matchAll(/progress\.mjs (\w[\w-]*)/g)) assert.ok(cmds.includes(m[1]) || m[1] === 'mjs', `run: progress.mjs ${m[1]} exists`)
+    for (const m of REF.matchAll(/`progress\.mjs ([a-z-]+)(?: <plan>)?`/g)) assert.ok(cmds.includes(m[1]), `reference.md: progress.mjs ${m[1]} exists`)
+    // run: apply in the pre-flight, ready only reports, and during a run the only writes are rule, release and did
+    assert.ok(text.run.includes('progress.mjs apply <plan>`, from the main checkout'), 'run: apply in the pre-flight')
+    const runApply = text.run.indexOf('progress.mjs apply <plan>`, from the main checkout'), runLint = text.run.indexOf('7. `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-lint.mjs')
+    assert.ok(runApply > 0 && runLint > runApply && text.run.indexOf('5. Read `orchestre.config.json`') > runApply, 'run: apply comes before the plan-lint and prerequisite check of point 7')
+    const choices = text.run.slice(text.run.indexOf("## 2. The user's choices"), text.run.indexOf('## 3.'))
+    assert.ok(choices.includes('The pre-flight (point 4) applies them before the run') && !choices.includes('(point 9) applies'), 'run: section 2 cites the point that holds apply')
+    assert.ok(text.ready.includes('`pending_rulings`') && text.ready.includes('`pending_done`') && text.ready.includes('never apply them here'), 'ready: reports, never applies')
+    assert.ok(!text.ready.includes('progress.mjs apply <plan>'), 'ready: no apply command')
+    const during = text.run.slice(text.run.indexOf('## During a run'), text.run.indexOf('## Context'))
+    assert.ok(during.includes('The only writes you may make during a run are `progress.mjs rule`, `release`') && during.includes('and `did`') && during.includes('no other write is allowed'), 'run: during a run, rule, release and did only')
+    assert.ok(!/progress\.mjs (unrule|undid|pilot|ack|close|apply)/.test(during), 'run: no other progress command during a run')
+    // Mode deviation (D3): said by run and reference.md
+    assert.ok(text.run.includes('In `deviation`, a major issue that is not human no longer stops the run at once') && text.run.includes('waits for the ruling until its deadline'), 'run: mode deviation waits')
+    assert.ok(REF.includes('it first waits for that ruling'), 'reference.md: mode deviation waits')
+    // The config key: format.md, plan-lint, the docs, the same bounds
+    assert.ok(FORMAT.includes('"ruling_wait_minutes": 15') && FORMAT.includes('`ruling_wait_minutes` (0.21.0)') && FORMAT.includes('from 0 to 60'), 'format.md describes ruling_wait_minutes')
+    assert.ok(SRC['plan-lint'].includes('config.ruling_wait_minutes >= 0 && config.ruling_wait_minutes <= 60'), 'plan-lint checks 0 to 60')
+    assert.ok(CONF.includes('`ruling_wait_minutes`') && UPG.includes('`ruling_wait_minutes`') && REF.includes('`ruling_wait_minutes`'), 'docs cite ruling_wait_minutes')
+    // The fields of the progress.json the docs name are in the schema of progress.mjs
+    for (const f of ['until', 'holds', 'waiting', 'started_without', 'released', 'pending_done']) assert.ok(SRC.progress.includes(f), `progress.mjs: field ${f}`)
+    // The three stops of an apply during the run, as the workflow writes them
+    for (const t of ['Rulings not applied during the run', 'Rulings applied during the run: output of apply not read', 'Rulings refused by apply during the run']) assert.ok(WF.includes(t) && text.run.includes(t) && REF.includes(t), `stop ${t}`)
+    // The section of the changelog, written for this version
+    const version = JSON.parse(read(join(PLUGIN, '.claude-plugin', 'plugin.json'))).version
+    assert.ok(/^## 0\.21\.0 — \d{4}-\d{2}-\d{2}: .+$/m.test(read(join(ROOT, 'CHANGELOG.md'))) && version >= '0.21.0', 'CHANGELOG.md: ## 0.21.0 — <date>: <title>')
   })
 
   console.log(`commands: ALL GREEN (${n} tests)`)

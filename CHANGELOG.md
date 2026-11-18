@@ -2,6 +2,18 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.21.0 — 2026-11-18: fewer stops: answering during the run
+
+`progress.json` stays `orchestre-progress/4` and the plans keep their format; a /4 file of 0.20.0 stays valid, but 0.20.0 refuses a file that 0.21.0 wrote (`field unknown`). See [`docs/upgrading.md`](docs/upgrading.md).
+
+- Answering during the run. A task that a valid option of an open, non-human issue would amend waits for your ruling once it is ready, up to `ruling_wait_minutes` in `orchestre.config.json` (15 by default, an integer from 0 to 60, 0 to never wait), while the rest of the phase goes on. Answered in time, the ruling is applied during the run (`progress.mjs apply`, one commit) and the task starts with the verifications and dependencies added. Released or past its deadline, it starts without the ruling, and the log says so. A ruling recorded while tasks run is applied right after the next close.
+- Script side. `progress.mjs close` gives each such issue a deadline and lists the tasks it holds (`waits`). New commands: `wait` (blocks at most 100 seconds per call, then `again`), `release` (the tasks start without the ruling), `did` and `undid` (a manual prerequisite noted done, written into PREREQUISITES.md by the next `apply`).
+- Mode `deviation`. A major issue that is not human no longer stops the run at once: no new task starts, the tasks in flight finish, then the run waits for the ruling up to `ruling_wait_minutes`. Ruled in time, the phase goes on; released, past its deadline or after a failed wait, it stops as before.
+- The pane. An issue's detail card has a button per option, `[ Other… ]`, `[ Ask Claude ]`, `[ Decide later ]`, `[ Accept the N recommended ]` and `[ ✓ I did it ]`, and works during a run; an issue with options counts as `now` then. A waiting task shows `‖` and a countdown, with notifications for the arrival of the issues and the start without a ruling.
+- Three human stops for an apply during the run: `Rulings not applied during the run`, `Rulings applied during the run: output of apply not read` and `Rulings refused by apply during the run`. A stopping run lets the waits already running finish first.
+- Skills. `/orchestre:run` applies the rulings and the prerequisites noted outside a run at its pre-flight, and allows during a run only `rule`, `release` and `did`; `/orchestre:ready` reports them without applying them.
+- Fixes after the acceptance of 0.20.0. Issues raised by the run end without an ISSUES.json entry have each option marked invalid, and `rule` refuses them. `close`'s `rejected` items carry `issue` and `title`; an automatic decision that close rejects, or that a refused close carried, no longer counts, and its issue is open again. The stop `Progress of <id> not committed` lists every HANDOFF line close would have written, and those issues are settled by a text answer after the pilot writes the actions by hand.
+
 ## 0.20.0 — 2026-11-17: fewer stops: the issue register, and rulings by reference
 
 `progress.json` changes format (`orchestre-progress/3` to `/4`); the plans do not. Settle the open issues before updating: see [`docs/upgrading.md`](docs/upgrading.md).

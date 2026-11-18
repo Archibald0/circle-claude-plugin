@@ -315,6 +315,38 @@ try {
     assert.deepEqual(play('ruling of an unknown issue', base, [ruling('T09-1')]), play('no ruling', base, []))
     rmSync(join(E, 'progress.json'))
   })
+  test('moments (0.21.0): during a run, an issue that has options is now (the pane answers it), one without stays at run stop; status.mjs, the mod and progress.mjs status alike, with or without a pending ruling', () => {
+    const progressMjs = join(dirname(STATUS), 'progress.mjs')
+    const pick = out => out.split('\n').filter(l => /^\*\*(Now|At run stop|Later|Your turn)\*\*/.test(l))
+    const three = (label, raw, rulings = []) => {
+      const file = { ...as4(raw), pending_rulings: rulings }
+      writeFileSync(join(E, 'progress.json'), JSON.stringify(file))
+      const lines = pick(status(['plans/eq'], eq).out)
+      assert.deepEqual(lines, expectedLines(file), `${label}: status.mjs and the mod`)
+      assert.deepEqual(lines, pick(spawnSync('node', [progressMjs, 'status', 'plans/eq'], { cwd: eq, encoding: 'utf8' }).stdout), `${label}: status.mjs and progress.mjs status`)
+      return lines
+    }
+    const options = [{ id: 'A', description: 'a', recommended: true, valid: true, invalid_reason: null, effect: '', amends: [] }, { id: 'B', description: 'b', valid: true, invalid_reason: null, effect: '', amends: [] }]
+    const asked = (task, title) => ({ ...issue(task, title), options })
+    const live = { runs: [run('in-progress')] }
+    // Both issues have options: now during a run, on the waiting task T02 as alone on T04
+    let got = three('run, options', doc({ statuses: WAITING, over: { ...live, issues: [asked('T02', 'Missing secret'), asked('T04', 'Other')] } }))
+    assert.equal(got[0], '**Now**: H1 (manual) blocks T02 · T02 waits for a human · T03 failed · 1 issue to settle')
+    assert.equal(got[1], '**At run stop**: D1 (decision) blocks T02')
+    // /3 too (options without their actions, still options): the same lines through same()
+    assert.deepEqual(same('run, options, /3', doc({ statuses: WAITING, over: { ...live, issues: [asked('T02', 'Missing secret'), asked('T04', 'Other')] } })), got)
+    // Mixed: T02's issue without options waits for the stop, T04's with options is now
+    got = three('run, mixed', doc({ statuses: WAITING, over: { ...live, issues: [issue('T02', 'Missing secret'), asked('T04', 'Other')] } }))
+    assert.equal(got[0], '**Now**: H1 (manual) blocks T02 · T03 failed · 1 issue to settle')
+    assert.equal(got[1], '**At run stop**: D1 (decision) blocks T02 · T02 waits for a human')
+    // A pending ruling, during a run and with the run stopped: the ruled issue leaves, the rest as above
+    for (const over of [live, {}]) {
+      const ruled = three(`ruling, live ${!!over.runs}`, doc({ statuses: WAITING, over: { ...over, issues: [asked('T02', 'Missing secret'), asked('T04', 'Other')] } }), [{ issue: 'T04-2', option: 'A', text: null, at: ago(1000) }])
+      assert.ok(!ruled.join('\n').includes('issue'), ruled.join('\n'))
+      assert.ok(ruled[0].includes('T02 waits for a human'), ruled[0])
+    }
+    rmSync(join(E, 'progress.json'))
+  })
   test('moments: a plan all merged puts its reviews and auto-decisions before the PR; a line without an item is not written; nothing at all says so', () => {
     for (const id of ['T02', 'T03', 'T04', 'T05']) g('commit', '-q', '--allow-empty', '-m', `task ${id}: Task ${id}`)
     writeFileSync(join(E, 'PREREQUISITES.md'), `| ID | Type | Prerequisite | Status | Evidence |\n|----|------|--------------|--------|----------|\n${PRE.map(([id, type]) => `| ${id} | ${type} | Do ${id} | dropped | not needed |`).join('\n')}\n`)

@@ -17,7 +17,8 @@
 // Fable: orchestre.config.json says whether the user allows it ("fable": true or false, asked by /orchestre:prepare).
 // A remaining task on fable, or an escalation that contains it: error with fable: false, warning without the setting.
 // orchestre.config.json (optional): setup, a list of commands; shared_setup, { resource: [commands] }; language, the language
-// of the free text written during a run ("en" by default).
+// of the free text written during a run ("en" by default); ruling_wait_minutes (0.21.0), an integer from 0 to 60, how long
+// a task held by an open issue waits for its ruling (15 by default, 0: never).
 // A plan in the French format of orchestre 0.11 and earlier (taches/, SUIVI.md, French keys) is refused: scripts/migrate.mjs
 // converts it once.
 // Task ids across plans (0.18.0): the branches task/<id> belong to the repository, not to a plan. With --integration, a plan
@@ -424,6 +425,8 @@ if (config && config.shared_setup !== undefined) {
 }
 // Run mode and evaluator: English values only ("devia" and "systematique" of 0.11 are converted by migrate.mjs)
 if (config && config.default_mode !== undefined && !['auto', 'deviation', 'phase'].includes(config.default_mode)) errors.push(`orchestre.config.json: "default_mode" must be auto, deviation or phase, not ${JSON.stringify(config.default_mode)}`)
+// Wait for a ruling (0.21.0, DO2): how many minutes a task held by an open issue waits for its ruling; 0, never
+if (config && config.ruling_wait_minutes !== undefined && !(Number.isInteger(config.ruling_wait_minutes) && config.ruling_wait_minutes >= 0 && config.ruling_wait_minutes <= 60)) errors.push(`orchestre.config.json: "ruling_wait_minutes" must be an integer from 0 to 60 (15 when absent, 0 to never wait), not ${JSON.stringify(config.ruling_wait_minutes)}`)
 if (config && config.evaluator !== undefined && config.evaluator !== 'always') warnings.push(`orchestre.config.json: "evaluator" is indicative and only takes "always" (the evaluation is always systematic), not ${JSON.stringify(config.evaluator)}`)
 // Fable: allowed only if the user said so (fable: true). With fable: false, a remaining task on fable or an escalation
 // that contains it blocks, across the whole plan; without the setting (older plan), a warning makes the user decide

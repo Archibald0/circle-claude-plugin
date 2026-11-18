@@ -7,6 +7,8 @@ import { FRAME_COUNT, frameInstant, demoSnapshot } from '../hooks/demo.mjs'
 
 const ROOT = '/repo'
 const PROGRESS = `${ROOT}/plans/demo/progress.json`
+// The issue register (0.21.0), served by world() when the test gives it a text
+const ISSUES = `${ROOT}/plans/demo/ISSUES.json`
 const T0 = Date.parse('2026-10-08T12:00:00+02:00')
 
 const task = (id: string, phase: number, extra: object = {}) => ({ id, title: `Task ${id}`, phase, batch: null, depends_on: [], model: 'sonnet', model_used: null, status: 'todo', attempts: 0, branch: null, token_estimate: 1, actual_tokens: null, added_by: null, step: null, isolated: null, start: null, end: null, waiting: [], rejections: [], flaky: [], unverifiable: [], blocker: [], ...extra })
@@ -33,19 +35,20 @@ function down(on: On, commandLine: 'ok' | 'taken' = 'ok') {
 // The world under the plugin: a progress.json file that is replaced, the interface calls noted
 function world(on: On, commandLine: 'ok' | 'taken' = 'ok') {
   const file = { text: doc([task('T01', 1, { step: 'worker', isolated: true, start: '2026-10-08T11:31:00+02:00' }), task('T02', 1), task('T03', 2)]), mtime: 1 }
+  const register = { text: null as string | null }
   const toasts: string[] = [], opened: string[] = [], filled: string[] = [], closed: string[] = [], statuses: (string | undefined)[] = [], sounds: string[] = []
   down(on, commandLine)
   on('ui.status', ($, e) => { statuses.push(e.text); return { value: undefined } })
   on('audio.play', ($, e) => { sounds.push('asset' in e.clip ? String(e.clip.asset) : '?'); return { value: undefined } })
-  on('fs.exists', ($, e) => ({ value: e.path === `${ROOT}/plans` || e.path === PROGRESS }))
+  on('fs.exists', ($, e) => ({ value: e.path === `${ROOT}/plans` || e.path === PROGRESS || (e.path === ISSUES && register.text != null) }))
   on('fs.list', () => ({ value: [{ name: 'demo', kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false }, { name: 'README.md', kind: 'file' as const, size: 3, mtimeMs: 0, isLink: false }] }))
   on('fs.stat', ($, e) => (e.path === PROGRESS ? { value: { kind: 'file' as const, size: file.text.length, mtimeMs: file.mtime, isLink: false } } : { deny: 'ENOENT' }))
-  on('fs.read', ($, e) => (e.path === PROGRESS ? { value: file.text } : { deny: 'ENOENT' }))
+  on('fs.read', ($, e) => (e.path === PROGRESS ? { value: file.text } : e.path === ISSUES && register.text != null ? { value: register.text } : { deny: 'ENOENT' }))
   on('ui.toast', ($, e) => { toasts.push(e.text + (e.timeoutMs ? ` (${e.timeoutMs} ms)` : '')); return { value: undefined } })
   on('ui.open', ($, e) => { opened.push(e.id + (e.closeOnEscape ? ' (Esc closes)' : '')); return { value: { isPlaced: true as const } } })
   on('ui.close', ($, e) => { closed.push(e.id); return { value: undefined } })
   on('prompt.fill', ($, e) => { filled.push(`${e.mode}:${e.text}`); return { isFilled: true } })
-  return { file, toasts, opened, filled, closed, statuses, sounds }
+  return { file, register, toasts, opened, filled, closed, statuses, sounds }
 }
 
 // The head of the banner during a run: a spinning wheel
@@ -152,12 +155,13 @@ test('/progress pane: a view in cards, its keys, its buttons; the actions prepar
     expect(await one.find({ type: 'Text', text: 'when     ' })).toBeDefined()
     expect(await one.find({ type: 'Text', text: 'Now' })).toBeDefined()
     expect(await one.find({ type: 'Text', text: 'where    ' })).toBeDefined()
-    expect(await one.find({ type: 'Text', text: /^This session/ })).toBeDefined()
+    // 0.21.0: an issue is answered here, applied when the next run starts
+    expect(await one.find({ type: 'Text', text: /^Here: applied when the next run starts$/ })).toBeDefined()
     expect(await one.find({ type: 'Text', text: /^─+$/ })).toBeDefined()
     const close = await one.find({ type: 'Button', key: 'detail-close' })
     expect([close?.props.label, close?.props.hotkey]).toEqual(['✕ Close', 'x'])
     const act = await one.find({ type: 'Button', key: 'detail-act' })
-    expect([act?.props.label, act?.props.hotkey, act?.props.plain]).toEqual(['Resume the run', undefined, undefined])
+    expect([act?.props.label, act?.props.hotkey, act?.props.plain]).toEqual(['Ask Claude', undefined, undefined])
     // An item to settle: neither Done nor Ticket nor Edit text
     for (const k of ['detail-done', 'detail-ticket', 'detail-edit']) expect(await one.find({ type: 'Button', key: k })).toBeUndefined()
     await one.press({ key: 'action-1' })
@@ -744,6 +748,42 @@ test('notifications: only what asks for someone, with a sound after /progress so
   expect(w.sounds).toEqual(['sounds/waiting.wav'])
 })
 
+// The wait for a ruling (0.21.0): the two notifications (arrival of issues that hold a task, start of that task without the
+// ruling) ask for someone, so they follow /progress sound; the pane says who waits, with the time left from `until`
+test('wait for a ruling (0.21.0): the arrival of the issues and the start without a ruling notify, with a sound after /progress sound; the tasks card and the banner say who waits', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 })
+  const saved = store(on, {})
+  const w = world(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.command.run(CMD('sound'))
+  expect(saved.get('sound')).toBe(true)
+  const opt = { id: 'A', description: 'Option A', impact: '', recommended: true, valid: true, invalid_reason: null, effect: 'amends T03', amends: ['T03'] }
+  const issue = (extra: object = {}) => ({ id: 'T01-1', run: 1, task: 'T01', title: 'Issue one', context: '', human: false, role: 'open', status: 'open', chosen_option: null, options: [opt], holds: ['T03'], until: '2026-10-08T12:14:00+02:00', waiting: [], ...extra })
+  const put = (issues: object[], log: object[] = []) => {
+    w.file.text = JSON.stringify({ ...JSON.parse(doc([task('T01', 1, { status: 'merged', attempts: 1 }), task('T02', 1), task('T03', 2)])), format: 'orchestre-progress/4', pending_rulings: [], issues, log })
+    w.file.mtime++
+  }
+  // Arrival: one toast, one sound
+  put([issue()])
+  await clock.advance(2100)
+  expect(w.toasts).toEqual(['? T01: 1 issue to settle now — T03 waits for it 15 min (15000 ms)'])
+  expect(w.sounds).toEqual(['sounds/waiting.wav'])
+  // T03 waits: the banner and the tasks card say so, with the time left of the file's deadline
+  put([issue({ waiting: ['T03'] })], [{ at: '2026-10-08T11:59:00+02:00', kind: 'wait', task: 'T03', text: 'T03 waits for 1 ruling (15 min at most)' }])
+  await clock.advance(2100)
+  expect(w.toasts.length).toBe(1)
+  await $.command.run({ ...(CMD('') as object), presentation: { isFullscreen: true, columns: 160 } } as never)
+  const ui = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
+  expect(await ui.find({ type: 'Text', text: /waits for your ruling \d+:\d\d$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '‖ 1 waits for you' })).toBeDefined()
+  await ui.unmount()
+  // It starts without the ruling: the mark written by step
+  put([issue({ started_without: ['T03'] })], [{ at: '2026-10-08T11:59:00+02:00', kind: 'wait', task: 'T03', text: 'T03 waits for 1 ruling (15 min at most)' }])
+  await clock.advance(2100)
+  expect(w.toasts.at(-1)).toBe('▶ T03 starts without your ruling: 15 min passed (15000 ms)')
+  expect(w.sounds).toEqual(['sounds/waiting.wav', 'sounds/waiting.wav'])
+})
+
 test('sound setting of 0.11 ("son"): taken once, then kept under "sound"', async ($, on) => {
   const clock = mock.clock(on, { now: T0 })
   const saved = store(on, { son: true })
@@ -1073,6 +1113,150 @@ test('/progress pane on a /4 file: an issue with a ruling recorded and not appli
     await $.command.run({ ...(CMD('') as object), presentation: { isFullscreen: true, columns: 160 } } as never)
     const ui = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
     expect((await ui.find({ type: 'Button', key: 'action-1' }))?.props.label).toBe(shown ? 'T02 · Missing secret (human)' : 'T02 · waits for a human')
+    await ui.unmount()
+  }
+})
+
+// 0.21.0 (T25): an issue answered from its detail card during a run; every button goes through progress.mjs (rule, unrule,
+// release, did, undid), as Done and Ticket; Ask Claude fills the prompt and writes nothing
+test('answer an issue (0.21.0): options, Other…, Ask Claude, Decide later, Accept the N recommended, I did it; Undo; recorded, then applied', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 })
+  state(on)
+  const w = world(on)
+  const opt = (id: string, o: object = {}) => ({ id, description: `Option ${id}`, impact: '', recommended: false, valid: true, invalid_reason: null, effect: '', amends: [], ...o })
+  const OPTIONS = [opt('A', { recommended: true, effect: 'amends T03', amends: ['T03'] }), opt('B'), opt('C', { valid: false, invalid_reason: 'plan-lint: T09 overlaps T03' })]
+  const at = '2026-10-08T12:00:00+02:00'
+  const S = { pending: [] as { issue: string; option: string | null; text: string | null; at: string }[], settled: new Set<string>(), holds: ['T03'], done: [] as { prerequisite: string; at: string }[], written: false }
+  const write = () => {
+    const issue = (id: string, title: string, holds: string[]) => ({ id, run: 1, task: 'T01', title, context: '', human: false, role: 'open', status: S.settled.has(id) ? 'settled' : 'open', chosen_option: null, options: OPTIONS, holds })
+    w.file.text = JSON.stringify({
+      ...JSON.parse(doc([task('T01', 1, { status: 'merged', attempts: 1 }), task('T02', 1), task('T03', 2)])), format: 'orchestre-progress/4',
+      issues: [issue('T01-1', 'Issue one', S.holds), issue('T01-2', 'Issue two', [])], pending_rulings: S.pending, pending_done: S.done,
+      prerequisites: S.written ? [] : [{ id: 'H1', type: 'manual', status: 'open', text: 'API token', evidence: '—', how: [], blocks: ['T03'] }],
+    })
+    w.register.text = JSON.stringify({ format: 'orchestre-issues/1', issues: ['T01-1', 'T01-2'].map(id => ({ id, status: S.settled.has(id) ? 'settled' : 'open', ruling: S.settled.has(id) ? { option: null, text: 'x', author: 'user', at, commit: null } : null })) })
+    w.file.mtime++
+  }
+  write()
+  const calls: string[] = []
+  on('process.run', ($, e) => {
+    const [bin, first, verb] = e.argv
+    if (first === '--version') return bin === 'node' ? { value: { exitCode: 0, stdout: 'v22.1.0\n', stderr: '' } } : { deny: `spawn ${bin} ENOENT` }
+    const stdin = e.init?.stdin ?? '{}', E = JSON.parse(stdin)
+    calls.push(`${verb} ${stdin}`)
+    const items: { issue?: string; option?: string; text?: string; prerequisite?: string }[] = E.items ?? [E]
+    if (verb === 'rule') S.pending.push(...items.map(x => ({ issue: String(x.issue), option: x.option ?? null, text: x.text ?? null, at })))
+    if (verb === 'unrule') S.pending = S.pending.filter(r => !items.some(x => x.issue === r.issue))
+    if (verb === 'release') S.holds = []
+    if (verb === 'did') S.done.push({ prerequisite: String(E.prerequisite), at })
+    if (verb === 'undid') S.done = []
+    write()
+    return { value: { exitCode: 0, stdout: `progress: ${verb} done\n`, stderr: '' } }
+  })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.command.run({ ...(CMD('') as object), presentation: { isFullscreen: true, columns: 160 } } as never)
+  const pane = () => $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
+  const pressIn = async (...keys: string[]) => { for (const key of keys) { const ui = await pane(); await ui.press({ key }); await ui.unmount() } }
+  const labelOf = async (key: string) => { const ui = await pane(); const b = await ui.find({ type: 'Button', key }); await ui.unmount(); return b?.props.label }
+  // During the run, the issue is `now`; its card: one button per valid option, Other…, Ask Claude, Decide later (it holds T03)
+  let ui = await pane()
+  expect((await ui.find({ type: 'Button', key: 'action-1' }))?.props.label).toBe('T01 · Issue one')
+  expect(await ui.find({ type: 'Text', text: ' ⚠ 3 YOUR TURN ' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: ' ⚠ 2 YOUR TURN ' })).toBeDefined()
+  await ui.press({ key: 'action-1' })
+  await ui.unmount()
+  ui = await pane()
+  const keys = ['detail-rule-A', 'detail-rule-B', 'detail-rule-C', 'detail-other', 'detail-act', 'detail-release']
+  expect(await Promise.all(keys.map(async k => (await ui.find({ type: 'Button', key: k }))?.props.label))).toEqual(['A · recommended', 'B', undefined, 'Other…', 'Ask Claude', 'Decide later'])
+  expect(await ui.find({ type: 'Text', text: /^ {2}recommended option: amends T03$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Here, while the run goes on (nothing is sent to the chat)' })).toBeDefined()
+  // Option A: rule, the issue leaves the list, the card closes, the last line with Undo
+  await ui.press({ key: 'detail-rule-A' })
+  await ui.unmount()
+  expect(calls).toEqual(['rule {"issue":"T01-1","option":"A"}'])
+  ui = await pane()
+  expect(await ui.find({ key: 'card-detail' })).toBeUndefined()
+  expect((await ui.find({ type: 'Button', key: 'action-1' }))?.props.label).toBe('T01 · Issue two')
+  expect(await ui.find({ type: 'Text', text: 'T01-1 · option A recorded' })).toBeDefined()
+  // Undo: unrule; the issue is back
+  await ui.press({ key: 'undo' })
+  await ui.unmount()
+  expect(calls.at(-1)).toBe('unrule {"issue":"T01-1"}')
+  expect(await labelOf('action-1')).toBe('T01 · Issue one')
+  expect(await labelOf('undo')).toBeUndefined()
+  // Ask Claude: the prompt, nothing written
+  await pressIn('action-1', 'detail-act')
+  expect(w.filled.at(-1)).toBe('append:Explain the issue of T01 ("Issue one") and its options.')
+  expect(calls.length).toBe(2)
+  // Decide later: release; T03 no longer waits, the button goes
+  await pressIn('action-1', 'detail-release')
+  expect(calls.at(-1)).toBe('release {"issue":"T01-1"}')
+  await pressIn('action-1')
+  expect(await labelOf('detail-release')).toBeUndefined()
+  expect(await labelOf('detail-rule-A')).toBe('A · recommended')
+  await pressIn('detail-close')
+  // Accept the 2 recommended: one rule of a list; its last line; Undo: one unrule of a list
+  expect(await labelOf('accept-all')).toBe('Accept the 2 recommended')
+  await pressIn('accept-all')
+  expect(calls.at(-1)).toBe('rule {"items":[{"issue":"T01-1","option":"A"},{"issue":"T01-2","option":"A"}]}')
+  ui = await pane()
+  expect(await ui.find({ type: 'Text', text: '2 recommended options recorded' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'accept-all' })).toBeUndefined()
+  await ui.press({ key: 'undo' })
+  await ui.unmount()
+  expect(calls.at(-1)).toBe('unrule {"items":[{"issue":"T01-1"},{"issue":"T01-2"}]}')
+  // I did it on the manual action H1 (the third line): did; the last line with the day; Undo: undid
+  expect(await labelOf('action-3')).toBe('H1 (manual) open, blocks T03')
+  await pressIn('action-3')
+  expect(await labelOf('detail-did')).toBe('✓ I did it')
+  await pressIn('detail-did')
+  expect(calls.at(-1)).toBe('did {"prerequisite":"H1"}')
+  ui = await pane()
+  expect(await ui.find({ type: 'Text', text: 'H1 noted done on 2026-10-08' })).toBeDefined()
+  await ui.press({ key: 'undo' })
+  await ui.unmount()
+  expect(calls.at(-1)).toBe('undid {"prerequisite":"H1"}')
+  // Other…: the text field, empty; Enter records a free ruling
+  await pressIn('action-1', 'detail-other')
+  ui = await pane()
+  expect((await ui.find({ key: 'detail-input' }))?.props.value).toBe('')
+  await ui.input({ key: 'detail-input', text: 'Keep the union, guard it' })
+  await ui.unmount()
+  expect(calls.at(-1)).toBe('rule {"issue":"T01-1","text":"Keep the union, guard it"}')
+  ui = await pane()
+  expect(await ui.find({ type: 'Text', text: 'T01-1 · free answer recorded' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'undo' })).toBeDefined()
+  await ui.unmount()
+  // apply (the run, between two tasks): the ruling leaves pending_rulings, the issue is settled (ruling.commit null): applied,
+  // without Undo
+  S.pending = []
+  S.settled.add('T01-1')
+  write()
+  await clock.advance(2100)
+  ui = await pane()
+  expect(await ui.find({ type: 'Text', text: 'T01-1 · free answer applied' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'undo' })).toBeUndefined()
+  await ui.unmount()
+})
+
+// 0.21.0: ISSUES.json is read next to progress.json. An issue without an entry there (absent file: an empty register) has its
+// options grey, without a button, as apply would refuse them; with an entry, its buttons
+test('answer an issue (0.21.0): the options of an issue without an entry in ISSUES.json have no button; with one, they do', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  state(on)
+  const w = world(on)
+  const raw = JSON.parse(STOPPED)
+  w.file.text = JSON.stringify({ ...raw, format: 'orchestre-progress/4', pending_rulings: [], issues: [{ ...raw.issues[0], id: 'T02-1', human: false, options: [{ id: 'A', description: 'Use the staging key', impact: '', recommended: true, valid: null, invalid_reason: null, effect: '', amends: [] }] }] })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  for (const [register, button] of [[null, undefined], [JSON.stringify({ format: 'orchestre-issues/1', issues: [{ id: 'T02-1', status: 'open', ruling: null }] }), 'A · recommended']] as const) {
+    w.register.text = register
+    w.file.mtime++
+    await $.command.run({ ...(CMD('') as object), presentation: { isFullscreen: true, columns: 160 } } as never)
+    let ui = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
+    if (!(await ui.find({ key: 'card-detail' }))) { await ui.press({ key: 'action-1' }); await ui.unmount(); ui = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE }) }
+    expect((await ui.find({ type: 'Button', key: 'detail-rule-A' }))?.props.label).toBe(button)
+    expect((await ui.find({ type: 'Button', key: 'detail-other' }))?.props.label).toBe('Other…')
+    expect(!!(await ui.find({ type: 'Text', text: /no entry in ISSUES\.json: the actions of option A are unknown; answer with a text/ }))).toBe(register == null)
     await ui.unmount()
   }
 })

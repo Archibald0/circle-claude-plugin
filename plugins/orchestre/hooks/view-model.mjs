@@ -11,6 +11,9 @@
 /** @typedef {import('../types/index.d.ts').Line} Line */
 /** @typedef {import('../types/index.d.ts').Card} Card */
 /** @typedef {import('../types/index.d.ts').YourTurnItem} YourTurnItem */
+/** @typedef {import('../types/index.d.ts').IssueView} IssueView */
+/** @typedef {import('../types/index.d.ts').IssueOptionView} IssueOptionView */
+/** @typedef {import('../types/index.d.ts').LastAction} LastAction */
 
 export const FORMAT = 'orchestre-progress/4'
 // The formats this mod reads: /4, which progress.mjs writes since 0.20.0, and /3 (0.12.0 to 0.19), which it converts at its next
@@ -67,17 +70,27 @@ const idsV3 = list => { const n = new Map(); return list.map(p => { const t = is
 // The rulings recorded and not applied yet (/4 pending_rulings; absent in /3): { issue, option | null, text | null, at }
 const pendingRulings = raw => (Array.isArray(raw.pending_rulings) ? raw.pending_rulings : []).filter(r => isObject(r) && typeof r.issue === 'string').map(r => ({ issue: /** @type {string} */ (r.issue), option: typeof r.option === 'string' ? r.option : null, text: typeof r.text === 'string' ? r.text : null, at: r.at }))
 
+// The entries of the issue register (ISSUES.json, orchestre-issues/1) the mod could read; null: not read (absent from the
+// call, or not JSON), then nothing is said of the register
+/** @param {unknown} reg @returns {Record<string, unknown>[] | null} */
+const registerEntries = reg => (isObject(reg) && Array.isArray(reg.issues) ? reg.issues.filter(isObject) : null)
+
 /**
  * progress.json (orchestre-progress/4 or /3) → what the mod shows; null if the format is not one of these.
  * Unknown fields are ignored, missing fields taken empty: a reader only refuses the format.
- * @param {unknown} raw @returns {Snapshot | null}
+ * register (0.21.0): ISSUES.json, read by register.tsx next to progress.json (an absent file: an empty register). It only
+ * says which issues have an entry (the options of one without an entry cannot be applied, apply refuses them) and which are
+ * settled or dropped; the issues shown still come from progress.json alone, as in status.mjs and progress.mjs status.
+ * @param {unknown} raw @param {unknown} [register] @returns {Snapshot | null}
  */
-export function normalize(raw) {
+export function normalize(raw, register = undefined) {
   if (!isObject(raw) || !FORMATS.includes(/** @type {string} */ (raw.format)) || !Array.isArray(raw.tasks)) return null
   const rulings = pendingRulings(raw)
   const v3 = raw.format === 'orchestre-progress/3'
   const issuesIn = Array.isArray(raw.issues) ? raw.issues : []
   const ids3 = v3 ? idsV3(issuesIn) : []
+  const entries = registerEntries(register)
+  const listed = issuesIn.map((p, i) => ({ p, id: v3 ? ids3[i] : isObject(p) ? p.id : null }))
   const runs = (Array.isArray(raw.runs) ? raw.runs : []).filter(isObject)
   const lastRun = runs.length ? runs[runs.length - 1] : null
   /** @type {TaskView[]} */
@@ -114,8 +127,16 @@ export function normalize(raw) {
     ],
     // An issue whose ruling is recorded (/4, rule) and not applied yet no longer waits for the user: the same filter as
     // progress.mjs status and status.mjs. /3 has no pending_rulings: nothing is filtered; its ids are those of convertV3
-    issues: issuesIn.map((p, i) => ({ p, id: v3 ? ids3[i] : isObject(p) ? p.id : null })).filter(({ p, id }) => isObject(p) && p.status !== 'settled' && !rulings.some(r => r.issue === id)).map(({ p, id }) => ({ id: id == null ? null : text(id), task: text(p.task), title: text(p.title), human: p.human === true, role: text(p.role), withoutActions: v3 || p.without_actions === true, options: (Array.isArray(p.options) ? p.options : []).filter(isObject).map(o => ({ id: text(o.id), description: text(o.description), valid: v3 ? false : typeof o.valid === 'boolean' ? o.valid : null, invalidReason: v3 ? INHERITED_V3 : o.invalid_reason == null ? null : text(o.invalid_reason), effect: text(o.effect), amends: texts(o.amends) })) })),
+    // 0.21.0: recommended on each option, holds (the tasks the issue holds, emptied by release), until (the deadline of the wait),
+    // waiting (the tasks that wait for it now), startedWithout, released and, with the register, entry
+    issues: listed.filter(({ p, id }) => isObject(p) && p.status !== 'settled' && !rulings.some(r => r.issue === id)).map(({ p, id }) => ({ id: id == null ? null : text(id), task: text(p.task), title: text(p.title), human: p.human === true, role: text(p.role), withoutActions: v3 || p.without_actions === true, holds: v3 ? [] : texts(p.holds), until: v3 ? null : date(p.until), waiting: v3 ? [] : texts(p.waiting), startedWithout: v3 ? [] : texts(p.started_without), released: !v3 && p.released != null, ...(entries ? { entry: entries.some(e => e.id === id) } : {}), options: (Array.isArray(p.options) ? p.options : []).filter(isObject).map(o => ({ id: text(o.id), description: text(o.description), recommended: o.recommended === true, valid: v3 ? false : typeof o.valid === 'boolean' ? o.valid : null, invalidReason: v3 ? INHERITED_V3 : o.invalid_reason == null ? null : text(o.invalid_reason), effect: text(o.effect), amends: texts(o.amends) })) })),
     pendingRulings: rulings.map(r => ({ issue: r.issue, option: r.option, text: r.text, at: date(r.at) })),
+    // The issues settled: their copy in progress.json, or their entry in the register (settled or dropped). What turns
+    // "last: <id> · option A recorded" into "applied" once its ruling left pendingRulings (never ruling.commit, null)
+    settledIssues: [...new Set([...listed.filter(({ p, id }) => isObject(p) && p.status === 'settled' && id != null).map(({ id }) => text(id)), ...(entries ?? []).filter(e => e.status === 'settled' || e.status === 'dropped').map(e => text(e.id))])],
+    // The prerequisites noted done by did (0.21.0, [ ✓ I did it ]) that apply has not written yet; day: the date of at, as
+    // progress.mjs says it
+    pendingDone: (Array.isArray(raw.pending_done) ? raw.pending_done : []).filter(x => isObject(x) && typeof x.prerequisite === 'string').map(x => ({ prerequisite: /** @type {string} */ (x.prerequisite), day: text(x.at).slice(0, 10) })),
     // Its text, evidence and steps (0.17.0): what the detail card says there is to do
     prerequisites: (Array.isArray(raw.prerequisites) ? raw.prerequisites : []).filter(p => isObject(p) && p.status === 'open').map(p => ({ id: text(p.id), type: text(p.type), text: text(p.text), evidence: text(p.evidence), how: texts(p.how), blocks: texts(p.blocks) })),
     majorCounts, tickets,
@@ -331,6 +352,8 @@ const KINDS = /** @type {Record<string, Piece>} */ ({
   status: { t: '●', c: 'success' }, added: { t: '+', c: 'suggestion' }, amendment: { t: '~', c: 'merged' }, review: { t: '⚑', c: 'warning' },
   'auto-decision': { t: '⇒', c: 'warning' }, issue: { t: '?', c: 'warning' }, ruling: { t: '✓', c: 'success' }, pilot: { t: '✎', c: 'suggestion' }, error: { t: '✗', c: 'error' },
   model: { t: '⇄', c: 'merged' },
+  // A task waits for rulings (0.21.0); "‖", not "⏸", which can be drawn as an emoji
+  wait: { t: '‖', c: 'warning' },
 })
 /** Glyph and color of a log entry, from its kind and what it says. @param {{ kind: string, text: string }} j @returns {Piece} */
 function mark(j) {
@@ -412,8 +435,10 @@ export function what(t, active, settled = false, n = Infinity) {
   if (t.status === 'merged') return t.attempts > 1 ? `${t.attempts} attempts` : ''
   return t.waiting.length ? waitsFor(t.waiting, n) : ''
 }
-/** The same in colors: the step in its color, the attempt in amber, the place dim. @param {TaskView} t @param {boolean} active @param {boolean} settled @param {number} n @returns {Line} */
-function whatColored(t, active, settled, n) {
+/** The same in colors: the step in its color, the attempt in amber, the place dim. @param {TaskView} t @param {boolean} active @param {boolean} settled @param {number} n @param {string | null} [wait] what a task that waits for a ruling says, in place of the step @returns {Line} */
+function whatColored(t, active, settled, n, wait = null) {
+  // Waits for a ruling (0.21.0): its deadline's time in place of the step, in warning
+  if (wait) return [{ t: wait, c: 'warning' }]
   if (active && t.step) {
     // Within n cells: the place goes first, then the attempt, then the step is cut
     const step = STEPS[t.step] || t.step, attempt = t.attempts > 1 ? ` attempt ${t.attempts}` : '', place = t.isolated ? ' (worktree)' : ''
@@ -491,7 +516,15 @@ function bannerLine(inst, s, now, f, animated, yours) {
   if (s.reviews) l.push({ t: '  ' }, { t: '⚑ ', c: 'warning' }, { t: `${s.reviews}${f.labels ? ' to review' : ''}`, a: 'yourTurn', k: 'review' })
   if (yours) l.push({ t: '  ' }, { t: '⚠ ', c: 'warning', b: true }, { t: `${yours}${f.labels ? ' your turn' : ''}`, a: 'yourTurn', k: 'your-turn' })
   const ec = s.inProgress
-  if (runLive && f.step) {
+  // A task that waits for a ruling (0.21.0) asks for someone: it takes the place of the current step
+  const rw = rulingWaits(inst, now)
+  if (runLive && rw.length) {
+    const first = /** @type {{ task: string }} */ (rw[0]), id = Math.min(8, Math.max(3, ...inst.tasks.map(x => [...x.id].length)))
+    if (f.step) {
+      const plus = rw.length > 1 ? ` +${rw.length - 1}` : '', said = `waits for you${plus}`
+      l.push({ t: `  ‖ ${column(first.task, id)} `, c: 'warning', b: true }, { t: said, c: 'warning', b: true }, { t: ' '.repeat(Math.max(0, STEP_WIDTH - [...said].length)) })
+    } else l.push({ t: `  ‖ ${rw.length}${f.labels ? ' waits for you' : ''}`, c: 'warning', b: true })
+  } else if (runLive && f.step) {
     const t = ec[0], id = Math.min(8, Math.max(3, ...inst.tasks.map(x => [...x.id].length)))
     if (t) {
       const step = STEPS[t.step || ''] || String(t.step), plus = ec.length > 1 ? ` +${ec.length - 1}` : ''
@@ -660,6 +693,9 @@ const WHERE = {
   live: 'This session, once the run stops',
   waiting: 'This session: do what it waits for, then resume the run with the others',
   pilotLive: 'This session: ask the pilot, the run goes on meanwhile',
+  // An issue answered from its detail card (0.21.0): the ruling is recorded at once, apply reports it into the plan
+  answerLive: 'Here, while the run goes on (nothing is sent to the chat)',
+  answerStopped: 'Here: applied when the next run starts',
   decision: 'This session, between two runs: /orchestre:ready asks the question',
   manual: 'Outside Claude (a secret stays out of the chat), then this session to mark it done',
   environment: 'Your terminal, then this session: /orchestre:ready checks it',
@@ -670,7 +706,9 @@ const WHERE = {
 // ── The moment of an item of "Your turn" (0.19.0) ──────────────────────────────────────────────────────────────────────
 // Each item has a label, drawn on the right of its line, and a rank, which sorts the list (stable). The rules, in one place:
 //   task that waits for someone (needs-human, blocked, failed) ..... now, rank 0, run or not
-//   open issue (also on a waiting task), decision to take that holds
+//   open issue that has options (also on a waiting task) ............. now, rank 0, run or not: its detail card answers
+//                                                                    it during the run (0.21.0, D2)
+//   open issue without options, decision to take that holds
 //   back a task of the phase in progress, plan-lint in error ......... now, rank 0; the same during a run (they need the
 //                                                                    session, D2) ... at run stop, rank 0.2
 //   manual or environment prerequisite that holds back a task of the
@@ -696,6 +734,64 @@ const afterPhase = k => ({ moment: `after phase ${k}`, rank: k })
 const beforePhase = k => ({ moment: `before phase ${k}`, rank: k - 0.5 })
 /** The item counts for the title, the badge and the banner. @param {{ moment: string }} it */
 export const isNow = it => it.moment === NOW.moment
+
+// ── The wait for a ruling (0.21.0) ─────────────────────────────────────────────────────────────────────────────────────
+// A task that an open issue holds waits for its ruling until the issue's deadline (`until`, written by progress.mjs close);
+// then it starts without it. Every time shown comes from `until` and the clock given, never from a counter of the mod, and
+// never goes below 0:00.
+/** The time left before a deadline, 0:00 at the least. @param {number} until @param {number} now */
+const timeLeft = (until, now) => chrono(Math.max(0, until - now))
+/** The tasks of an issue that wait for it now, those that started without it left out. @param {IssueView} p */
+const waitingOn = p => (p.waiting ?? []).filter(id => !(p.startedWithout ?? []).includes(id))
+/**
+ * The tasks that wait for a ruling while the run goes on, each with the deadline that ends its wait (the latest of its issues;
+ * null when none gives one). A task that started or merged waits no more; an issue with a ruling recorded is no longer open.
+ * @param {Snapshot} inst @param {number} now @returns {{ task: string, until: number | null }[]}
+ */
+export function rulingWaits(inst, now) {
+  if (!activeRun(inst, now)) return []
+  /** @type {Map<string, number | null>} */
+  const by = new Map()
+  for (const p of inst.issues) for (const id of waitingOn(p)) {
+    const t = inst.tasks.find(x => x.id === id)
+    if (t && (t.step || isMerged(t))) continue
+    const u = p.until ?? null, k = by.get(id)
+    by.set(id, k == null ? u : u == null ? k : Math.max(k, u))
+  }
+  return [...by].map(([task, until]) => ({ task, until }))
+}
+/**
+ * What the tasks card says of a waiting task in `n` cells: "waits for your ruling 14:47", shorter when the room lacks, the
+ * time last to go. @param {number | null} until @param {number} now @param {number} n
+ */
+function waitCell(until, now, n) {
+  const t = until == null ? '' : timeLeft(until, now)
+  for (const s of [`waits for your ruling${t ? ` ${t}` : ''}`, `waits for you${t ? ` ${t}` : ''}`]) if ([...s].length <= n) return s
+  return cut(t || 'waits for you', n)
+}
+/** "AH05 and AH05B", "A, B and C", "A, B, C and 2 more". @param {string[]} ids */
+const andList = ids => (ids.length < 2 ? ids.join('') : ids.length > 4 ? `${ids.slice(0, 3).join(', ')} and ${ids.length - 3} more` : `${ids.slice(0, -1).join(', ')} and ${ids.at(-1)}`)
+
+// ── Answering an issue from the pane (0.21.0) ─────────────────────────────────────────────────────────────────────────
+// What progress.mjs apply says of an option ruling on an issue that has no entry in ISSUES.json (a stop issue raised by
+// run-end, known only from progress.json): its actions are unknown, a free answer settles it. The pane says the same, and
+// offers no button for it: rule refuses it, and apply would
+/** @param {string} option */
+export const noEntry = option => `no entry in ISSUES.json: the actions of option ${option} are unknown; answer with a text`
+/**
+ * Why the pane offers no button for this option, or null when `rule` takes it, by the same two checks: valid false (the
+ * dry run, an issue inherited from /3, one raised by run-end: its reason), or an issue without an entry in the register.
+ * @param {IssueView} p @param {IssueOptionView} o @returns {string | null}
+ */
+export function refusalOf(p, o) {
+  if (o.valid === false) return o.invalidReason || 'refused by the dry run'
+  if (p.entry === false) return noEntry(o.id)
+  return null
+}
+/** The recommended option the pane can record, if any. @param {IssueView} p */
+export const recommendedOf = p => (p.options ?? []).find(o => o.recommended && refusalOf(p, o) == null) ?? null
+/** The prompt of [ Ask Claude ]. @param {IssueView} p */
+const askPrompt = p => `Explain the issue of ${p.task} ("${p.title}") and its options.`
 
 // Two open reviews of the same task (or of the source plan) are the same when their first backquoted passage is identical
 // (D5). Merged at display and in the PR draft only: progress.json and HANDOFF.md keep both texts. A review with no
@@ -769,7 +865,9 @@ export function yourTurnItems(inst, now) {
   }
   // What needs the session (an issue, a decision to take, plan-lint): now, or at the stop of the run in progress (D2)
   const session = live ? AT_RUN_STOP : NOW
-  const stopped = live ? WHERE.live : WHERE.resume
+  // An issue that has options is answered from its detail card, run or not (0.21.0, D2); one without waits for the session
+  const ask = /** @param {IssueView} p @returns {Moment} */ p => ((p.options ?? []).length ? NOW : session)
+  const answered = /** @param {IssueView} p */ p => (!live ? WHERE.answerStopped : (p.options ?? []).length ? WHERE.answerLive : WHERE.live)
   /** @type {YourTurnItem[]} */
   const items = []
   const seen = new Set()
@@ -778,11 +876,13 @@ export function yourTurnItems(inst, now) {
     if (p) seen.add(p)
     const reason = /** @type {Record<string, string>} */ (ATTENTION)[t.status]
     const what = `${p ? p.title : reason}${p?.human ? ' (human)' : ''}`
-    items.push(p || t.status === 'needs-human'
-      ? { key: '', group: 'settle', task: t.id, g: { t: '⚑', c: 'warning', b: true }, text: `${t.id} · ${what}`, detail: t.blocker[0], prompt: resume, help: 'resume the run', kind: p && !p.human && t.status !== 'needs-human' ? 'issue to settle' : 'waits for you', what, ...(p ? session : NOW), where: p ? stopped : live ? WHERE.waiting : WHERE.resume }
+    items.push(p
+      ? { key: '', group: 'settle', task: t.id, g: { t: '⚑', c: 'warning', b: true }, text: `${t.id} · ${what}`, detail: t.blocker[0], prompt: askPrompt(p), help: 'ask Claude', kind: !p.human && t.status !== 'needs-human' ? 'issue to settle' : 'waits for you', what, ...ask(p), where: answered(p), issue: p }
+      : t.status === 'needs-human'
+      ? { key: '', group: 'settle', task: t.id, g: { t: '⚑', c: 'warning', b: true }, text: `${t.id} · ${what}`, detail: t.blocker[0], prompt: resume, help: 'resume the run', kind: 'waits for you', what, ...NOW, where: live ? WHERE.waiting : WHERE.resume }
       : { key: '', group: 'settle', task: t.id, g: { t: '✗', c: 'error', b: true }, text: `${t.id} · ${reason}`, detail: t.blocker[0], prompt: `Explain the blocker of ${t.id}${t.blocker[0] ? ` (${t.blocker[0]})` : ''} and propose a way forward.`, help: 'ask the pilot', kind: `${t.status} task`, what: reason, ...NOW, where: live ? WHERE.pilotLive : WHERE.pilot })
   }
-  for (const p of inst.issues) if (!seen.has(p)) { const what = `${p.title}${p.human ? ' (human)' : ''}`; items.push({ key: '', group: 'settle', task: p.task, g: { t: '?', c: 'warning', b: true }, text: `${p.task} · ${what}`, prompt: resume, help: 'settle when resuming', kind: 'issue to settle', what, ...session, where: stopped }) }
+  for (const p of inst.issues) if (!seen.has(p)) { const what = `${p.title}${p.human ? ' (human)' : ''}`; items.push({ key: '', group: 'settle', task: p.task, g: { t: '?', c: 'warning', b: true }, text: `${p.task} · ${what}`, prompt: askPrompt(p), help: 'ask Claude', kind: 'issue to settle', what, ...ask(p), where: answered(p), issue: p }) }
   for (const p of inst.prerequisites) {
     const evidence = (p.evidence ?? '').trim(), at = beforeTasks(p.blocks)
     // A decision to take is asked by the session, like an issue (D2): at the stop of the run in progress
@@ -791,6 +891,8 @@ export function yourTurnItems(inst, now) {
       key: '', group: 'settle', task: p.id, g: { t: '◇', c: 'warning', b: true }, text: `${p.id} (${p.type}) open${p.blocks.length ? `, blocks ${p.blocks.slice(0, 4).join(', ')}` : ''}`, prompt: `/orchestre:ready ${dir}`, help: 'settle the prerequisites',
       kind: PREREQUISITE_KINDS[p.type] ?? 'prerequisite', what: p.text?.trim() || `${p.id} (${p.type}) open`, moment, rank, where: p.type === 'decision' ? WHERE.decision : p.type === 'environment' ? WHERE.environment : WHERE.manual,
       blocks: p.blocks, how: p.how ?? [], ...(evidence && !/^[—–-]$/.test(evidence) ? { check: evidence } : {}),
+      // [ ✓ I did it ] (0.21.0): progress.mjs did takes a manual action or an environment, not a decision
+      ...(p.type === 'manual' || p.type === 'environment' ? { did: true } : {}),
     })
   }
   if (!inst.lint.ok) { const what = `${plural(inst.lint.errors, 'error')} at the last progress update`; items.push({ key: '', group: 'settle', task: 'plan-lint', g: { t: '✗', c: 'error', b: true }, text: `plan-lint: ${what}`, prompt: `Show me the plan-lint errors on ${dir} and propose a fix.`, help: 'ask the pilot', kind: 'plan-lint error', what, ...session, where: WHERE.lint }) }
@@ -821,10 +923,51 @@ export function yourTurnItems(inst, now) {
     it.key = k ? `${base}#${k + 1}` : base
   }
   // The `when` of the detail card is the moment of the label, written out: one place decides both
-  for (const it of items) it.when = capital(it.moment)
+  // 0.21.0: an issue that tasks wait for, while the run goes on: who waits, the time left (from `until`), and what follows
+  for (const it of items) {
+    it.when = capital(it.moment)
+    const p = it.issue, ids = p && activeRun(inst, now) && p.until != null ? waitingOn(p) : []
+    if (p && p.until != null && ids.length) it.when += `: ${ids.join(', ')} ${ids.length > 1 ? 'wait' : 'waits'} for it ${timeLeft(p.until, now)}, then ${ids.length > 1 ? 'start' : 'starts'} without it`
+  }
   // By rank, stable: the order above stays at an equal rank
   items.sort((a, b) => a.rank - b.rank)
   return { items, urgent: items.filter(isNow).length, settle }
+}
+
+/**
+ * The open issues whose recommended option the pane can record, as `rule` takes them ([ Accept the N recommended ], 0.21.0).
+ * @param {Snapshot} inst @returns {{ issue: string, option: string }[]}
+ */
+export const acceptable = inst => inst.issues.flatMap(p => { const o = p.id ? recommendedOf(p) : null; return o && p.id ? [{ issue: p.id, option: o.id }] : [] })
+
+/**
+ * The line `last: …` of "Your turn", from the last action of the pane and the state of the plan; null: nothing to say.
+ * A ruling (0.21.0) reads the plan, not what the pane remembers: while it is in pendingRulings, "<id> · option A recorded"
+ * (the issue and the option of that entry) with Undo (unrule); once it has left pendingRulings and its issue is settled
+ * (progress.json or ISSUES.json; never ruling.commit, which stays null), "<id> · option A applied", without Undo; withdrawn
+ * or refused by apply, nothing. A prerequisite noted done (did): "<id> noted done on <date>" with Undo (undid) while apply
+ * has not written it, then without Undo once it is no longer open. The other actions: their text and Undo.
+ * @param {Snapshot} inst @param {LastAction | null} last @returns {{ text: string, undo: boolean } | null}
+ */
+export function lastLine(inst, last) {
+  if (!last) return null
+  if (last.kind === 'rule') {
+    const asked = last.rulings ?? [], ids = asked.map(r => r.issue)
+    const pending = (inst.pendingRulings ?? []).filter(r => ids.includes(r.issue))
+    const recorded = pending.length > 0, applied = !recorded && ids.length > 0 && ids.every(id => (inst.settledIssues ?? []).includes(id))
+    if (!recorded && !applied) return null
+    const state = recorded ? 'recorded' : 'applied'
+    if (last.bulk) return { text: `${ids.length} recommended options ${state}`, undo: recorded }
+    const r = pending[0] ?? asked[0]
+    return { text: `${r.issue} · ${r.option != null ? `option ${r.option}` : 'free answer'} ${state}`, undo: recorded }
+  }
+  if (last.kind === 'did') {
+    if (!last.did) return null
+    const id = last.did.prerequisite, noted = (inst.pendingDone ?? []).find(x => x.prerequisite === id)
+    if (noted) return { text: `${id} noted done on ${noted.day}`, undo: true }
+    return inst.prerequisites.some(x => x.id === id) ? null : { text: `${id} noted done on ${last.did.day}`, undo: false }
+  }
+  return { text: last.text, undo: true }
 }
 
 // The lines of "Your turn" by pages of 9, one key each, 1 to 9 (0.16.0); the page shown, kept within the pages there are
@@ -833,17 +976,41 @@ export const PAGE_SIZE = 9
 export const pageOf = (count, page) => Math.max(0, Math.min(Math.floor(page) || 0, Math.ceil(count / PAGE_SIZE) - 1))
 
 /**
+ * Under an issue that holds tasks (0.21.0), in grey like the blocker: "     holds AH04 · starts without it in 14:47" (the time in
+ * warning, from `until`, 0:00 at the least) while the run goes on; "     AH04 started without it: its amendment may come too
+ * late" for the tasks that left without its ruling. @param {Snapshot} inst @param {number} now @param {IssueView} p @param {number} inner @returns {Line[]}
+ */
+function heldLines(inst, now, p, inner) {
+  /** @type {Line[]} */
+  const out = []
+  const gone = p.startedWithout ?? [], held = (p.holds ?? []).filter(id => !gone.includes(id))
+  // cut() trims: the indent is added after it
+  const room = Math.max(8, inner - 5)
+  if (held.length && activeRun(inst, now)) {
+    const head = `holds ${held.join(', ')}`
+    if (p.until == null) out.push([{ t: `     ${cut(head, room)}`, d: true }])
+    else {
+      const time = timeLeft(p.until, now)
+      out.push([{ t: `     ${cut(`${head} · starts without it in`, Math.max(8, room - 1 - time.length))} `, d: true }, { t: time, c: 'warning' }])
+    }
+  }
+  if (gone.length) out.push([{ t: `     ${cut(`${gone.join(', ')} started without it: its amendment may come too late`, room)}`, d: true }])
+  return out
+}
+
+/**
  * The "Your turn" card: one line per item, cut to the width, 9 per page (0.16.0). The 9 of the page have a key, 1 to 9: a
  * press shows the item in the detail card, a second press on the same line closes it (0.16.0: the actions are buttons of
  * the detail card). The selected line has ▸ and its text in bold. Under the lines, the page and its button, then the last
  * action of the pane and its Undo button. null if there is nothing, neither item nor last action.
  * @param {Snapshot} inst @param {number} now @param {number} columns @param {string | null} [selected]
- * @param {{ page?: number, last?: { text: string, kind: 'done' | 'ticket' | 'edit' } | null }} [o]
+ * @param {{ page?: number, last?: LastAction | null }} [o]
  * @returns {(Card & { urgent: number }) | null}
  */
 export function yourTurnCard(inst, now, columns, selected = null, { page = 0, last = null } = {}) {
   const { items, urgent, settle } = yourTurnItems(inst, now)
-  if (!items.length && !last) return null
+  const shownLast = lastLine(inst, last)
+  if (!items.length && !shownLast) return null
   const inner = columns - 4
   const p = pageOf(items.length, page), pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE))
   /** @type {Line[]} */
@@ -861,12 +1028,16 @@ export function yourTurnCard(inst, now, columns, selected = null, { page = 0, la
     const gap = ' '.repeat(room - [...text].length + 2 + labelRoom - [...it.moment].length)
     lines.push([on ? { t: '▸', c: 'claude', b: true } : it.g, { t: ' ' }, { t: text, ...(on ? { b: true } : {}), x: { hotkey, prompt: it.prompt, help: it.help, key: it.key, mode: 'select' } }, ...(mark ? [{ t: mark, d: true }] : []), { t: gap }, isNow(it) ? { t: it.moment, c: 'suggestion', b: true } : { t: it.moment, d: true }])
     if (it.detail) lines.push([{ t: `     ${cut(it.detail, Math.max(16, inner - 6))}`, d: true }])
+    if (it.issue) lines.push(...heldLines(inst, now, it.issue, inner))
   })
+  // From two open issues with a recommended option the pane can record (0.21.0): all of them in one write, before the page line
+  const recommended = acceptable(inst)
+  if (recommended.length >= 2) lines.push([{ t: '  ' }, { t: bracketed(`Accept the ${recommended.length} recommended`), x: { hotkey: null, prompt: '', help: 'accept the recommended options', op: 'acceptAll', rulings: recommended, bracket: true } }])
   if (pages > 1) {
     const rest = items.length - (p + 1) * PAGE_SIZE
     lines.push([{ t: `  page ${p + 1}/${pages}  `, d: true }, { t: bracketed(rest > 0 ? `Next ${Math.min(rest, PAGE_SIZE)} ›` : `‹ First ${PAGE_SIZE}`), x: { hotkey: null, prompt: '', help: 'other page', op: 'page', page: rest > 0 ? p + 1 : 0, bracket: true } }])
   }
-  if (last) lines.push([{ t: '  last: ', d: true }, { t: cut(last.text, Math.max(12, inner - 20)), c: last.kind === 'done' ? 'success' : last.kind === 'ticket' ? 'suggestion' : undefined }, { t: '  ' }, { t: bracketed(UNDO_LABEL), x: { hotkey: null, prompt: '', help: 'undo', op: 'undo', bracket: true } }])
+  if (shownLast) lines.push([{ t: '  last: ', d: true }, { t: cut(shownLast.text, Math.max(12, inner - 20)), c: last?.kind === 'ticket' ? 'suggestion' : last?.kind === 'edit' ? undefined : 'success' }, ...(shownLast.undo ? [{ t: '  ' }, { t: bracketed(UNDO_LABEL), x: { hotkey: null, prompt: '', help: 'undo', op: /** @type {const} */ ('undo'), bracket: /** @type {const} */ (true) } }] : [])])
   const tickets = (inst.closed ?? []).filter(c => c.as === 'ticket').length, reviews = distinctReviews(inst.reviews).length
   const count = [
     urgent ? `${urgent} now` : '',
@@ -889,6 +1060,8 @@ export const CLOSE_LABEL = '✕ Close'
 export const DONE_LABEL = '✓ Done', TICKET_LABEL = '→ Ticket', EDIT_LABEL = '✎ Edit text', SAVE_LABEL = 'Save', CANCEL_LABEL = 'Cancel', UNDO_LABEL = 'Undo'
 // The plan closed by the pilot (0.16.1)
 export const CLOSE_PLAN_LABEL = 'Close the plan', REOPEN_LABEL = 'Reopen'
+// Answering an issue, and a manual action done (0.21.0)
+export const OTHER_LABEL = 'Other…', ASK_LABEL = 'Ask Claude', LATER_LABEL = 'Decide later', DID_LABEL = '✓ I did it'
 // The room of the labels of the detail card ("when     ", "where    "), as in the run card; the indent of what goes under
 // its text (blocker, steps, check, command)
 const FIELD = 9, INDENT = '  '
@@ -921,15 +1094,16 @@ export function detailCard(inst, now, columns, selected, { page = 0, editing = f
   const note = s => wrap(s, inner).map(t => [{ t, d: true }])
   /** @type {Line[]} */
   const lines = []
-  const ref = it.ref
-  if (editing && ref) {
-    const value = draft ?? ref.shown
+  const ref = it.ref, issue = it.issue
+  // The field of [ ✎ Edit text ] (0.16.0), also opened by [ Other… ] on an issue (0.21.0): its answer is a free ruling
+  if (editing && (ref || issue)) {
+    const value = draft ?? ref?.shown ?? ''
     lines.push([{ t: 'Text ', d: true }, { t: cut(value, Math.max(8, inner - 13)), in: { key: 'detail-input', value, submitLabel: 'save' } }])
     lines.push(...buttonLines([
-      { t: bracketed(SAVE_LABEL), c: 'success', x: { hotkey: null, prompt: '', help: 'save the text', key: it.key, op: 'save', ref, bracket: true } },
+      { t: bracketed(SAVE_LABEL), c: 'success', x: { hotkey: null, prompt: '', help: ref ? 'save the text' : 'record the answer', key: it.key, op: 'save', ...(ref ? { ref } : { issue: issue?.id ?? '' }), bracket: true } },
       { t: bracketed(CANCEL_LABEL), x: { hotkey: null, prompt: '', help: 'cancel', key: it.key, op: 'cancel', bracket: true } },
     ], inner))
-    lines.push(...note('HANDOFF.md keeps the original text, so the next run does not bring the item back.'))
+    lines.push(...note(ref ? 'HANDOFF.md keeps the original text, so the next run does not bring the item back.' : 'Save records your answer as a free ruling, applied before the next task starts.'))
   } else {
     // When and where first, in the color of what waits for you, a blank line between them and before the rule (0.17.0)
     /** @param {string} label @param {string} value @returns {Line[]} */
@@ -949,19 +1123,46 @@ export function detailCard(inst, now, columns, selected, { page = 0, editing = f
       lines.push(...wrap(step, inner - mark.length).map((t, j) => [{ t: j ? ' '.repeat(mark.length) : mark, d: true }, { t }]))
     }
     if (it.check) { const label = `${INDENT}check  `; lines.push(...wrap(it.check, inner - label.length).map((t, j) => [{ t: j ? ' '.repeat(label.length) : label, d: true }, { t, d: true }])) }
-    // The text the first button prepares, only when it is a command: a review's would repeat its text
-    if (it.prompt.startsWith('/')) lines.push(...wrap(it.prompt, inner - INDENT.length - 2).map((t, j) => [{ t: j ? `${INDENT}  ` : `${INDENT}› `, d: true }, { t, d: true }]))
-    lines.push([])
-    const ask = ref ? (ref.kind === 'review' ? 'Review with Claude' : 'Go over with Claude') : capital(it.help)
-    /** @type {Line} */
-    const buttons = [{ t: bracketed(ask), c: 'claude', x: { hotkey: null, prompt: it.prompt, help: it.help, key: it.key, bracket: true } }]
-    if (ref) buttons.push(
-      { t: bracketed(DONE_LABEL), c: 'success', x: { hotkey: null, prompt: it.ack ?? '', help: 'mark done', key: it.key, op: 'done', ref, bracket: true } },
-      { t: bracketed(TICKET_LABEL), c: 'suggestion', x: { hotkey: null, prompt: it.toTicket ?? '', help: 'move to tickets', key: it.key, op: 'ticket', ref, bracket: true } },
-      { t: bracketed(EDIT_LABEL), x: { hotkey: null, prompt: '', help: 'edit the text', key: it.key, op: 'edit', ref, bracket: true } },
-    )
-    lines.push(...buttonLines(buttons, inner))
-    lines.push(...note(ref ? 'First button: fills the prompt, sends nothing. Others: apply at once.' : 'The button fills the prompt; nothing is sent.'))
+    if (issue) {
+      // An issue (0.21.0): what its recommended option does, in grey; its options, the recommended one marked; an option that
+      // rule refuses (dry run, inherited from /3, no entry in ISSUES.json) in grey, its reason under it, without a button
+      const id = issue.id ?? '', options = issue.options ?? [], rec = recommendedOf(issue)
+      if (rec?.effect) lines.push(...under(`recommended option: ${rec.effect}`))
+      for (const o of options) {
+        const no = refusalOf(issue, o), head = `${INDENT}${o.id}  `, tag = !no && o.recommended ? '  recommended' : ''
+        if (no) lines.push([{ t: head + cut(o.description, Math.max(8, inner - head.length)), d: true }], ...wrap(no, inner - head.length - 1).map(t => [{ t: `${' '.repeat(head.length + 1)}${t}`, d: true }]))
+        else lines.push([{ t: head }, { t: cut(o.description, Math.max(8, inner - head.length - tag.length)) }, ...(tag ? [{ t: tag, c: 'success' }] : [])])
+      }
+      lines.push([])
+      const ok = options.filter(o => refusalOf(issue, o) == null)
+      /** @type {Line} */
+      const buttons = ok.map(o => ({ t: bracketed(`${o.id}${o.recommended ? ' · recommended' : ''}`), x: { hotkey: null, prompt: '', help: `record option ${o.id}`, key: it.key, op: /** @type {const} */ ('rule'), issue: id, option: o.id, bracket: /** @type {const} */ (true) } }))
+      buttons.push(
+        { t: bracketed(OTHER_LABEL), x: { hotkey: null, prompt: '', help: 'answer with a text', key: it.key, op: 'other', issue: id, bracket: true } },
+        { t: bracketed(ASK_LABEL), c: 'claude', x: { hotkey: null, prompt: it.prompt, help: it.help, key: it.key, bracket: true } },
+      )
+      // Only when the issue holds a task: it starts without waiting for the ruling, the issue stays open (release)
+      if (issue.holds?.length) buttons.push({ t: bracketed(LATER_LABEL), x: { hotkey: null, prompt: '', help: 'let the tasks start without it', key: it.key, op: 'release', issue: id, bracket: true } })
+      lines.push(...buttonLines(buttons, inner))
+      lines.push(...note(`${ok.length ? ok.map(o => o.id).join(', ') : OTHER_LABEL}: recorded at once, applied before the next task starts. Ask Claude: fills the prompt.`))
+    } else {
+      // The text the first button prepares, only when it is a command: a review's would repeat its text
+      if (it.prompt.startsWith('/')) lines.push(...wrap(it.prompt, inner - INDENT.length - 2).map((t, j) => [{ t: j ? `${INDENT}  ` : `${INDENT}› `, d: true }, { t, d: true }]))
+      lines.push([])
+      const ask = ref ? (ref.kind === 'review' ? 'Review with Claude' : 'Go over with Claude') : capital(it.help)
+      /** @type {Line} */
+      const buttons = [{ t: bracketed(ask), c: 'claude', x: { hotkey: null, prompt: it.prompt, help: it.help, key: it.key, bracket: true } }]
+      if (ref) buttons.push(
+        { t: bracketed(DONE_LABEL), c: 'success', x: { hotkey: null, prompt: it.ack ?? '', help: 'mark done', key: it.key, op: 'done', ref, bracket: true } },
+        { t: bracketed(TICKET_LABEL), c: 'suggestion', x: { hotkey: null, prompt: it.toTicket ?? '', help: 'move to tickets', key: it.key, op: 'ticket', ref, bracket: true } },
+        { t: bracketed(EDIT_LABEL), x: { hotkey: null, prompt: '', help: 'edit the text', key: it.key, op: 'edit', ref, bracket: true } },
+      )
+      // A manual action or an environment, not noted done yet (0.21.0): did records it, apply writes PREREQUISITES.md
+      const did = it.did && !(inst.pendingDone ?? []).some(x => x.prerequisite === it.task)
+      if (did) buttons.push({ t: bracketed(DID_LABEL), c: 'success', x: { hotkey: null, prompt: '', help: 'note it done', key: it.key, op: 'did', prerequisite: it.task, bracket: true } })
+      lines.push(...buttonLines(buttons, inner))
+      lines.push(...note(ref ? 'First button: fills the prompt, sends nothing. Others: apply at once.' : did ? 'First button: fills the prompt, sends nothing. I did it: recorded at once, PREREQUISITES.md at the run stop.' : 'The button fills the prompt; nothing is sent.'))
+    }
   }
   return {
     id: 'detail', color: 'claude',
@@ -1057,11 +1258,13 @@ export function runCard(inst, now, columns, animated) {
     else lines.push([{ t: 'next    ', d: true }, { t: button, x: { hotkey: null, prompt: resume, help: 'resume the run', bracket: true } }, ...(left >= 12 ? [{ t: `  ${cut(resume, left)}`, d: true }] : [])])
   }
   const marker = runLive ? '' : r.status === 'finished' ? '✓ ' : r.status === 'error' ? '✗ ' : '■ '
+  // The tasks that wait for a ruling (0.21.0), right of the title
+  const waiting = rulingWaits(inst, now)
   return {
     id: 'run', color,
     title: [{ t: `${marker}Run ${r.number} · ${phasesLabel(r.phase, cur ?? r.phase)} · ${MODES[r.mode] || r.mode}`, c: color, b: true }],
     meta: runLive
-      ? (s.silent ? [{ t: `◌ no news for ${duration(now - /** @type {number} */ (inst.updated))}`, c: 'warning' }] : [{ t: `◐ ${s.inProgress.length} in progress`, c: 'suggestion' }])
+      ? (s.silent ? [{ t: `◌ no news for ${duration(now - /** @type {number} */ (inst.updated))}`, c: 'warning' }] : [...(waiting.length ? [{ t: `‖ ${waiting.length} ${waiting.length > 1 ? 'wait' : 'waits'} for you`, c: 'warning', b: true }, { t: '  ' }] : []), { t: `◐ ${s.inProgress.length} in progress`, c: 'suggestion' }])
       : [{ t: r.status, c: color, b: true }],
     lines,
   }
@@ -1139,13 +1342,15 @@ function shownTasks(inst, now) {
   const s = summarize(inst, now), live = !!s.run, f = runWindow(inst, now)
   const cur = live ? runPhase(inst) : s.current?.number ?? null
   const touched = /** @param {TaskView} t */ t => !!f && ((t.start != null && t.start >= f.start) || (t.end != null && t.end >= f.start) || (live && !!t.step))
+  // A task that waits for a ruling (0.21.0) is detailed: its line says so, whatever the phase
+  const waits = new Map(rulingWaits(inst, now).map(w => [w.task, w.until]))
   const phases = s.phases.map(p => {
     const ts = inst.tasks.filter(t => t.phase === p.number && t.status !== 'cancelled')
-    const detail = ts.filter(t => touched(t) || t.status in ATTENTION)
+    const detail = ts.filter(t => touched(t) || t.status in ATTENTION || waits.has(t.id))
     const todo = p.number === cur ? ts.filter(t => !isMerged(t) && !detail.includes(t)) : []
     return { p, ts, detail, todo }
   })
-  return { s, live, cur, phases }
+  return { s, live, cur, phases, waits }
 }
 
 /**
@@ -1160,7 +1365,7 @@ function shownTasks(inst, now) {
 export function taskGrid(inst, now, columns) {
   const shown = shownTasks(inst, now)
   const longest = Math.max(0, ...shown.phases.flatMap(x => [
-    ...x.detail.map(t => (justMerged(t, now) ? 8 : width(whatColored(t, shown.live, ruled(inst, t), 999)))),
+    ...x.detail.map(t => (justMerged(t, now) ? 8 : width(whatColored(t, shown.live, ruled(inst, t), 999, shown.waits.has(t.id) ? waitCell(shown.waits.get(t.id) ?? null, now, 999) : null)))),
     ...x.todo.slice(0, 6).map(t => [...what(t, shown.live)].length),
   ]))
   const tasks = inst.tasks.filter(t => t.status !== 'cancelled')
@@ -1206,7 +1411,7 @@ export function taskGrid(inst, now, columns) {
  * @param {Snapshot} inst @param {number} now @param {number} columns @param {boolean} [animated] @returns {Line[]}
  */
 export function taskLines(inst, now, columns, animated = false) {
-  const { s, live, cur, phases } = shownTasks(inst, now)
+  const { s, live, cur, phases, waits } = shownTasks(inst, now)
   const classOf = classifier(inst, now)
   const G = taskGrid(inst, now, columns)
   /** The glyph and the id, up to the title. @param {TaskView} t @param {Piece} g @returns {Line} */
@@ -1248,7 +1453,9 @@ export function taskLines(inst, now, columns, animated = false) {
       const bare = !segs.length && !before && elapsed == null
       const dim = !running && !isMerged(t)
       /** @type {Line} */
-      const line = [...lead(t, glyph(t, live, now, animated))]
+      // Waits for a ruling (0.21.0): "‖" in warning, "waits for your ruling 14:47" in place of the step
+      const wait = waits.has(t.id) ? waitCell(waits.get(t.id) ?? null, now, G.what) : null
+      const line = [...lead(t, wait ? { t: '‖', c: 'warning', b: true } : glyph(t, live, now, animated))]
       if (bare) line.push({ t: titleCell(t.title, G.bare), d: dim }, spaces(GAP), ...model(t))
       else {
         line.push({ t: titleCell(t.title, G.title), d: dim }, spaces(GAP))
@@ -1262,7 +1469,7 @@ export function taskLines(inst, now, columns, animated = false) {
         line.push(time(chrono(elapsed)), ...model(t))
       }
       if (justMerged(t, now)) line.push({ t: ' merged ', c: 'inverseText', f: 'success', b: true })
-      else line.push(...whatColored(t, live, ruled(inst, t), G.what))
+      else line.push(...whatColored(t, live, ruled(inst, t), G.what, wait))
       out.push(line)
     }
     // A task to do: its title over the room of the timeline and the duration, then the planned model in the same column as
@@ -1331,7 +1538,7 @@ export function since(inst, t0, now) {
  * The whole pane: a header (overall state, legend, legend of the demo, what changed since the last visit), then the
  * cards. Below BORDER_COLUMNS columns, the cards lose their border.
  * @param {Snapshot} inst @param {number} now @param {number} columns
- * @param {{ animated?: boolean, fullLog?: boolean, since?: number | null, selected?: string | null, page?: number, editing?: boolean, draft?: string | null, last?: { text: string, kind: 'done' | 'ticket' | 'edit' } | null }} [options]
+ * @param {{ animated?: boolean, fullLog?: boolean, since?: number | null, selected?: string | null, page?: number, editing?: boolean, draft?: string | null, last?: LastAction | null }} [options]
  * page, editing, draft and last: the page of "Your turn", the text of the detail card being edited, what is typed in its
  * field, the last action of the pane (0.16.0)
  * @returns {{ header: Line[], cards: Card[], borders: boolean, selection: string | null }}
@@ -1453,7 +1660,7 @@ export function prText(inst, now) {
 }
 
 /** A notification that asks for someone: task that needs a human, blocked or failed, run stopped or in error. @param {string} m */
-export const isImportant = m => / waits for a human$|^✗ |^Run stopped|\): error/.test(m)
+export const isImportant = m => / waits for a human$|^✗ |^Run stopped|\): error|^\? \S+: \d+ issues? to settle now|^▶ \S+ starts without your ruling/.test(m)
 
 /**
  * What deserves a notification between two reads: run started or finished, phase finished, task that needs a human,
@@ -1487,5 +1694,27 @@ export function changes(before, after) {
   const itemKey = /** @param {{ task: string, title: string, role: string }} p */ p => `${p.task}\u0000${p.title}\u0000${p.role}`
   const seen = new Set(before.issues.map(itemKey))
   for (const p of after.issues) if (p.role === 'stop' && !seen.has(itemKey(p))) m.push(`Run stopped: ${p.task}, ${cut(p.title, 80)}`)
+  // 0.21.0, issues that tasks wait for: the arrival of the issues a close raised (one notification per task), then the start of
+  // a task without their ruling. An issue whose ruling was withdrawn is not an arrival, and a task released by
+  // [ Decide later ] was not left to wait, so its start says nothing
+  const known = new Set([...before.issues.map(itemKey), ...(before.pendingRulings ?? []).map(r => r.issue)])
+  /** @type {Map<string, IssueView[]>} */
+  const arrived = new Map()
+  for (const p of after.issues) {
+    if (p.role === 'stop' || seen.has(itemKey(p)) || (p.id != null && known.has(p.id)) || p.until == null || !(p.holds ?? []).some(id => !(p.startedWithout ?? []).includes(id))) continue
+    arrived.set(p.task, [...(arrived.get(p.task) ?? []), p])
+  }
+  for (const [who, ps] of arrived) {
+    const holds = [...new Set(ps.flatMap(p => (p.holds ?? []).filter(id => !(p.startedWithout ?? []).includes(id))))]
+    const minutes = Math.round((Math.max(...ps.map(p => /** @type {number} */ (p.until))) - (after.updated ?? 0)) / 60000)
+    m.push(`? ${who}: ${plural(ps.length, 'issue')} to settle now — ${andList(holds)} ${holds.length > 1 ? 'wait' : 'waits'} for ${ps.length > 1 ? 'them' : 'it'}${minutes > 0 ? ` ${minutes} min` : ''}`)
+  }
+  const wentBefore = new Set(before.issues.flatMap(p => p.startedWithout ?? []))
+  const released = new Set(after.issues.filter(p => p.released).flatMap(p => p.startedWithout ?? []))
+  for (const id of new Set(after.issues.flatMap(p => p.startedWithout ?? []))) {
+    if (wentBefore.has(id) || released.has(id)) continue
+    const minutes = Number(after.log.findLast(j => j.kind === 'wait' && j.task === id)?.text.match(/\((\d+) min at most\)/)?.[1])
+    m.push(`▶ ${id} starts without your ruling${minutes > 0 ? `: ${minutes} min passed` : ''}`)
+  }
   return m
 }

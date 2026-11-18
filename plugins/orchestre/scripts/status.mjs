@@ -35,8 +35,9 @@ const french = d => `plan in the French format of orchestre 0.11 and earlier (ta
 // The rules of "Your turn" in hooks/view-model.mjs, written a second time: the scripts load nothing from the mod.
 // tests/status.test.mjs compares them with the mod on the same progress.json, and this block with its copy (status.mjs and
 // progress.mjs carry the same one). Moment and rank, as in the pane:
-//   task that waits for someone (needs-human, blocked, failed) .......... now; at run stop if it carries an open issue, during a run
-//   open issue (also on a waiting task), plan-lint in error ............. now; at run stop during a run (they need the session)
+//   task that waits for someone (needs-human, blocked, failed) .......... now; as its open issue if it carries one
+//   open issue that has options (also on a waiting task) ............... now, run or not: the pane answers it (0.21.0)
+//   open issue without options, plan-lint in error ..................... now; at run stop during a run (they need the session)
 //   decision to take that holds back a task of the phase in progress .... now; at run stop during a run
 //   manual or environment prerequisite holding back such a task ......... now, run or not
 //   prerequisite that holds back a task of a later phase k ............. before phase k
@@ -45,7 +46,7 @@ const french = d => `plan in the French format of orchestre 0.11 and earlier (ta
 //   auto-decision of a task of phase k .................................. before phase k + 1
 //   auto-decision of the last phase; review of the source plan, or of a plan all merged ... before the PR
 // P: { now, updated, tasks: [{ id, phase, status, step, start, end }] (cancelled included), runs: [{ status, phase, start, ruled }],
-//      prerequisites: open [{ id, type, blocks }], issues: open [{ task }], reviews: open [{ task, phase, text }],
+//      prerequisites: open [{ id, type, blocks }], issues: open [{ task, options }] (options: how many), reviews: open [{ task, phase, text }],
 //      decisions: open [{ task }], lint: { ok, errors }, tickets, note }; dates in ms. Returns the lines of the answer.
 function momentLines(P) {
   const WAITS = { 'needs-human': 'waits for a human', blocked: 'blocked', failed: 'failed' }
@@ -57,6 +58,7 @@ function momentLines(P) {
   const NOW = { moment: 'now', rank: 0 }, STOP = { moment: 'at run stop', rank: 0.2 }, PR = { moment: 'before the PR', rank: 99 }
   const after = k => ({ moment: `after phase ${k}`, rank: k }), before = k => ({ moment: `before phase ${k}`, rank: k - 0.5 })
   const session = live ? STOP : NOW
+  const ask = p => (p.options > 0 ? NOW : session)
   const lineOf = m => (m === 'now' ? 'now' : m === 'at run stop' ? 'stop' : 'later')
   const phaseOf = id => tasks.find(t => t.id === id)?.phase ?? null
   const phases = [...new Set(open.map(t => t.phase))].sort((a, b) => a - b)
@@ -70,9 +72,9 @@ function momentLines(P) {
   for (const t of open.filter(t => t.status in WAITS && !(active && t.step) && !(live && run.ruled.includes(t.id)))) {
     const p = P.issues.find(x => x.task === t.id)
     if (p) seen.add(p)
-    put(1, p ? session : NOW, { text: `${t.id} ${WAITS[t.status]}` })
+    put(1, p ? ask(p) : NOW, { text: `${t.id} ${WAITS[t.status]}` })
   }
-  for (const p of P.issues) if (!seen.has(p)) put(2, session, { count: 'issue' })
+  for (const p of P.issues) if (!seen.has(p)) put(2, ask(p), { count: 'issue' })
   for (const p of P.prerequisites) {
     const held = tasks.filter(t => p.blocks.includes(t.id) && t.status !== 'merged' && t.status !== 'cancelled')
     const first = held.length ? Math.min(...held.map(t => t.phase)) : null
@@ -206,7 +208,8 @@ function status() {
     runs: list('runs').map(r => ({ status: String(r.status), phase: Number.isInteger(r.phase) ? r.phase : 0, start: ms(r.start), ruled: (Array.isArray(r.rulings_applied) ? r.rulings_applied : []).filter(a => a && typeof a === 'object').map(a => String(a.task)) })),
     prerequisites: (L.prerequisites || []).filter(x => x.status === 'open').map(p => ({ id: p.id, type: p.type, blocks: p.blocks || [] })),
     // An issue whose ruling is recorded (rule, 0.20.0) and not applied yet no longer waits for the user, as in progress.mjs status
-    issues: list('issues').filter(p => p.status !== 'settled' && !ruled.has(p.id)).map(p => ({ task: String(p.task) })),
+    // options (0.21.0): an issue that has options is answered from the pane during a run
+    issues: list('issues').filter(p => p.status !== 'settled' && !ruled.has(p.id)).map(p => ({ task: String(p.task), options: (Array.isArray(p.options) ? p.options : []).filter(o => o && typeof o === 'object').length })),
     reviews, decisions: list('auto_decisions').filter(d => !closed(d)).map(d => ({ task: String(d.task) })),
     lint: { ok: !!L.ok, errors: (L.errors || []).length },
     tickets: count('ticket') + moved, note: null,
