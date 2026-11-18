@@ -1,5 +1,5 @@
 // The mod of the orchestre plugin: follows a run in the pilot session, read-only.
-// It reads plans/<name>/progress.json (orchestre-progress/3), which only scripts/progress.mjs of orchestre writes, and draws:
+// It reads plans/<name>/progress.json (orchestre-progress/4, or /3 of 0.19 and earlier), which only scripts/progress.mjs of orchestre writes, and draws:
 //   - a banner above the prompt during a run (phase, progress, in progress, to review, duration);
 //   - a suffix to the spinner (task and step in progress);
 //   - /progress: a pane in cards (your turn, the run, the tasks as timelines, the log), or the same state as text;

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
 import * as M from '../plugins/orchestre/hooks/view-model.mjs'
 import * as D from '../plugins/orchestre/hooks/demo.mjs'
+import { INHERITED, convertV3 } from '../plugins/orchestre/scripts/progress.mjs'
 
 const PROGRESS = resolve('plugins/orchestre/scripts/progress.mjs')
 const repoRoot = mkdtempSync(join(tmpdir(), 'mod-progress-'))
@@ -46,13 +47,17 @@ try {
   const A = readFile()
   const tA = Date.parse(rawFile().updated) + 90000
 
-  testCase('format: orchestre-progress/3 written by progress.mjs; the 0.11 formats (suivi.json) and any other refused without guessing', () => {
+  testCase('format: orchestre-progress/4 written by progress.mjs, /3 of 0.19 read alike; the 0.11 formats (suivi.json) and any other refused without guessing', () => {
     assert.ok(A); assert.equal(A.plan, 'demo'); assert.equal(A.tasks.length, 4)
-    assert.equal(rawFile().format, 'orchestre-progress/3')
-    assert.deepEqual(M.FORMATS, ['orchestre-progress/3'])
+    assert.equal(rawFile().format, 'orchestre-progress/4')
+    assert.deepEqual([M.FORMAT, M.FORMATS], ['orchestre-progress/4', ['orchestre-progress/4', 'orchestre-progress/3']])
     assert.deepEqual(M.LEGACY_FORMATS, ['orchestre-suivi/2', 'orchestre-suivi/1'])
-    assert.equal(M.normalize({ format: 'orchestre-progress/4', tasks: [] }), null)
-    assert.equal(M.formatOf({ format: 'orchestre-progress/4' }), 'orchestre-progress/4')
+    // The same file in /3 (without pending_rulings nor the ids of the issues) is read as in /4
+    const { pending_rulings, ...v3 } = rawFile()
+    assert.deepEqual(M.normalize({ ...v3, format: 'orchestre-progress/3' }), A)
+    assert.equal(M.normalize({ format: 'orchestre-progress/5', tasks: [] }), null)
+    assert.equal(M.normalize({ ...rawFile(), format: 'orchestre-progress/2' }), null)
+    assert.equal(M.formatOf({ format: 'orchestre-progress/5' }), 'orchestre-progress/5')
     assert.equal(M.normalize({ format: 'orchestre-progress/3' }), null, 'without tasks')
     // A plan of 0.11: the mod does not read it, /orchestre:ready or /orchestre:run migrates it
     for (const f of M.LEGACY_FORMATS) {
@@ -70,6 +75,39 @@ try {
     assert.deepEqual([X.tickets, X.majorCounts], [2, { ticket: 1, deviation: 2 }])
     assert.deepEqual(X.prerequisites, [{ id: 'D5', type: 'decision', text: '', evidence: '', how: [], blocks: ['T04'] }])
     assert.deepEqual([X.lint, X.issues.map(p => p.title)], [{ ok: false, errors: 2 }, ['Open']])
+  })
+
+  testCase('/4 issues and pending rulings: the fields read as T13 fixed them; an issue with a ruling recorded leaves Your turn; /3 reads the same file without them', () => {
+    const raw = rawFile()
+    const opt = (id, o = {}) => ({ id, description: `Option ${id}`, valid: null, invalid_reason: null, effect: '', amends: [], ...o })
+    const issue = (id, task, o = {}) => ({ id, run: 1, task, title: `Issue ${id}`, context: '', human: false, role: 'open', status: 'open', chosen_option: null, options: [opt('A'), opt('B', { valid: false, invalid_reason: 'amends a task of another phase', effect: 'adds T09', amends: ['T09'] })], ...o })
+    const at = new Date(Date.parse(raw.updated) + 1000).toISOString()
+    const four = { ...raw, issues: [issue('T02-1', 'T02'), issue('T03-1', 'T03', { without_actions: true })], pending_rulings: [] }
+    const waiting = (doc, id) => M.yourTurnItems(M.normalize(doc), tA).items.filter(it => it.kind === 'issue to settle' && it.task === id).length
+    const X = M.normalize(four)
+    assert.deepEqual(X.issues.map(p => [p.id, p.withoutActions]), [['T02-1', false], ['T03-1', true]])
+    assert.deepEqual(X.issues[0].options[1], { id: 'B', description: 'Option B', valid: false, invalidReason: 'amends a task of another phase', effect: 'adds T09', amends: ['T09'] })
+    assert.deepEqual(X.issues[0].options[0].valid, null, 'valid stays null until the dry run')
+    assert.deepEqual(X.pendingRulings, [])
+    assert.deepEqual([waiting(four, 'T02'), waiting(four, 'T03')], [1, 1])
+    // A ruling by option, a ruling by text: the issue no longer waits, the ruling is read, the other issue still waits
+    const ruled = { ...four, pending_rulings: [{ issue: 'T02-1', option: 'A', text: null, at }, { issue: 'T03-1', option: null, text: 'Free answer', at }] }
+    const Y = M.normalize(ruled)
+    assert.deepEqual(Y.issues, [], 'both issues have their ruling')
+    assert.deepEqual(Y.pendingRulings.map(r => [r.issue, r.option, r.text, r.at]), [['T02-1', 'A', null, Date.parse(at)], ['T03-1', null, 'Free answer', Date.parse(at)]])
+    assert.deepEqual([waiting(ruled, 'T02'), waiting(ruled, 'T03')], [0, 0])
+    const half = M.normalize({ ...ruled, pending_rulings: ruled.pending_rulings.slice(0, 1) })
+    assert.deepEqual(half.issues.map(p => p.id), ['T03-1'])
+    assert.deepEqual(M.normalize({ ...four, pending_rulings: [{ issue: 'T09-1', option: null, text: 'x', at }] }).issues.length, 2, 'a ruling on another issue changes nothing')
+    assert.deepEqual(M.normalize({ ...four, pending_rulings: [null, { issue: 42, option: 'A', text: null, at }, ...ruled.pending_rulings.slice(0, 1)] }).pendingRulings.map(r => r.issue), ['T02-1'], 'an entry without an issue id is not a ruling')
+    // /3: no id, no pending_rulings, no actions; the same issues wait, read as progress.mjs convertV3 converts /3: ids <task>-<n>
+    // in the order of the file (a settled issue counts), withoutActions, options invalid
+    const doc3 = { ...raw, format: 'orchestre-progress/3', issues: [{ ...four.issues[0], status: 'settled', chosen_option: 'A' }, ...four.issues].map(({ id, without_actions, ...p }) => ({ ...p, options: [{ id: 'A', description: 'Option A' }] })) }
+    const three = M.normalize(doc3)
+    assert.deepEqual(three.issues.map(p => [p.id, p.withoutActions]), [['T02-2', true], ['T03-1', true]])
+    assert.deepEqual(three.issues.map(p => p.id), convertV3(doc3).issues.filter(p => p.status !== 'settled').map(p => p.id), 'the ids progress.mjs writes')
+    assert.deepEqual(three.issues[0].options, [{ id: 'A', description: 'Option A', valid: false, invalidReason: INHERITED, effect: '', amends: [] }])
+    assert.deepEqual(three.pendingRulings, [])
   })
 
   testCase('during a run: banner, suffix of the spinner, tasks in progress and their timeline', () => {
@@ -1009,7 +1047,7 @@ try {
     const T = Date.parse('2026-10-09T10:00:00Z')
     for (let k = 0; k < D.FRAME_COUNT; k++) {
       const f = join(repoRoot, `demo-${k}.json`)
-      assert.equal(D.demoDoc(k, T).format, 'orchestre-progress/3', 'in the format progress.mjs writes')
+      assert.equal(D.demoDoc(k, T).format, 'orchestre-progress/4', 'in the format progress.mjs writes')
       writeFileSync(f, JSON.stringify(D.demoDoc(k, T)))
       const v = spawnSync(process.execPath, [PROGRESS, 'validate', '--file', f], { encoding: 'utf8' })
       assert.equal(v.status, 0, `frame ${k}: ${v.stderr}`)

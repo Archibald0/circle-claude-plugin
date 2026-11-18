@@ -30,6 +30,8 @@
 // the fields the workflow reads, all, max_phase, and "digest", a fingerprint of these fields (planDigest). The plan-reader,
 // an agent, retypes this JSON; the workflow computes the fingerprint again on its copy and reads the plan a second time,
 // then stops, when they differ. --json does not change: /orchestre:ready, /orchestre:run and /orchestre:prepare read it.
+// overlaps (0.20.0, --json only): [{ a, b, files }], the pairs of tasks of one phase that can run together and share files (the
+// error "<a> and <b> can run together and share files"), with the owned_files entries that overlap.
 // --scope (0.19.0): the scope check of a task branch, read-only. It reads `git diff --name-status <integration>...<branch>` (the
 // changes of the branch since it left the integration branch: a merge of the integration branch into it adds nothing) and prints
 // one line of JSON: task, branch, files (every path touched, both sides of a rename), outside (the files outside the task's
@@ -319,13 +321,26 @@ for (const t of T.values()) {
 }
 const ancestors = (id, seen = new Set()) => { for (const d of arr(T.get(id)?.depends_on)) if (T.has(d) && !seen.has(d)) { seen.add(d); ancestors(d, seen) } return seen }
 for (const id of T.keys()) if (ancestors(id).has(id)) errors.push(`${id}: dependency cycle`)
-const overlaps = (a, b) => arr(a).some(x => arr(b).some(y => { const p = root(x), q = root(y); return p === q || p.startsWith(q) || q.startsWith(p) }))
+// The owned_files entries of two tasks that overlap, as written (comment left out): an entry whose fixed part starts the other's
+const shared = (a, b) => {
+  const out = []
+  for (const x of arr(a)) for (const y of arr(b)) {
+    const p = root(String(x)), q = root(String(y))
+    if (p === q || p.startsWith(q) || q.startsWith(p)) for (const f of [x, y]) { const e = String(f).split('#')[0].trim(); if (!out.includes(e)) out.push(e) }
+  }
+  return out
+}
+// overlaps (0.20.0, --json): each pair of tasks of one phase that can run together (no dependency between them, no resource
+// in common) and share files, with the entries that overlap; each one is also an error. progress.mjs apply reads it to give
+// a task it adds a dependency on the task it shares files with.
+const overlapping = []
 const ids = [...T.keys()]
 for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
   const a = T.get(ids[i]), b = T.get(ids[j])
   if (a.phase !== b.phase || ancestors(a.id).has(b.id) || ancestors(b.id).has(a.id)) continue
   if (arr(a.resources).some(r => arr(b.resources).includes(r))) continue
-  if (overlaps(a.owned_files, b.owned_files)) errors.push(`${a.id} and ${b.id} can run together and share files`)
+  const files = shared(a.owned_files, b.owned_files)
+  if (files.length) { errors.push(`${a.id} and ${b.id} can run together and share files`); overlapping.push({ a: a.id, b: b.id, files }) }
 }
 if (phaseF != null) for (const t of T.values()) if (t.phase < phaseF && !done(st[t.id] || 'todo')) errors.push(`${t.id} (phase ${t.phase}) is neither merged nor cancelled: phase ${phaseF} cannot start`)
 
@@ -431,7 +446,7 @@ if (typeof language !== 'string' || !language.trim()) errors.push('orchestre.con
 const readyShown = ready.filter(p => phaseF == null || p.phase === phaseF)
 // JSON on one line: read by scripts and agents, it thus stays under the Bash tool's display thresholds longer (0.8.1)
 if (asReader) console.log(JSON.stringify(readerView({ ok: errors.length === 0, errors, tasks, all, max_phase: maxPhase })))
-else if (asJson) console.log(JSON.stringify({ ok: errors.length === 0, errors, warnings, tasks, all, max_phase: maxPhase, prerequisites: prereqs, ready: readyShown, fable: typeof fable === 'boolean' ? fable : null, language: typeof language === 'string' && language.trim() ? language.trim() : 'en', used_prefixes: usedPrefixes }))
+else if (asJson) console.log(JSON.stringify({ ok: errors.length === 0, errors, warnings, tasks, all, max_phase: maxPhase, prerequisites: prereqs, ready: readyShown, fable: typeof fable === 'boolean' ? fable : null, language: typeof language === 'string' && language.trim() ? language.trim() : 'en', used_prefixes: usedPrefixes, overlaps: overlapping }))
 else {
   if (errors.length) console.log(errors.map(e => '✗ ' + e).join('\n'))
   else {

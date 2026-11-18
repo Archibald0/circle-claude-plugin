@@ -1,5 +1,5 @@
 // @ts-check
-// View model of the orchestre progress mod: reads plans/<name>/progress.json (contract orchestre-progress/3, written by
+// View model of the orchestre progress mod: reads plans/<name>/progress.json (contract orchestre-progress/4 or /3, written by
 // scripts/progress.mjs of the orchestre plugin) and draws from it what the mod shows. Pure functions, without `$`:
 // register.tsx deals with the engine (files, timer, drawing), tests/mod-progress.test.mjs checks them under Node.
 
@@ -12,10 +12,14 @@
 /** @typedef {import('../types/index.d.ts').Card} Card */
 /** @typedef {import('../types/index.d.ts').YourTurnItem} YourTurnItem */
 
-export const FORMAT = 'orchestre-progress/3'
-// The formats this mod reads: /3 only (0.12.0). The French formats of 0.11 and earlier (suivi.json) are converted by
+export const FORMAT = 'orchestre-progress/4'
+// The formats this mod reads: /4, which progress.mjs writes since 0.20.0, and /3 (0.12.0 to 0.19), which it converts at its next
+// write; the fields read here are the same in both. The French formats of 0.11 and earlier (suivi.json) are converted by
 // scripts/migrate.mjs, and progress.mjs converts a progress.json still in one of them at its next write
-export const FORMATS = [FORMAT]
+export const FORMATS = [FORMAT, 'orchestre-progress/3']
+// What progress.mjs convertV3 gives a /3 issue: without_actions, and each option invalid for `rule` with this reason (same text as
+// INHERITED in scripts/progress.mjs, which a mod does not import)
+const INHERITED_V3 = 'inherited from orchestre-progress/3 without its actions: settle it with a free answer'
 export const LEGACY_FORMATS = ['orchestre-suivi/2', 'orchestre-suivi/1']
 export const STATUSES = ['todo', 'added', 'merged', 'blocked', 'failed', 'needs-human', 'cancelled']
 // As /orchestre:status and progress.mjs status say them
@@ -56,13 +60,24 @@ const decisionsOf = raw => (Array.isArray(raw.auto_decisions) ? raw.auto_decisio
 /** Format declared by a progress.json, or null. @param {unknown} raw */
 export const formatOf = raw => (isObject(raw) && typeof raw.format === 'string' ? raw.format : null)
 
+// The ids progress.mjs convertV3 gives the issues of a /3 file: <task>-<n> in the order of the file, settled ones counted,
+// an id already there kept. The same ids as the file progress.mjs writes, so that a ruling (rule) can name the issue
+const idsV3 = list => { const n = new Map(); return list.map(p => { const t = isObject(p) ? p.task : undefined; n.set(t, (n.get(t) || 0) + 1); return isObject(p) && Object.hasOwn(p, 'id') ? p.id : `${t}-${n.get(t)}` }) }
+
+// The rulings recorded and not applied yet (/4 pending_rulings; absent in /3): { issue, option | null, text | null, at }
+const pendingRulings = raw => (Array.isArray(raw.pending_rulings) ? raw.pending_rulings : []).filter(r => isObject(r) && typeof r.issue === 'string').map(r => ({ issue: /** @type {string} */ (r.issue), option: typeof r.option === 'string' ? r.option : null, text: typeof r.text === 'string' ? r.text : null, at: r.at }))
+
 /**
- * progress.json (orchestre-progress/3) → what the mod shows; null if the format is not this one.
+ * progress.json (orchestre-progress/4 or /3) → what the mod shows; null if the format is not one of these.
  * Unknown fields are ignored, missing fields taken empty: a reader only refuses the format.
  * @param {unknown} raw @returns {Snapshot | null}
  */
 export function normalize(raw) {
   if (!isObject(raw) || !FORMATS.includes(/** @type {string} */ (raw.format)) || !Array.isArray(raw.tasks)) return null
+  const rulings = pendingRulings(raw)
+  const v3 = raw.format === 'orchestre-progress/3'
+  const issuesIn = Array.isArray(raw.issues) ? raw.issues : []
+  const ids3 = v3 ? idsV3(issuesIn) : []
   const runs = (Array.isArray(raw.runs) ? raw.runs : []).filter(isObject)
   const lastRun = runs.length ? runs[runs.length - 1] : null
   /** @type {TaskView[]} */
@@ -97,7 +112,10 @@ export function normalize(raw) {
       ...reviewsOf(raw).filter(closedAs).map(r => ({ kind: /** @type {const} */ ('review'), task: r.task == null ? null : text(r.task), text: text(r.text), shown: labelOf(r) ?? text(r.text), as: /** @type {'done' | 'ticket'} */ (closedAs(r)) })),
       ...decisionsOf(raw).filter(closedAs).map(d => ({ kind: /** @type {const} */ ('decision'), task: text(d.task), text: text(d.title), shown: labelOf(d) ?? `${text(d.title)}: option ${text(d.option)}, ${text(d.description)}`, as: /** @type {'done' | 'ticket'} */ (closedAs(d)) })),
     ],
-    issues: (Array.isArray(raw.issues) ? raw.issues : []).filter(p => isObject(p) && p.status !== 'settled').map(p => ({ task: text(p.task), title: text(p.title), human: p.human === true, role: text(p.role) })),
+    // An issue whose ruling is recorded (/4, rule) and not applied yet no longer waits for the user: the same filter as
+    // progress.mjs status and status.mjs. /3 has no pending_rulings: nothing is filtered; its ids are those of convertV3
+    issues: issuesIn.map((p, i) => ({ p, id: v3 ? ids3[i] : isObject(p) ? p.id : null })).filter(({ p, id }) => isObject(p) && p.status !== 'settled' && !rulings.some(r => r.issue === id)).map(({ p, id }) => ({ id: id == null ? null : text(id), task: text(p.task), title: text(p.title), human: p.human === true, role: text(p.role), withoutActions: v3 || p.without_actions === true, options: (Array.isArray(p.options) ? p.options : []).filter(isObject).map(o => ({ id: text(o.id), description: text(o.description), valid: v3 ? false : typeof o.valid === 'boolean' ? o.valid : null, invalidReason: v3 ? INHERITED_V3 : o.invalid_reason == null ? null : text(o.invalid_reason), effect: text(o.effect), amends: texts(o.amends) })) })),
+    pendingRulings: rulings.map(r => ({ issue: r.issue, option: r.option, text: r.text, at: date(r.at) })),
     // Its text, evidence and steps (0.17.0): what the detail card says there is to do
     prerequisites: (Array.isArray(raw.prerequisites) ? raw.prerequisites : []).filter(p => isObject(p) && p.status === 'open').map(p => ({ id: text(p.id), type: text(p.type), text: text(p.text), evidence: text(p.evidence), how: texts(p.how), blocks: texts(p.blocks) })),
     majorCounts, tickets,
@@ -307,7 +325,7 @@ export function phaseDots(phases, current) {
 // The status of a task closed, as progress.mjs writes it: "T01: merged (2 attempts)", "T02: failed, closed at the run end
 // without a scribe — …", "T03: todo → merged (PROGRESS.md and git)" when it follows git again
 const RE_STATUS = /^(\S+): (?:\S+ → )?(merged|needs-human|blocked|failed)\b/
-// Glyph of a log entry, by its kind (contract orchestre-progress/3)
+// Glyph of a log entry, by its kind (contract orchestre-progress/4, the same kinds as /3)
 const KINDS = /** @type {Record<string, Piece>} */ ({
   run: { t: '▶', c: 'claude' }, task: { t: '▶', c: 'suggestion' }, step: { t: '·', d: true }, rejection: { t: '↻', c: 'merged' },
   status: { t: '●', c: 'success' }, added: { t: '+', c: 'suggestion' }, amendment: { t: '~', c: 'merged' }, review: { t: '⚑', c: 'warning' },

@@ -1,6 +1,6 @@
 // @ts-check
 // Demo mode of the mod (/progress demo): a run played in memory, without a repository or a file. Each frame gives an
-// orchestre-progress/3 document as scripts/progress.mjs would write it (same fields, same log texts), which the mod passes
+// orchestre-progress/4 document as scripts/progress.mjs would write it (same fields, same log texts), which the mod passes
 // through normalize() like a real progress.json. tests/demo-progress.mjs plays the same scenario with the real progress.mjs,
 // and tests/mod-progress.test.mjs checks that both announce the same notifications and that these documents follow the
 // schema of the contract.
@@ -84,7 +84,8 @@ const close = (id, o) => (d, q) => {
     J(d, q, 'auto-decision', id, `${id}: "${x.title}", option ${x.option} taken automatically`)
   }
   for (const p of o.issues ?? []) {
-    d.issues.push({ run: run?.number ?? null, task: id, title: p.title, context: p.context, human: p.human, options: [], role: 'open', status: 'open', chosen_option: null })
+    // Its id, <task>-<n>, as progress.mjs gives it (0.20.0)
+    d.issues.push({ id: `${id}-${d.issues.filter(/** @param {Doc} x */ x => x.task === id).length + 1}`, run: run?.number ?? null, task: id, title: p.title, context: p.context, human: p.human, options: [], role: 'open', status: 'open', chosen_option: null })
     J(d, q, 'issue', id, `${id}: issue "${p.title}"${p.human ? ' (human)' : ''}`)
   }
 }
@@ -149,15 +150,15 @@ export function frameAt(now, start, frameMs = DEMO_FRAME_MS) {
 export const demoEnd = (start, frameMs = DEMO_FRAME_MS) => frameInstant(FRAME_COUNT - 1, start, frameMs) + RETURN_MS
 
 /**
- * The orchestre-progress/3 document after frame k: frames 0 to k played at their time, following the schema of the contract.
+ * The orchestre-progress/4 document after frame k: frames 0 to k played at their time, following the schema of the contract.
  * @param {number} k @param {number} start @param {number} [frameMs] @returns {Doc}
  */
 export function demoDoc(k, start, frameMs = DEMO_FRAME_MS) {
   /** @type {Doc} */
   const d = {
-    format: 'orchestre-progress/3', plan: DEMO_PLAN, dir: `plans/${DEMO_PLAN}`, integration: `plan/${DEMO_PLAN}`, base: null, updated: iso(start),
+    format: 'orchestre-progress/4', plan: DEMO_PLAN, dir: `plans/${DEMO_PLAN}`, integration: `plan/${DEMO_PLAN}`, base: null, updated: iso(start),
     tasks: TASKS.map(t => ({ id: t.id, title: t.title, phase: t.phase, batch: null, depends_on: t.dep, model: t.model, model_used: null, status: 'todo', attempts: 0, branch: null, token_estimate: 400000, actual_tokens: null, added_by: null, step: null, isolated: null, start: null, end: null, waiting: [], rejections: [], flaky: [], unverifiable: [], blocker: [] })),
-    runs: [], issues: [], auto_decisions: [], reviews: [], prerequisites: [], handoff: {}, lint: { ok: true, errors: [] }, log: [], log_omitted: 0,
+    runs: [], issues: [], pending_rulings: [], auto_decisions: [], reviews: [], prerequisites: [], handoff: {}, lint: { ok: true, errors: [] }, log: [], log_omitted: 0,
   }
   for (let i = 0; i <= Math.min(k, FRAME_COUNT - 1); i++) {
     const q = iso(frameInstant(i, start, frameMs))

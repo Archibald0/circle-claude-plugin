@@ -1,5 +1,5 @@
 // Contract of the orchestre mod: what it keeps in $.state, and the model it draws from progress.json
-// (orchestre-progress/3, see hooks/view-model.mjs). Dates in milliseconds since the epoch.
+// (orchestre-progress/4 or /3, see hooks/view-model.mjs). Dates in milliseconds since the epoch.
 
 export type Status = 'todo' | 'added' | 'merged' | 'blocked' | 'failed' | 'needs-human' | 'cancelled'
 
@@ -64,7 +64,14 @@ export type Snapshot = {
   // Date the pilot closed the plan ([ Close the plan ], 0.16.1); null or absent: open. A closed plan is no longer followed
   // on its own: no banner, no status line, and the pane closes at the next prompt
   planClosed?: number | null
-  issues: { task: string; title: string; human: boolean; role: string }[]
+  // Open only, and without those whose ruling is recorded and not applied yet (pendingRulings). id, withoutActions, options
+  // (orchestre-progress/4): absent in a snapshot built by hand. Read from a /3 file as progress.mjs convertV3 converts it: id
+  // <task>-<n> in the order of the file (settled issues counted), withoutActions true, each option valid false with
+  // invalidReason INHERITED, effect '' and amends []
+  issues: IssueView[]
+  // The rulings recorded by `progress.mjs rule` and not applied yet (/4 pending_rulings; empty from a /3 file). Absent in a
+  // snapshot built by hand: none
+  pendingRulings?: PendingRuling[]
   // Open only. text: the Prerequisite column; evidence: the Evidence column; how: the steps of "## <ID> · how" (0.17.0).
   // Absent in a snapshot built by hand: empty
   prerequisites: { id: string; type: string; text?: string; evidence?: string; how?: string[]; blocks: string[] }[]
@@ -73,6 +80,20 @@ export type Snapshot = {
   lint: { ok: boolean; errors: number }
   log: { at: number | null; kind: string; task: string | null; text: string }[]
 }
+
+// An issue of progress.json /4 (issues[]). id: its `id`, <task>-<n>; withoutActions: its `without_actions`, inherited from /3,
+// its options carry no action (valid false), so only a free answer settles it; options: its `options`
+export type IssueView = { id?: string | null; task: string; title: string; human: boolean; role: string; withoutActions?: boolean; options?: IssueOptionView[] }
+
+// An option of an issue (issues[].options[] of progress.json /4). valid: its `valid`, boolean | null, null until the dry run
+// decides it; invalidReason: its `invalid_reason`, string | null, why it is refused (only when valid is false); effect: its
+// `effect`, what applying it does; amends: its `amends`, the ids of the tasks it amends
+export type IssueOptionView = { id: string; description: string; valid: boolean | null; invalidReason: string | null; effect: string; amends: string[] }
+
+// A ruling recorded and not applied yet: an entry of `pending_rulings` of progress.json /4, { issue, option | null, text | null,
+// at }. issue: the id of the issue; option or text: the option chosen or a free text (one of the two, the other null); at: in the
+// file an ISO date, here in milliseconds (null if it does not parse)
+export type PendingRuling = { issue: string; option: string | null; text: string | null; at: number | null }
 
 export type ClosedItem = { kind: 'review' | 'decision'; task: string | null; text: string; shown: string; as: 'done' | 'ticket' }
 

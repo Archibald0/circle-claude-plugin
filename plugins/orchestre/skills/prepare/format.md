@@ -9,10 +9,13 @@ plans/<name>/
 ├── HANDOFF.md              # the header and the decisions already taken
 ├── PREREQUISITES.md        # what the plan expects from a human or from the environment
 ├── DISCOVERY.md            # seeded with the exploration
+├── ISSUES.json             # the issue register (orchestre-issues/1), tracked by git, written by progress.mjs alone; absent until a run raises an issue
 └── orchestre.config.json
 ```
 
 plan-lint (`node <plugin>/scripts/plan-lint.mjs plans/<name>`) reads the frontmatter of the tasks and the Status column of PROGRESS.md; with `--integration`, a task whose commit "task <id>: " is on the integration branch, and not on the base branch, counts as merged. It refuses: a task without `id`, `phase`, `verification` or `definition_of_done`; a `model` other than `haiku`, `sonnet`, `opus` and `fable`; a duplicate id; an unknown or cyclic dependency, or one on a later phase; two tasks of the same phase, without a dependency between them nor a shared resource, that own the same files; an unknown or duplicate prerequisite, or one of unknown type or status, or a decision marked "done" that no "decision" entry of HANDOFF.md cites. It also says, phase by phase, which tasks wait for an open prerequisite. It warns, without blocking anything, about a remaining task without `model` or without `model_reason`, and about a compound verification command; it never judges the choice of a model. A remaining task on `fable`, or an `escalation` that contains it, is refused if `orchestre.config.json` says `"fable": false`, and only reported if the setting is missing.
+
+`ISSUES.json` is not written by hand and not by `/orchestre:prepare`: `progress.mjs` creates it when a run raises an issue. One entry per issue (`id` `<task>-<n>`, `task`, `title`, `context`, `human`, `options`, `status`, `ruling`); each option keeps its HANDOFF entries, added tasks and amendments, and the verdict of a dry run (`valid`, `invalid_reason`) that applies it to a temporary copy of the plan and runs plan-lint. The user's answer is recorded by `progress.mjs rule` in `progress.json` (outside git), then `progress.mjs apply` reports it into `ISSUES.json`, HANDOFF.md and the tasks in one commit at the start of the next run. plan-lint ignores the file; `progress.mjs validate` checks it.
 
 A plan written by orchestre 0.11 or earlier (French format: `taches/`, `SUIVI.md`, `PREREQUIS.md`, French keys and values) is refused by plan-lint, which gives the `migrate.mjs` command. `/orchestre:ready` and `/orchestre:run` offer that migration at their pre-flight.
 

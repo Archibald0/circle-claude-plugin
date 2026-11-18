@@ -130,7 +130,7 @@ try {
     assert.deepEqual(sorted(passed), sorted(readByWf))
     const required = WF.match(/args required: ([a-z_, ]+)'/)[1].split(/,\s*/)
     for (const a of required) assert.ok(passed.includes(a), `required arg ${a} not passed`)
-    for (const a of ['lint', 'progress', 'agent_prefix', 'language', 'setup', 'shared_setup', 'max_auto_decisions', 'rulings', 'rerun']) assert.ok(text.run.includes(`\`${a}\`:`) || text.run.includes(`\`${a}\` and \``), `arg ${a} not explained`)
+    for (const a of ['lint', 'progress', 'agent_prefix', 'language', 'setup', 'shared_setup', 'max_auto_decisions', 'rerun']) assert.ok(text.run.includes(`\`${a}\`:`) || text.run.includes(`\`${a}\` and \``), `arg ${a} not explained`)
     const modes = WF.match(/if \(!\[([^\]]+)\]\.includes\(MODE\)\)/)[1].split(/,\s*/).map(x => x.replace(/'/g, ''))
     assert.deepEqual(modes, ['auto', 'deviation', 'phase'])
     assert.ok(text.run.includes('`auto` (autonomous), `deviation` (stop on deviation) or `phase` (stop at each phase), exactly'))
@@ -143,14 +143,14 @@ try {
     for (const s of statuses) assert.ok(WF.includes(`'${s}'`), `status ${s} not in the workflow`)
     const handled = [...point(text.run, 4, 'On receiving the report').matchAll(/^\s+- `([a-z-]+)`(?:, or a run interrupted)?:/gm)].map(m => m[1])
     assert.deepEqual(sorted(handled), sorted(statuses))
-    const FIELDS = ['status', 'detail', 'stop_issue', 'open_issues', 'progress_failures', 'auto_decisions', 'discarded_amendments', 'rulings_applied', 'worktrees', 'waiting', 'waiting_on_prerequisites', 'deferred', 'added_tasks', 'reviews', 'rejections', 'unverifiable', 'blocker', 'branch', 'circuit_breaker', 'inconsistency', 'human', 'interrupted', 'merged_unclosed']
+    const FIELDS = ['status', 'detail', 'stop_issue', 'open_issues', 'progress_failures', 'auto_decisions', 'discarded_amendments', 'rulings_applied', 'rulings_refused', 'worktrees', 'waiting', 'waiting_on_prerequisites', 'deferred', 'added_tasks', 'reviews', 'rejections', 'unverifiable', 'blocker', 'branch', 'circuit_breaker', 'inconsistency', 'human', 'interrupted', 'merged_unclosed']
     for (const f of FIELDS) {
       assert.ok(text.run.includes(`\`${f}\``), `field ${f} not read by /orchestre:run`)
       assert.match(WF, new RegExp(`\\b${f}\\b`), `field ${f} not in the workflow`)
     }
-    // Any snake_case name the skill cites: an arg, a config key, a field above, or a name of the workflow or of plan-lint
+    // Any snake_case name the skill cites: an arg, a config key, a field above, or a name of the workflow, of plan-lint or of a schema key of progress.mjs (0.20.0)
     for (const l of text.run.split('\n').map(scrub)) {
-      for (const m of l.matchAll(/`([a-z]+(?:_[a-z]+)+)`/g)) assert.ok(new RegExp(`\\b${m[1]}\\b`).test(WF) || SRC['plan-lint'].includes(m[1]) || FORMAT.includes(`"${m[1]}"`), `unknown name ${m[1]} in /orchestre:run`)
+      for (const m of l.matchAll(/`([a-z]+(?:_[a-z]+)+)`/g)) assert.ok(new RegExp(`\\b${m[1]}\\b`).test(WF) || SRC['plan-lint'].includes(m[1]) || FORMAT.includes(`"${m[1]}"`) || SRC.progress.includes(`${m[1]}:`), `unknown name ${m[1]} in /orchestre:run`)
     }
     // progress_failures[] { task, step, error }
     assert.match(WF, /progressFailures\.push\(\{ task[^}]*\bstep\b[^}]*\berror\b/)
@@ -163,10 +163,16 @@ try {
     // Run not opened
     assert.ok(WF.includes('detail: `progress: run not opened'))
     assert.ok(text.run.includes('A `detail` that starts with "progress: run not opened"'))
-    // Rulings, and the free answer
-    assert.ok(text.run.includes('`rulings`: the options the user chose since the last report, `[{ task, title, option }]`'))
-    for (const k of ['a.task', 'a.title', 'a.option.id']) assert.ok(WF.includes(k), `rulings: ${k} not read by the workflow`)
-    assert.ok(text.run.includes('A free answer, "Other" included, is passed as the option `{ id: "human", description: <answer> }`'))
+    // Rulings (0.20.0): recorded by rule, applied by apply at the run start; no option in the args, no skill cites `rulings`
+    assert.ok(!/\bA\.rulings\b/.test(WF) && !WF.includes('args.rulings'), 'the workflow no longer reads args.rulings')
+    for (const s of SKILLS) assert.ok(!text[s].includes('`rulings`'), `${s}: cites \`rulings\` in the args`)
+    assert.ok(text.run.includes('`{"issue":"<id>","text":"<answer>"}` for a free answer, "Other" included'))
+    assert.ok(text.run.includes('Never pass an option in `args`, and never write the decision or its actions yourself'))
+    assert.ok(text.run.includes("node ${CLAUDE_PLUGIN_ROOT}/scripts/progress.mjs rule <plan> <<'ORCHESTRE_JSON'"))
+    // The plan reader that opens the run runs apply, then plan-lint; a refused ruling stops before any task, its fields read by the skill
+    assert.ok(WF.includes('const APPLY_CMD = PROGRESS && `${PROGRESS_CMD} apply ${PLANARG}`') && WF.includes("opens ? pRunStart('return ok=false and empty tasks') + pApply() : ''"))
+    assert.match(WF, /if \(ap\.rejected\.length\) return await stopBefore\('awaiting-ruling'/)
+    for (const x of ['progress: rulings not applied', 'progress: output of apply not read']) assert.ok(WF.includes(x) && text.run.includes(`A \`detail\` that starts with "${x}"`), x)
   })
 
   test('script commands of the skills: subcommands and options known to each script', () => {
@@ -188,6 +194,29 @@ try {
     }
     assert.ok(text.run.includes('run it again with `--run-stopped`') && OPTS.worktrees.has('--run-stopped'))
     assert.ok(text.ready.includes('worktrees.mjs clean <plan> --dry-run`'))
+  })
+
+  test('0.20.0: the skill run settles issues with rule, offers valid options only, and --resume lists the rulings not applied; format.md shows ISSUES.json', () => {
+    const progressCommands = SRC.progress.match(/usage: progress\.mjs <([a-z|-]+)>/)[1].split('|')
+    for (const c of ['rule', 'unrule', 'apply']) assert.ok(progressCommands.includes(c), `progress.mjs knows ${c}`)
+    // The fields the skill reads in the issues of progress.json are the ones of its schema
+    for (const f of ['valid', 'invalid_reason', 'without_actions', 'pending_rulings', 'effect']) {
+      assert.ok(text.run.includes(`\`${f}`) || text.run.includes(f), `run: ${f}`)
+      assert.ok(SRC.progress.includes(f), `progress.mjs: ${f}`)
+    }
+    // An invalid option is not offered and its reason is said; the question about all the recommended options comes first
+    assert.match(text.run, /An option with `valid: false` is not offered: say its `invalid_reason` in one line/)
+    assert.match(text.run, /With at least two issues whose recommended option is valid, the first question is `Accept the N recommended options\?`/)
+    assert.ok(text.run.includes('record them in one `rule` as `{"items":[…]}`'))
+    // The answer goes through the question tool, then rule; unrule withdraws it until apply
+    assert.match(text.run, /question tool[^\n]*Then record the answer, between two runs, with the `progress\.mjs rule` block/)
+    assert.match(text.run, /`progress\.mjs unrule` withdraws a ruling recorded and not applied yet/)
+    // --resume: the rulings recorded and not applied yet, from pending_rulings
+    assert.match(text.run, /With `--resume`[^\n]*list the rulings recorded and not applied yet: the `pending_rulings` of `progress\.json`/)
+    // The structure of the plan in format.md has the register, tracked by git and written by the script
+    assert.match(FORMAT, /^├── ISSUES\.json .*orchestre-issues\/1.*tracked by git.*progress\.mjs alone/m)
+    assert.ok(SRC.progress.includes("REGISTER = 'ISSUES.json'") && SRC.progress.includes("REGISTER_FORMAT = 'orchestre-issues/1'"))
+    assert.ok(FORMAT.includes('`valid`, `invalid_reason`') && FORMAT.includes('`progress.mjs apply`'))
   })
 
   test('0.19.0: the skills run, ready and status cite the circuit breaker, space and triage as the code gives them', () => {
@@ -532,7 +561,7 @@ try {
     for (const [s, names] of Object.entries(NAMES)) for (const x of names) assert.ok(text[s].includes(x), `${s}: ${x}`)
     assert.ok(SRC.migrate.includes('Checked by /orchestre:ready on ${v[1]}: ${v[2]}'))
     assert.ok(WF.includes('-m "task ${t.id}: '), 'merge message of the workflow')
-    assert.ok(WF.includes('"progress(${a.task}): ruling'), 'progress commits of the workflow')
+    assert.ok(SRC.progress.includes('`progress: rulings ${ids.join') && text.run.includes('its commit `progress: rulings …`'), 'commit of apply, named by the skill')
     assert.ok(WF.includes('(settled by the user)'))
   })
 
@@ -622,6 +651,33 @@ try {
     assert.equal(wf({ ...base, outside: undefined }), wf({ ...base, outside: [] }))
   })
 
+  test('digest of the payloads (0.20.0): the same payloadDigest in progress.mjs and in the workflow, which puts _digest in each progress command and reads the output of close through its digest', () => {
+    const fn = t => (t.match(/function payloadDigest\(p, skip = '_digest'\) \{\n[\s\S]*?\n\}/) || [''])[0]
+    assert.ok(fn(WF).length > 100, 'payloadDigest missing from run-phase.js')
+    assert.equal(fn(SRC.progress), fn(WF), 'payloadDigest differs between scripts/progress.mjs and workflows/run-phase.js')
+    const wf = new Function(fn(WF) + '\nreturn payloadDigest')()
+    assert.equal(wf({ task: 'T01', status: 'merged', issues: [] }), 'e4a3b3bf', 'the fixed vector of tests/progress.test.mjs')
+    // Keys sorted at every level; the field skipped is left out at the top level only
+    assert.equal(wf({ b: 1, a: { d: 2, c: [3, { f: 4, e: 5 }] } }), wf({ a: { c: [3, { e: 5, f: 4 }], d: 2 }, b: 1 }))
+    assert.equal(wf({ a: 1, _digest: 'x' }), wf({ a: 1 })); assert.notEqual(wf({ a: { _digest: 'x' } }), wf({ a: {} }))
+    assert.equal(wf({ a: 1, digest: 'x' }, 'digest'), wf({ a: 1 }, 'digest')); assert.notEqual(wf({ a: 1, digest: 'x' }), wf({ a: 1 }))
+    assert.ok(WF.includes('heredocJson({ ...E, _digest: payloadDigest(E) })'), 'run-phase.js: _digest in every progress command')
+    assert.ok(WF.includes("x.digest === payloadDigest(x, 'digest')"), 'run-phase.js: the output of close read through its digest')
+  })
+
+  test('close of a task (0.20.0): the clerk or the scribe switches to the integration branch, then runs close; the scribe no longer writes HANDOFF.md, a task nor an amendment', () => {
+    const agent = a => read(join(PLUGIN, 'agents', `${a}.md`))
+    const scribe = agent('scribe'), clerk = agent('clerk')
+    const inWF = x => WF.includes(x.replace(/`/g, '\\`'))
+    assert.ok(scribe.includes('Close of a task (`progress.mjs close`, since 0.20.0): you no longer write HANDOFF.md, a task nor an amendment'), 'scribe.md')
+    assert.ok(inWF('Never write HANDOFF.md, PROGRESS.md, a task or an amendment yourself, and make no commit: the close command does.'), 'run-phase.js: the instruction of close')
+    assert.ok(inWF('`git switch ${INTEG}`. If it fails, run nothing else'), 'run-phase.js: the switch, step 1 of the close')
+    for (const x of ['`node …/progress.mjs close …`', 'Close of a task: first `git switch <integration branch>`', '`test -e <path>`', '`digest` included, character for character']) assert.ok(clerk.includes(x), `clerk.md: ${x}`)
+    // The commands of the close are allowed to the agents by the template of /orchestre:install
+    const allow = JSON.parse(read(join(PLUGIN, 'skills', 'install', 'settings.local.template.json'))).permissions.allow
+    for (const r of ['Bash(git switch *)', 'Bash(test -e *)']) assert.ok(allow.includes(r), `template: ${r}`)
+  })
+
   test('scope check and proofs (0.19.0): the rules of verifier.md and evaluator.md match the instructions of the workflow', () => {
     const agent = a => read(join(PLUGIN, 'agents', `${a}.md`))
     const verifier = agent('verifier'), evaluator = agent('evaluator')
@@ -647,6 +703,70 @@ try {
     }
     assert.ok(!evaluator.includes('Also check that the diff touches no file outside'), 'evaluator.md: the scope is the workflow\'s')
     assert.ok(evaluator.includes('When your instructions say the scope check could not be read, check these points yourself') && WF.includes('could not be read: check yourself, in the diff'), 'fallback without the facts')
+  })
+
+  test('fixes before 0.20.0: the plan reader runs apply, the scribe no ruling; the skill run reads the stops of close and apply as the workflow writes them; docs/reference.md describes close, the return and the two paths', () => {
+    const agent = a => read(join(PLUGIN, 'agents', `${a}.md`))
+    const reader = agent('plan-reader'), scribe = agent('scribe')
+    // A definition of the workflow, up to the next top-level const
+    const def = name => { const i = WF.indexOf(`const ${name} = `); assert.ok(i >= 0, `run-phase.js: ${name}`); return WF.slice(i, WF.indexOf('\nconst ', i + 1)) }
+    // The plan reader that opens the run: run-start, then apply (the script commits, not the agent), then plan-lint
+    const readerBody = frontmatter(reader).body
+    const at = ['1. `progress.mjs run-start`', '2. `progress.mjs apply`', '3. The plan-lint command'].map(x => readerBody.indexOf(x))
+    assert.ok(at.every(i => i > 0) && at[0] < at[1] && at[1] < at[2], `plan-reader.md: run-start, apply, then plan-lint: ${at}`)
+    assert.ok(/^description: [^\n]*progress\.mjs run-start, then progress\.mjs apply/m.test(reader), 'plan-reader.md: its description names run-start and apply')
+    assert.ok(reader.includes('return its one line of JSON in `apply` exactly as printed') && reader.includes('`apply_ok=true`') && reader.includes('`apply_ok=false`, the first line of its error in `apply_error`, and stop there: no plan-lint'), 'plan-reader.md: apply, apply_ok, apply_error')
+    assert.ok(reader.includes('The script writes and commits, not you: running it is allowed') && reader.includes('You change nothing yourself: you edit no file and make no commit'), 'plan-reader.md: the commit of apply is the script\'s')
+    // Each field it names is in the schema of the plan reader and in its instructions
+    const schema = WF.match(/const PLAN_S = S\(\{([\s\S]*?)\n/)[1], prompts = ['pRunStart', 'pApply', 'pReader'].map(def).join('\n')
+    const fields = codeSpans(reader).map(x => x.replace(/=(true|false)$/, '')).filter(x => /^[a-z]+(?:_[a-z]+)*$/.test(x))
+    for (const f of ['apply', 'apply_ok', 'apply_error']) assert.ok(fields.includes(f), `plan-reader.md: ${f}`)
+    for (const f of fields) {
+      assert.ok(schema.includes(`${f}: `), `plan-reader.md names ${f}, absent from PLAN_S`)
+      assert.ok(prompts.includes(f), `plan-reader.md names ${f}, absent from the instructions of the plan reader`)
+    }
+    // The scribe: no ruling and no run start any more; the progress commands it names are those the workflow sends it
+    assert.ok(!/\bruling/i.test(scribe) && !scribe.includes('run-start'), 'scribe.md: a ruling or a run start')
+    const pc = def('pClose'), sent = new Set([...pc.matchAll(/progressCmd\('([a-z-]+)'/g)].map(m => m[1]))
+    if (pc.includes('pStep(')) sent.add('step')
+    assert.ok(!/progressCmd\(|pStep\(|pRunStart\(|pApply\(/.test(def('pScribe') + def('pUpdates')), 'run-phase.js: the scribe without progress gets no progress command')
+    assert.ok(WF.includes("{ agentType: AG('scribe'), model: 'sonnet' }") && WF.includes('ask(pClose(t, final, E,'), 'run-phase.js: the scribe gets pClose')
+    const named = [...scribe.matchAll(/progress\.mjs ([a-z-]+)/g)].map(m => m[1])
+    assert.ok(named.length > 0, 'scribe.md: names no progress command')
+    for (const c of named) assert.ok(sent.has(c), `scribe.md names progress.mjs ${c}, which the workflow does not send to the scribe`)
+    // The stops of a close the skill run reads: titles written by the workflow, and what the pilot does
+    const titles = [...WF.matchAll(/humanIssue\(t\.id, `(Progress of \$\{t\.id\}[^`]*)`/g)].map(m => m[1].replace(/\$\{t\.id\}/g, '<id>'))
+    const citedTitles = [...text.run.matchAll(/A stop issue `(Progress of [^`]+)`/g)].map(m => m[1])
+    for (const t of ['Progress of <id>: output of close not read', 'Progress of <id> not committed']) assert.ok(citedTitles.includes(t), `run: the stop ${t} is not handled`)
+    for (const t of citedTitles) assert.ok(titles.includes(t), `run: cites a stop the workflow does not write: ${t}`)
+    const stopText = t => { const i = text.run.indexOf(`A stop issue \`${t}\``); return text.run.slice(i, text.run.indexOf(' A ', i + 20)) }
+    const notRead = stopText('Progress of <id>: output of close not read')
+    for (const w of ['close ran and has already committed', 'read the commit `progress(<id>): <status>` on the integration branch and HANDOFF.md under `## <id>`', 'Never run `progress.mjs close` again by hand']) assert.ok(notRead.includes(w), `run: output of close not read without "${w}"`)
+    assert.ok(WF.includes('Read the commit "progress(${t.id}): ${final}" on ${INTEG} and HANDOFF.md under "## ${t.id}" before the next run.'), 'run-phase.js: the context of an output of close not read')
+    const notCommitted = stopText('Progress of <id> not committed')
+    for (const w of ['whose context lists `HANDOFF entries not written`', 'before the new run, write these entries under `## <id>` in HANDOFF.md', 'then commit them on the integration branch, together with `<plan>/DISCOVERY.md` if `git status` shows it modified']) assert.ok(notCommitted.includes(w), `run: close not committed without "${w}"`)
+    assert.ok(WF.includes('HANDOFF entries not written: ${JSON.stringify(lost)}'), 'run-phase.js: the context of a refused close lists the entries not written')
+    // An issue without an entry in ISSUES.json: a free answer only. A refused ruling: open again only when apply reopened it
+    assert.ok(text.run.includes('an issue of `progress.json` that has no entry in `ISSUES.json`') && text.run.includes('offer no option and ask for a free answer, since `apply` refuses an option whose actions it does not know'), 'run: free answer for an issue without an ISSUES.json entry')
+    for (const w of ['An issue is open again only when apply reopened it', 'is dropped, and nothing is reopened']) assert.ok(text.run.includes(w) && WF.includes(w),`run and run-phase.js: "${w}"`)
+    // merged_unclosed: rule refuses these issues, the pilot writes them by hand, plan-lint before the commit
+    const mu = text.run.slice(text.run.indexOf('A non-empty `merged_unclosed`'), text.run.indexOf('An entry with `merge: "unknown"`'))
+    assert.ok(mu.includes('so `rule` refuses them'), 'run: rule refuses the issues of merged_unclosed')
+    assert.match(mu, /`decision · major · <title>: option <id> settled by the user — <description>`[^\n]*run plan-lint until "valid plan", then commit on the integration branch/, 'run: plan-lint before the commit of a ruling written by hand')
+    assert.ok(mu.includes('Every other issue goes through `rule`'), 'run: every issue outside merged_unclosed goes through rule')
+    // docs/reference.md: close, ruling.commit, the dependency added on an overlap, the return of 0.20.0, the two paths
+    const REF = read(join(ROOT, 'docs', 'reference.md'))
+    const req = WF.match(/const CLOSE_OUT_S = S\(\{[^\n]*\}, \[([^\]]+)\]\)/)[1].split(/,\s*/).map(x => x.replace(/'/g, ''))
+    const from = REF.indexOf('- `progress.mjs close <plan>`'), closeDoc = REF.slice(from, REF.indexOf('\n', from))
+    assert.ok(from > 0 && closeDoc.includes(`\`{ ${req.join(', ')} }\``), `docs/reference.md: the output of close, ${req.join(', ')}`)
+    for (const w of ['`entries`', '`discarded_amendments`', '`added_tasks`, `{ id, title, phase, content }`, a task file being written only when `content` is given', '`issues`, whole', '`auto: <option id>`', 'and commits them', 'in one commit `progress(<id>): <status>`']) assert.ok(closeDoc.includes(w), `docs/reference.md: close without ${w}`)
+    assert.ok(REF.includes('`ruling.commit` stays null in ISSUES.json, for a user ruling and for `auto`') && REF.includes('The commit is in the `commit` field of the output of `apply` (of `close` for `auto`)'), 'docs/reference.md: ruling.commit')
+    assert.ok(REF.includes('`amendment · minor · <id>: depends on <other>, added automatically: …`') && SRC.progress.includes('depends on ${d.on}, added automatically: '), 'docs/reference.md: the dependency added on an overlap')
+    assert.ok(REF.includes('`rulings_refused`, `[{ issue, option, text, reason }]`, comes with status `awaiting-ruling` and no `stop_issue`') && REF.includes('`rulings_applied` lists the rulings `apply` applied at the start of the run, `[{ issue, task, option, text }]`'), 'docs/reference.md: the return of 0.20.0')
+    const prefixes = [...REF.matchAll(/`detail` that starts with "([^"]+)"/g)].map(m => m[1])
+    for (const x of ['progress: rulings not applied (apply)', 'progress: output of apply not read']) assert.ok(prefixes.includes(x), `docs/reference.md: the detail "${x}"`)
+    for (const x of prefixes) assert.ok(WF.includes(x), `docs/reference.md cites a detail the workflow does not write: ${x}`)
+    assert.ok(REF.includes('then records the answer with `rule`; the next run start applies it with `apply`') && REF.includes('the issues of `merged_unclosed` (a circuit breaker return) reached neither `progress.json` nor ISSUES.json, so `rule` refuses them') && REF.includes('runs plan-lint until "valid plan", then commits on the integration branch'), 'docs/reference.md: the two paths')
   })
 
   console.log(`commands: ALL GREEN (${n} tests)`)
