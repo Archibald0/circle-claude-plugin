@@ -6,19 +6,25 @@ export const meta = {
 
 // Orchestrator 0.12.0 (orchestre plugin)
 // args: { plan, phase, mode: 'auto'|'deviation'|'phase', parallelism, integration, base, decisions, max_fixes, escalation, max_auto_decisions,
-//   rulings, rerun, lint, agent_prefix, progress, setup, shared_setup, language }
+//   rerun, lint, agent_prefix, progress, setup, shared_setup, language }
 // base: branch the integration branch starts from (main by default, read by plan-lint)
 // lint: path of scripts/plan-lint.mjs, required (0.12.0): /orchestre:run passes it; the fallback of the manual install (v0.5) is gone.
 //   The plan-reader runs it with --reader (0.18.1), which adds the fingerprint of what it prints (digest): the workflow computes it
 //   again on the copy the agent returns, reads the plan a second time when they differ, then stops (planDigest)
-// rulings: options chosen by the user since the previous run, [{ task, title, option }]; the scribe applies them before the plan is read
+// Rulings (0.20.0): no arg. The pilot records the user's answers with progress.mjs rule (progress.json, pending_rulings); the
+//   plan-reader opens the run, then runs progress.mjs apply, which applies them to the plan and commits them, then reads the
+//   plan: one call, ruling or not. The workflow reads the output of apply back through its digest (applyOut). A ruling apply
+//   refuses (its issue open again, or the ruling dropped) stops the run before any task, after the others are applied.
 // rerun: ids of "needs-human" tasks the user restarts, after their decision
 // progress (0.8.0): path of scripts/progress.mjs, sole writer of progress.json and of the PROGRESS.md view (contract orchestre-progress/3
 //   since 0.12.0, which converts a file of orchestre-suivi/2 or /1).
 //   The workflow launches nothing: it writes in its agents' instructions the command to run, and reads its result in progress_ok.
 //   A worker isolated in a worktree carries no progress command (0.18.2): Claude Code's isolation guard refuses it there. The clerk
 //   notes the start of its task from the main checkout, before the worker is launched (noteStart).
-//   Without progress: progress as in 0.6.3, the scribe edits PROGRESS.md itself.
+//   Close of a task (0.20.0): progress.mjs close writes and commits the plan (HANDOFF.md, tasks, amendments, ISSUES.json,
+//   PROGRESS.md); the clerk runs it, or the scribe after DISCOVERY.md when the task has findings or flaky tests (pClose).
+//   Each JSON carries _digest, and the output of close its digest (payloadDigest).
+//   Without progress: progress as in 0.6.3, the scribe edits PROGRESS.md, HANDOFF.md and the tasks itself.
 // setup (0.8.0): project commands that bring a working folder up to date (dependencies, generated code), taken from
 //   orchestre.config.json by /orchestre:run; run by each worker after its branch, and by the integrator between the merge
 //   and the post-merge check. The plugin knows no stack: it runs what the project declares.
@@ -41,7 +47,6 @@ const ESC = A.escalation || ['sonnet', 'opus']
 const DECISIONS = A.decisions || []
 const MAX_AUTO = A.max_auto_decisions ?? 3
 const DONE = s => s === 'merged' || s === 'cancelled'
-const RULINGS = (A.rulings || []).filter(a => a && a.option)
 const RERUN = new Set(A.rerun || [])
 // Namespaced agents ("orchestre:worker"); /orchestre:run passes agent_prefix and lint
 const AG = n => (A.agent_prefix ?? 'orchestre:') + n
@@ -63,7 +68,8 @@ const forMessage = x => oneLine(x).replace(/["`]/g, "'").replace(/[$\\]/g, '')
 // whether the tool decodes it or JSON.parse does (a JSON \u escape, an odd run of backslashes, is left as is).
 const HEREDOC = 'ORCHESTRE_JSON'
 const heredocJson = x => JSON.stringify(x).replace(/\\+u/g, m => ((m.length - 1) % 2 ? m : `${m.slice(0, -1)}\\u0075`))
-const progressCmd = (cmd, E) => `${PROGRESS_CMD} ${cmd} ${PLANARG} <<'${HEREDOC}'\n${heredocJson(E)}\n${HEREDOC}`
+// Each JSON carries its fingerprint, "_digest" (0.20.0, see payloadDigest)
+const progressCmd = (cmd, E) => `${PROGRESS_CMD} ${cmd} ${PLANARG} <<'${HEREDOC}'\n${heredocJson({ ...E, _digest: payloadDigest(E) })}\n${HEREDOC}`
 // A progress command in an instruction: a block between ~~~ lines, which no backtick of the JSON can close
 const block = c => `\n~~~sh\n${c}\n~~~\n`
 const runBlock = `run it as is, once, in a single call: the JSON stays on its own line, between the two ${HEREDOC} lines`
@@ -117,6 +123,18 @@ function scopeDigest(p) {
   for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193)
   return (h >>> 0).toString(16).padStart(8, '0')
 }
+// Fingerprint of a payload (0.20.0): the same text, to the character, as in scripts/progress.mjs. Each JSON of a progress
+// command handed to an agent carries it in "_digest": the script computes it again and refuses an altered copy ("payload
+// altered in transit", nothing written), and the workflow runs that call again once. The output of close carries it in
+// "digest", which the workflow computes again on the agent's copy. Keys sorted at every level, the field `skip` of the
+// top level left out; FNV-1a on 32 bits, 8 hexadecimal digits.
+function payloadDigest(p, skip = '_digest') {
+  const sorted = (x, top) => (Array.isArray(x) ? x.map(y => sorted(y, false)) : x && typeof x === 'object' ? Object.fromEntries(Object.keys(x).filter(k => !(top && k === skip)).sort().map(k => [k, sorted(x[k], false)])) : x)
+  const c = JSON.stringify(sorted(p, true))
+  let h = 0x811c9dc5
+  for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193)
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
 if (!PLAN || !PHASE || !INTEG || !LINT) return { status: 'error', detail: 'args required: plan, phase, integration, lint' }
 if (!['auto', 'deviation', 'phase'].includes(MODE)) return { status: 'error', detail: `unknown mode: ${MODE} (auto, deviation or phase)` }
 
@@ -125,7 +143,17 @@ const S = (properties, required) => ({ type: 'object', properties, required })
 const str = { type: 'string' }, bool = { type: 'boolean' }, strs = { type: 'array', items: str }
 // Result of the progress command run by the agent (0.8.0); run_start_ok for the first agent of the run, which runs run-start
 const PROGRESS_P = { progress_ok: bool, progress_error: str }
-const PLAN_S = S({ ok: bool, errors: strs, tasks: { type: 'array', items: S({ id: str, title: str, file: str, phase: { type: 'integer' }, model: str, model_reason: str, effort: str, depends_on: strs, resources: strs, status: str, verification: strs, open_prerequisites: strs }, ['id', 'file', 'depends_on', 'status', 'verification', 'open_prerequisites']) }, all: { type: 'array', items: S({ id: str, phase: { type: 'integer' }, status: str }, ['id']) }, max_phase: { type: 'integer' }, digest: str, run_start_ok: bool, progress_error: str }, ['ok', 'tasks', 'digest'])
+// Output of progress.mjs apply (0.20.0), copied as printed by the plan-reader that opens the run, with its result (apply_ok)
+const nullable = t => ({ type: [t, 'null'] })
+const APPLY_S = S({
+  applied: { type: 'array', items: S({ issue: str, task: str, option: nullable('string'), text: nullable('string') }, ['issue', 'task', 'option', 'text']) },
+  rejected: { type: 'array', items: S({ issue: str, option: nullable('string'), text: nullable('string'), reason: str }, ['issue', 'option', 'text', 'reason']) },
+  discarded: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) },
+  amended: { type: 'array', items: S({ id: str, verification: strs, depends_on: strs }, ['id', 'verification', 'depends_on']) },
+  added_tasks: { type: 'array', items: S({ id: str, title: str, phase: nullable('integer') }, ['id', 'title', 'phase']) },
+  commit: nullable('string'), message: str, digest: str,
+}, ['applied', 'rejected', 'discarded', 'amended', 'added_tasks', 'commit', 'message', 'digest'])
+const PLAN_S = S({ ok: bool, errors: strs, tasks: { type: 'array', items: S({ id: str, title: str, file: str, phase: { type: 'integer' }, model: str, model_reason: str, effort: str, depends_on: strs, resources: strs, status: str, verification: strs, open_prerequisites: strs }, ['id', 'file', 'depends_on', 'status', 'verification', 'open_prerequisites']) }, all: { type: 'array', items: S({ id: str, phase: { type: 'integer' }, status: str }, ['id']) }, max_phase: { type: 'integer' }, digest: str, run_start_ok: bool, progress_error: str, apply: APPLY_S, apply_ok: bool, apply_error: str }, ['ok', 'tasks', 'digest'])
 const REPORT_S = S({
   status: { type: 'string', enum: ['done', 'partial', 'blocked'] }, summary: str, branch: str, commit: str, path: str, changed_files: strs,
   deviations: { type: 'array', items: S({ type: { type: 'string', enum: ['deviation', 'blind-spot', 'decision', 'debt', 'needs-human', 'review'] }, description: str, affected_tasks: strs }, ['type', 'description']) },
@@ -142,13 +170,18 @@ const PROOF_BY = ['diff', 'test', 'command', 'report']
 const PROOF_S = S({ criterion: str, by: { type: 'string', enum: PROOF_BY }, ref: str }, ['criterion', 'by', 'ref'])
 const EVAL_S = S({ verdict: { type: 'string', enum: ['pass', 'fail'] }, gaps: strs, unverifiable: strs, unreadable: strs, proofs: { type: 'array', items: PROOF_S }, ...PROGRESS_P }, ['verdict'])
 const INTEG_S = S({ ok: bool, merged: bool, check_ok: bool, check_skipped: bool, conflict: bool, commit: str, detail: str, worktree_kept: str, ...PROGRESS_P }, ['ok', 'merged'])
-const SCRIBE_S = S({ ok: bool, commit: str, rejected: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }, discarded: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }, ...PROGRESS_P, run_start_ok: bool }, ['ok'])
+const SCRIBE_S = S({ ok: bool, commit: str, rejected: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }, discarded: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }, ...PROGRESS_P }, ['ok'])
 const CLERK_S = S({ progress_ok: bool, progress_error: str, commit: str, detail: str, worktrees: str }, ['progress_ok'])
+// Close of a task with progress (0.20.0), by the clerk or the scribe: the output of progress.mjs close, copied as printed, and
+// the paths cited by an auto-decision that neither exist nor belong to a task the close creates
+const IDREASON_S = { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }
+const CLOSE_OUT_S = S({ task: str, status: str, commit: { type: ['string', 'null'] }, rejected: IDREASON_S, discarded: IDREASON_S, issues: strs, pending: strs, message: str, digest: str }, ['task', 'status', 'commit', 'rejected', 'discarded', 'issues', 'pending', 'message', 'digest'])
+const CLOSE_S = S({ progress_ok: bool, progress_error: str, close: CLOSE_OUT_S, missing: strs }, ['progress_ok'])
 // Choice of a fix's model (0.11.0): haiku, sonnet or opus; fable only comes from a task the user put on it
 // (orchestre.config.json: fable: true, checked by plan-lint), as a floor
 const CHOICE_MODELS = ['haiku', 'sonnet', 'opus']
 const CHOICE_S = S({ model: { type: 'string', enum: CHOICE_MODELS }, reason: str }, ['model', 'reason'])
-// With progress, the command's result is required when it decides what follows: run start (first agent), close and ruling (scribe)
+// With progress, the command's result is required when it decides what follows: run start (first agent)
 const requireFields = (schema, ...fields) => (PROGRESS ? { ...schema, required: [...schema.required, ...fields] } : schema)
 const ENTRIES_S = { type: 'array', items: S({ type: str, severity: { type: 'string', enum: ['minor', 'major'] }, description: str }, ['type', 'severity', 'description']) }
 const TASKS_S = { type: 'array', items: S({ id: str, title: str, phase: { type: 'integer' }, content: str }, ['id', 'title', 'phase', 'content']) }
@@ -199,17 +232,20 @@ const cite = (d, f) => String(d).split(/[\s,;:()«»"'`]+/).some(x => x && pathO
 // Prompts
 // Progress (0.8.0): the command the agent runs as is, and what it reports from it
 const reportProgress = 'Return progress_ok=true if it exits with code 0; otherwise progress_ok=false and the first line of its error in progress_error.'
+// A progress command whose JSON reached the script altered (0.20.0): refused, nothing written. The calls whose progress
+// command decides what follows (run start, start of a task in a worktree, close, run end) run again once. The step of a
+// working agent does not: it only spoils the display, and its result goes to progress_failures
+const altered = x => !!x && x.progress_ok !== true && x.run_start_ok !== true && /payload altered in transit/.test(String(x.progress_error || ''))
+const pAgain = `Your first run of the progress command below was refused (payload altered in transit): its JSON line changed on the way, and nothing was written. Run it again, the JSON line copied character for character.
+`
 const pStep = (id, step, extra = {}, report = true) => (PROGRESS ? `Plan progress: your first command, before any other, is the one below; ${runBlock}.${block(progressCmd('step', { task: id, step, ...extra }))}${report ? reportProgress : 'Its result does not count: progress_ok is about the close command, further down.'} It is not part of the work asked: refused or failed, it goes in no other field of your report. Then go on, whatever its result.
 ` : '')
 // Start of a task that works in a worktree (0.18.2): the worker step, run by the clerk in the main checkout. Claude Code's
 // isolation guard refuses the progress command to an agent isolated in a worktree (a heredoc that names a script outside it:
 // "too complex to verify that it stays inside the worktree"); the task then showed as not started for the whole of its worker.
-const pStart = (t, model) => `Start of the task ${t.id} of the plan ${PLAN}, which works in a worktree: note it in the plan's progress, from the main checkout. Your only command is the one below; ${runBlock}.${block(progressCmd('step', { task: t.id, step: 'worker', isolated: true, model }))}${reportProgress} Run nothing else and change no file.`
+const pStart = (t, model, again = false) => `${again ? pAgain : ''}Start of the task ${t.id} of the plan ${PLAN}, which works in a worktree: note it in the plan's progress, from the main checkout. Your only command is the one below; ${runBlock}.${block(progressCmd('step', { task: t.id, step: 'worker', isolated: true, model }))}${reportProgress} Run nothing else and change no file.`
 const pRunStart = stop => `Plan progress: your first command, before any other, opens the run; ${runBlock}.${block(progressCmd('run-start', { phase: integer(PHASE, 1), mode: MODE, parallelism: PAR, max_fixes: integer(MAXFIX, 0), max_auto_decisions: integer(MAX_AUTO, 0) }))}If it exits with code 0, return run_start_ok=true and go on. Otherwise, stop there without doing anything else: ${stop}, run_start_ok=false, and the first line of its error in progress_error.
 `
-// PROGRESS.md regenerated by the script, just before the scribe's commit
-const pView = (cmd, E, effect) => `
-- PROGRESS.md: never touch it yourself. Just before the commit, once everything else is written, run the command below (${runBlock}): ${effect}.${block(progressCmd(cmd, E))}${reportProgress} If it fails, commit the other files anyway.`
 // A task's branch: new, or taken back from the most recent one (a branch held by another worktree is not taken back, we start from it).
 // A branch taken back is brought up to date by a merge of the integration branch, never by a rebase (classified destructive).
 // Branches tache/* of 0.11 are not taken back (0.12.0): the task starts again from the integration branch
@@ -264,32 +300,48 @@ Read ${PLAN}/PROGRESS.md, the decisions of ${PLAN}/HANDOFF.md, ${PLAN}/PREREQUIS
 For each major deviation and each unverifiable criterion, return an issue in "issues": title, context, 2 or 3 options of which a single one is recommended. Each option carries its actions: HANDOFF entries, tasks to add (phase ${PHASE} or later, never a past phase; an added task cites in "prerequisites" the prerequisites of PREREQUISITES.md it needs), amendments of tasks not yet started, other than ${t.id} (criteria, owned files, verification commands or dependencies to add, never anything to remove). Before adding a task, prefer amending a task not yet started that owns the files concerned, then one added task for all the findings of this answer on the same files; a separate task only for a reason of the splitting rule (parallel, contract, risk, size). For a task already merged, propose a task to add rather than an amendment. An option only cites tasks and files that already exist or that it creates itself. No option has an agent read, restore or copy real production or personal data: that action belongs to the human. Recommend the safest option for security and data: one more test or guard rather than an accepted risk.${MODE === 'auto' ? ' Autonomous mode: the recommended option will be applied as is, without a human review before the PR.' : ''}${LAST ? ' Last phase: only propose a task for an issue that protects the deployment, security or data; for the others, an entry of type "ticket" (to open after the PR), without a task.' : ''}
 A file the agents may not read or write (organization or project settings), and that the human only has to review or change before the PR, is never an issue nor an entry: return it in "reviews", with in "review" the file and what the human must review or change in it, and in "deviation" the description, copied as is, of the reported deviation it replaces, if that deviation only concerns this file and is not of type needs-human. A deviation that also concerns something else stays a deviation. If a human action is needed before going on (a secret missing to run the tests, for example), it is a human need, not a review. Mark "human" an issue no agent can settle (access, secret, production, real data, product choice), an issue about an open prerequisite of PREREQUISITES.md (decision deferred by the user, manual action), a deviation of type needs-human, or an environment or tooling problem whose cause is not demonstrated by a command output cited above. Change nothing.${pLanguage}`
 
-// Shared instructions for the scribe: created tasks, amendments, check by plan-lint, report
-const pUpdates = (id, updates, view = '') => `${updates.tasks.length ? `
-- New tasks: create them in ${PLAN}/tasks/ with the content given, as is, and ${PROGRESS ? 'do not touch PROGRESS.md: the progress command below adds their row' : 'add their row to PROGRESS.md, status "added"'}: ${JSON.stringify(updates.tasks)}` : ''}${updates.amendments.length ? `
+// Instructions for the scribe of a run without progress (0.6.3): created tasks, amendments, check by plan-lint, report. With
+// progress (0.20.0), no agent gets them any more: close applies the actions of an issue settled automatically, apply those of a
+// user's ruling
+const pUpdates = (id, updates) => `${updates.tasks.length ? `
+- New tasks: create them in ${PLAN}/tasks/ with the content given, as is, and add their row to PROGRESS.md, status "added": ${JSON.stringify(updates.tasks)}` : ''}${updates.amendments.length ? `
 - Amendments, for tasks not yet started: in the frontmatter of each task concerned, append the items listed to the end of the matching list (definition_of_done, owned_files, verification, depends_on), without removing or rewording anything, then note "amendment · major · <id>: <reason>" under "## ${id}" in HANDOFF.md. Do not amend a task missing from the plan: return it in "rejected". A task "merged" or "cancelled" in PROGRESS.md can no longer be amended: note "blind-spot · major · amendment not applied to <id>: <reason>" under "## ${id}" in HANDOFF.md and return it in "discarded", not in "rejected". Amendments: ${JSON.stringify(updates.amendments)}` : ''}${updates.discarded.length ? `
 - Amendments not applied, because the task concerned has already started or finished: note each under "## ${id}" in HANDOFF.md, as "blind-spot · major · amendment not applied to <id>: <reason>": ${JSON.stringify(updates.discarded)}` : ''}${(updates.auto || []).length ? `
 - Decisions taken automatically in this update: ${JSON.stringify(updates.auto)}. For each file path they cite, check that it exists in the repository (\`test -e <path>\`) or that a task created here owns it; otherwise, note "needs-human · major · inconsistent auto-decision: <path> does not exist and no task creates it" under "## ${id}" in HANDOFF.md and return the decision in "rejected".` : ''}${updates.tasks.length || updates.amendments.length ? `
-- Then run \`${LINTCMD} ${PLANARG} --integration ${INTEG}${BASE}\`. Any error that concerns a task created or amended here: put that task back in its original state (\`git checkout HEAD -- <file>\` for an amended file; for a created task, remove its file${PROGRESS ? '' : ' and its row of PROGRESS.md'}).
-- Each task created or amended that you could not apply, or that you put back in its original state: note "needs-human · major · <id> not applied: <reason>" under "## ${id}" in HANDOFF.md, and return it in "rejected".` : ''}${view}
+- Then run \`${LINTCMD} ${PLANARG} --integration ${INTEG}${BASE}\`. Any error that concerns a task created or amended here: put that task back in its original state (\`git checkout HEAD -- <file>\` for an amended file; for a created task, remove its file and its row of PROGRESS.md).
+- Each task created or amended that you could not apply, or that you put back in its original state: note "needs-human · major · <id> not applied: <reason>" under "## ${id}" in HANDOFF.md, and return it in "rejected".` : ''}
 Return ok=true once the commit is done, with its hash, "rejected" (empty if everything is applied) and "discarded" (empty if no amendment concerned a merged or cancelled task).${pLanguage}`
-const pScribe = (t, status, attempts, r, updates, gaps, { flaky = [], rejections = [], unverifiable = [] } = {}, closeInput = null) => `${PROGRESS ? `${pStep(t.id, 'progress', {}, false)}Then, in the main checkout, switch to the integration branch: \`git switch ${INTEG}\`. Update the progress of the plan ${PLAN}, then commit PROGRESS.md, HANDOFF.md and DISCOVERY.md, and the tasks created or amended, with the message "progress(${t.id}): ${status}".` : `In the main checkout, start with \`git switch ${INTEG}\`. Update the progress of the plan ${PLAN}, then commit these files only, and the tasks created or amended, with the message "progress(${t.id}): ${status}".
-- PROGRESS.md: row ${t.id} → status "${status}", attempts ${attempts}, branch ${r ? r.branch : '—'}; actual tokens: "see /workflows".`}
+// Close of a task without progress (orchestre without progress.mjs): the scribe writes every file itself, as in 0.6.3
+const pScribe = (t, status, attempts, r, updates, gaps, { flaky = [], rejections = [], unverifiable = [] } = {}) => `In the main checkout, start with \`git switch ${INTEG}\`. Update the progress of the plan ${PLAN}, then commit these files only, and the tasks created or amended, with the message "progress(${t.id}): ${status}".
+- PROGRESS.md: row ${t.id} → status "${status}", attempts ${attempts}, branch ${r ? r.branch : '—'}; actual tokens: "see /workflows".
 - HANDOFF.md: under "## ${t.id}", add these entries, word for word: ${JSON.stringify(updates.entries)}${gaps.length ? `, and this blocker: ${JSON.stringify(gaps)}` : ''}.${(rejections || []).length ? `
 - HANDOFF.md, still under "## ${t.id}": an entry "rejection · minor · attempt <n>, <by>: <gaps separated by semicolons>" for each of these attempts rejected then fixed: ${JSON.stringify(rejections)}` : ''}${unverifiable.length ? `
 - HANDOFF.md, still under "## ${t.id}": an entry "blind-spot · minor · criterion unverifiable in the context of the task: <criterion and reason>" for each of these: ${JSON.stringify(unverifiable)}` : ''}
 - DISCOVERY.md: integrate these findings without duplicates, in the right section: ${JSON.stringify((r && r.findings) || [])}.${(flaky || []).length ? `
-- Flaky tests (passed on the second run): add them to DISCOVERY.md, section "Pitfalls and fixes", and a "debt · minor" entry in HANDOFF.md: ${JSON.stringify(flaky)}` : ''}${pUpdates(t.id, updates, PROGRESS ? pView('close', closeInput, 'it closes the task in progress.json and regenerates the table of PROGRESS.md') : '')}`
-const pRuling = (a, updates, opens = false) => PROGRESS ? `${opens ? pRunStart('return ok=false') : ''}In the main checkout, ${opens ? 'then, ' : ''}start with \`git switch ${INTEG}\`. Apply the user's ruling to the plan ${PLAN}, then commit PROGRESS.md, HANDOFF.md and the tasks created or amended, with the message "progress(${a.task}): ruling ${a.option.id}".
-- HANDOFF.md: under "## ${a.task}" (create this heading if it is missing), add these entries, word for word: ${JSON.stringify(updates.entries)}.${pUpdates(a.task, updates, pView('ruling', {
-  task: a.task, title: a.title, option: a.option.id,
-  ...(updates.tasks.length ? { added_tasks: updates.tasks.map(x => ({ id: x.id, title: x.title, phase: x.phase })) } : {}),
-  ...(updates.amendments.length ? { amendments: updates.amendments.map(m => ({ id: m.id, reason: m.reason })) } : {}),
-}, 'it notes the ruling in progress.json and regenerates the table of PROGRESS.md'))}` : `In the main checkout, start with \`git switch ${INTEG}\`. Apply the user's ruling to the plan ${PLAN}, then commit these files only, and the tasks created or amended, with the message "progress(${a.task}): ruling ${a.option.id}".
-- HANDOFF.md: under "## ${a.task}" (create this heading if it is missing), add these entries, word for word: ${JSON.stringify(updates.entries)}.${pUpdates(a.task, updates)}`
+- Flaky tests (passed on the second run): add them to DISCOVERY.md, section "Pitfalls and fixes", and a "debt · minor" entry in HANDOFF.md: ${JSON.stringify(flaky)}` : ''}${pUpdates(t.id, updates)}`
+// Close of a task with progress (0.20.0): progress.mjs close writes HANDOFF.md, the tasks created, the amendments, ISSUES.json
+// and PROGRESS.md, runs plan-lint, and commits them with DISCOVERY.md. Without a finding nor a flaky test, the clerk runs it
+// alone (haiku); otherwise the scribe first files them in DISCOVERY.md. Neither writes HANDOFF.md, a task nor an amendment.
+// The agent copies the output of close back; the workflow checks the copy against its digest
+const pClose = (t, status, E, { scribe, findings, flaky, auto }, again) => {
+  const steps = [
+    `\`git switch ${INTEG}\`. If it fails, run nothing else: return progress_ok=false and the first line of its error in progress_error.`,
+    ...(scribe ? [`${planFile('DISCOVERY.md')}: integrate these findings without duplicates, each in its section: ${JSON.stringify(findings)}.${flaky.length ? ` Flaky tests (passed on the second run): add them to the section "Pitfalls and fixes": ${JSON.stringify(flaky)}.` : ''} Do not commit it: the close command does.`] : []),
+    ...(auto.length ? [`Decisions taken automatically in this close: ${JSON.stringify(auto)}. For each file path they cite, check that it exists in the repository (\`test -e <path>\`) or that a task created by this close owns it (owned_files in the content of the JSON below). Return in "missing" each path that does neither; otherwise leave "missing" empty.`] : []),
+    `The command below; ${runBlock}. It writes HANDOFF.md, the tasks created, the amendments, ISSUES.json and PROGRESS.md, runs plan-lint, and commits them${scribe ? ' with DISCOVERY.md' : ''}, with the message "progress(${t.id}): ${status}".${block(progressCmd('close', E))}If it exits with code 0, it prints one line of JSON: return it in "close" exactly as printed, every field and every value, \`digest\` included, character for character, and progress_ok=true; the workflow checks the copy against the digest. Otherwise, progress_ok=false, the first line of its error in progress_error, and no "close".`,
+  ]
+  return `${again ? pAgain : scribe ? pStep(t.id, 'progress', {}, false) : ''}Close of the task ${t.id} of the plan ${PLAN}, in the main checkout, in this order:
+${steps.map((x, i) => `${i + 1}. ${x}`).join('\n')}
+Never write HANDOFF.md, PROGRESS.md, a task or an amendment yourself, and make no commit: the close command does. Run nothing else.${scribe ? pLanguage : ''}`
+}
 // The plan-reader retypes the JSON of plan-lint --reader (0.18.1): the workflow checks its copy against the digest that plan-lint
-// computed. A second reading, after a copy that does not match, never runs run-start again: the run is already open
-const pReader = (opens, again) => `${opens ? pRunStart('return ok=false and empty tasks') : ''}${again ? 'Your first copy of this output did not match its digest. ' : ''}Run \`${LINTCMD} ${PLANARG} --reader --phase ${PHASE} --integration ${INTEG}${BASE}\` and return its JSON exactly as printed${opens ? ', with run_start_ok' : ''}: every field and every value, \`digest\` included, character for character. Leave nothing out, add nothing, rephrase nothing: the workflow checks the copy against the digest.`
+// computed. A second reading, after a copy that does not match, never runs run-start again: the run is already open.
+// Rulings (0.20.0): the plan-reader that opens the run runs apply between run-start and plan-lint, so that the plan it reads
+// is the one the rulings changed. apply reads no input: the rulings are those of progress.json; without one, it writes nothing
+const APPLY_CMD = PROGRESS && `${PROGRESS_CMD} apply ${PLANARG}`
+const pApply = () => `Then the user's rulings recorded since the last run: the command below applies them to the plan and commits them itself (HANDOFF.md, tasks, ISSUES.json, PROGRESS.md); it is the script that writes, not you, and without a ruling recorded it writes nothing. Run it as is, once, in a single call, from the folder you start in (the main checkout).${block(APPLY_CMD)}If it exits with code 0, it prints one line of JSON: return it in "apply" exactly as printed, every field and every value, \`digest\` included, character for character, and apply_ok=true; the workflow checks the copy against the digest. Otherwise, stop there without running plan-lint: apply_ok=false, the first line of its error in apply_error, empty tasks.
+`
+const pReader = (opens, again, retry = false) => `${retry ? pAgain : ''}${opens ? pRunStart('return ok=false and empty tasks') + pApply() : ''}${again ? 'Your first copy of this output did not match its digest. ' : ''}${opens ? 'Then run' : 'Run'} \`${LINTCMD} ${PLANARG} --reader --phase ${PHASE} --integration ${INTEG}${BASE}\` and return its JSON exactly as printed${opens ? ', with run_start_ok, apply and apply_ok' : ''}: every field and every value, \`digest\` included, character for character. Leave nothing out, add nothing, rephrase nothing: the workflow checks the copy against the digest.`
 // End of run: the clerk runs run-end with the summary, then commits PROGRESS.md if it changed (task closed without a scribe, exception E:316)
 const withoutActions = p => ({
   task: p.task, title: short(p.title), context: short(p.context), human: !!p.human, ...(p.circuit_breaker ? { circuit_breaker: true } : {}), ...(p.inconsistency ? { inconsistency: short(p.inconsistency) } : {}),
@@ -300,11 +352,14 @@ const progressSummary = v => ({
   status: v.status, detail: v.detail == null ? null : short(Array.isArray(v.detail) ? v.detail.join('; ') : v.detail, 600), ...(v.stop_issue ? { stop_issue: withoutActions(v.stop_issue) } : {}), open_issues: (v.open_issues || []).map(withoutActions),
   // attempts 0: task closed by an exception (catch of runTask), without known attempts or branch; progress keeps its own
   tasks: (v.tasks || []).map(x => ({ id: x.id, status: x.status, ...(x.attempts ? { attempts: x.attempts, branch: x.branch ?? null } : {}), ...(x.blocker ? { blocker: shorts(x.blocker) } : {}) })),
-  auto_decisions: (v.auto_decisions || []).map(d => ({ ...d, description: short(d.description) })), rulings_applied: v.rulings_applied || [],
-  discarded_amendments: (v.discarded_amendments || []).map(e => ({ task: e.task, id: e.id, reason: short(e.reason) })),
+  // Without rulings_applied (0.20.0): apply notes them in the run itself. The amendments apply discarded (task null in its
+  // output) are left out, the progress schema needing a task: apply already noted them in the run, with the task of their
+  // issue. run-end keeps the entries the run already holds and adds those of this summary, without duplicates
+  auto_decisions: (v.auto_decisions || []).map(d => ({ ...d, description: short(d.description) })),
+  discarded_amendments: (v.discarded_amendments || []).filter(e => e.task != null).map(e => ({ task: e.task, id: e.id, reason: short(e.reason) })),
   added_tasks: (v.added_tasks || []).map(x => ({ ...x, ...(parents.has(x.id) ? { added_by: parents.get(x.id) } : {}) })), deferred: v.deferred || [], not_started: v.not_started || [], waiting: v.waiting || [], waiting_on_prerequisites: v.waiting_on_prerequisites || [],
 })
-const pClerk = v => `End of the run: phase ${PHASE} of the plan ${PLAN}, status "${v.status}". In the main checkout, in this order:
+const pClerk = (v, again = false) => `${again ? pAgain : ''}End of the run: phase ${PHASE} of the plan ${PLAN}, status "${v.status}". In the main checkout, in this order:
 1. \`git switch ${INTEG}\`.
 2. The command below; ${runBlock}.${block(progressCmd('run-end', progressSummary(v)))}${reportProgress}
 3. \`git diff --quiet HEAD -- ${planFile('PROGRESS.md')}\`: if it exits with code 1, PROGRESS.md changed: \`git commit -m "progress: end of the run of phase ${PHASE}" -- ${planFile('PROGRESS.md')}\`, which only commits that file, and return its hash in commit. Otherwise, no commit.
@@ -346,7 +401,7 @@ async function ask(prompt, opts) {
   if (r == null) { if (unanswered(opts.label)) throw INTERRUPT } else if (!breaker) silent = []
   return r
 }
-// Progress (0.8.0): run opened by run-start, and failed script calls (only the display suffers, except close and ruling)
+// Progress (0.8.0): run opened by run-start, and failed script calls (only the display suffers, except the run start, close and apply)
 let opened = false
 const progressFailures = []
 // Added task → task whose close created it, for run-end (a close not written leaves them out of progress)
@@ -358,10 +413,17 @@ const amended = new Map()
 const stopOn = (p, bucket) => { if (bucket) bucket.push(p); if (!stop) stop = p; else issues.push(p) }
 // An added task never runs in a phase already past
 const toPhase = x => { const p = Math.max(Number(x.phase) || PHASE, PHASE); return { ...x, phase: p, content: String(x.content || '').replace(/^phase:\s*\d+/m, `phase: ${p}`) } }
-// Options keep their actions: the chosen option comes back as is in args.rulings
+// Options keep their actions: close records them in ISSUES.json, where apply takes the option the user chose (0.20.0)
 const issueOf = (t, pt) => ({ task: t.id, title: pt.title, context: pt.context || '', human: !!pt.human, options: pt.options || [] })
+// An issue as close records it (0.20.0): whole, its options with their actions, the tasks they add brought back to this phase
+// at least, as the scribe created them before; with auto, the option the autonomous mode applies, and the amendments it applies
+const wholeIssue = (p, auto = null, amendments = null) => ({
+  ...p, options: (p.options || []).map(o => ({ ...o, ...(o.added_tasks ? { added_tasks: o.added_tasks.map(toPhase) } : {}), ...(auto != null && o.id === auto ? { amendments } : {}) })),
+  ...(auto != null ? { auto } : {}),
+})
 const humanIssue = (id, title, context, options = []) => ({ task: id, title, context, human: true, options })
-const runDecisions = () => [...DECISIONS, ...RULINGS.map(a => `${a.title}: ${a.option.description} (settled by the user)`), ...autoDecisions.map(o => `${o.title}: ${o.description} (taken automatically)`)]
+// The rulings apply applied at the run start: their decision entries are in HANDOFF.md, which the workers read
+const runDecisions = () => [...DECISIONS, ...rulingsApplied.map(a => `${a.issue}: ${a.text != null ? a.text : `option ${a.option}`} (settled by the user)`), ...autoDecisions.map(o => `${o.title}: ${o.description} (taken automatically)`)]
 
 // Every exit after the run start goes through finish: the clerk closes the run in progress (run-end)
 let worktrees = null
@@ -370,7 +432,11 @@ async function finish(v) {
     // A clerk that throws must not lose the summary: issues and actions live only in the return value
     // Called outside ask: after the circuit breaker too, since run-end clears the steps of the interrupted tasks
     let g = null
-    try { g = await agent(pClerk(v), { label: 'run end · progress', agentType: AG('clerk'), model: 'haiku', schema: CLERK_S }) } catch (err) { progressFailures.push({ task: null, step: 'run-end', error: `clerk failed: ${String(err)}` }); g = undefined }
+    const end = again => agent(pClerk(v, again), { label: 'run end · progress', agentType: AG('clerk'), model: 'haiku', schema: CLERK_S })
+    try {
+      g = await end(false)
+      if (altered(g)) { log('run end: run-end refused, payload altered in transit; run again'); g = await end(true) }
+    } catch (err) { progressFailures.push({ task: null, step: 'run-end', error: `clerk failed: ${String(err)}` }); g = undefined }
     if (g === null) progressFailures.push({ task: null, step: 'run-end', error: 'clerk without an answer' })
     else if (g) {
       noteProgress(null, 'run-end', g)
@@ -386,28 +452,35 @@ const notOpened = x => {
   return { status: 'error', phase: PHASE, mode: MODE, detail: `progress: run not opened (run-start), no task started — ${error}`, rulings_applied: rulingsApplied, progress_failures: [...progressFailures, { task: null, step: 'run-start', error }] }
 }
 
+// Output of apply copied by the plan-reader (0.20.0): kept only if it matches its digest, its lists present
+const applyOut = x => (x && typeof x === 'object' && ['applied', 'rejected', 'discarded'].every(k => Array.isArray(x[k])) && typeof x.digest === 'string' && x.digest === payloadDigest(x, 'digest') ? x : null)
+
 phase('Plan reading')
-// User rulings: the scribe writes the decision and applies the actions of the chosen option.
-// With progress, the first of them opens the run: the ruling is noted in the run that applies it
-for (const [i, a] of RULINGS.entries()) {
-  const o = a.option
-  const opens = !!PROGRESS && i === 0
-  const updates = { entries: [{ type: 'decision', severity: 'major', description: `${a.title}: option ${o.id} settled by the user — ${o.description}` }, ...(o.entries || [])], tasks: (o.added_tasks || []).map(toPhase), amendments: o.amendments || [], discarded: [], auto: [] }
-  const s = await ask(pRuling(a, updates, opens), { label: `ruling ${a.task} · progress`, agentType: AG('scribe'), model: 'sonnet', schema: opens ? requireFields(SCRIBE_S, 'progress_ok', 'run_start_ok') : requireFields(SCRIBE_S, 'progress_ok') })
-  if (opens && s) { if (s.run_start_ok !== true) return notOpened(s); opened = true }
-  if (s && s.ok) rulingsApplied.push({ task: a.task, title: a.title, option: o.id })
-  // Amendment of a task merged in the meantime: discarded and recorded, the run goes on
-  if (s) discardedRun.push(...(s.discarded || []).map(e => ({ task: a.task, ...e })))
-  noteProgress(a.task, 'ruling', s && s.ok ? s : null)
-  // Ruling applied but not noted in progress: stop, as for a close
-  const progressKo = !!PROGRESS && !!s && s.ok && s.progress_ok !== true
-  if (!s || !s.ok || (s.rejected || []).length || progressKo) return await finish({ status: 'awaiting-ruling', phase: PHASE, mode: MODE, stop_issue: humanIssue(a.task, `Ruling "${a.title}" ${s && s.ok ? 'partly applied' : 'not applied'}`, !s ? 'scribe without an answer' : (s.rejected || []).length || !progressKo ? JSON.stringify(s.rejected || []) : `HANDOFF.md and tasks committed, but progress.json and PROGRESS.md not written: ${s.progress_error || 'result not reported'}`), rulings_applied: rulingsApplied, discarded_amendments: discardedRun, tasks: [], open_issues: [], auto_decisions: [] })
-}
-// Without a ruling, the plan reader opens the run
-const readerOpens = !!PROGRESS && !RULINGS.length
-const readPlan = (opens, again) => ask(pReader(opens, again), { label: again ? 'plan-reader · second reading' : 'plan-reader', agentType: AG('plan-reader'), model: 'haiku', schema: opens ? requireFields(PLAN_S, 'run_start_ok') : PLAN_S })
+// With progress, the plan reader opens the run, then applies the user's rulings (apply), then reads the plan: one call (0.20.0)
+const readerOpens = !!PROGRESS
+const readPlan = (opens, again, retry = false) => ask(pReader(opens, again, retry), { label: again ? 'plan-reader · second reading' : 'plan-reader', agentType: AG('plan-reader'), model: 'haiku', schema: opens ? requireFields(PLAN_S, 'run_start_ok', 'apply_ok') : PLAN_S })
 let plan = await readPlan(readerOpens, false)
-if (readerOpens && plan) { if (plan.run_start_ok !== true) return notOpened(plan); opened = true }
+// run-start refused, its JSON altered on the way (0.20.0): nothing was written, the plan reader runs again once
+if (readerOpens && altered(plan)) { log('plan-reader: run-start refused, payload altered in transit; run again'); plan = await readPlan(true, false, true) }
+if (readerOpens && plan) {
+  if (plan.run_start_ok !== true) return notOpened(plan)
+  opened = true
+  // Rulings (0.20.0): apply failed (main checkout not on the integration branch, commit refused): nothing written, the rulings
+  // stay recorded for the next run. Its output not read: apply ran, but what it refused is unknown. Either way, no task starts
+  const stopBefore = (status, detail, extra = {}) => finish({ status, phase: PHASE, mode: MODE, detail, rulings_applied: rulingsApplied, discarded_amendments: discardedRun, tasks: [], open_issues: [], auto_decisions: [], ...extra })
+  if (plan.apply_ok !== true) return await stopBefore('error', `progress: rulings not applied (apply), no task started — ${plan.apply_error || (plan.apply_ok === false ? 'failure without a message' : 'result not reported')}. The rulings stay recorded: the next run applies them.`)
+  const ap = applyOut(plan.apply)
+  if (!ap) return await stopBefore('error', `progress: output of apply not read, no task started — the copy does not match its digest. apply ran: read the last commit "progress: rulings …" on ${INTEG} and the issues of progress.json before a new run.`)
+  rulingsApplied.push(...ap.applied)
+  // Amendments apply could not make (task merged or cancelled): its output does not say which issue they came from
+  discardedRun.push(...ap.discarded.map(a => ({ task: null, id: a.id, reason: a.reason })))
+  if (ap.applied.length) log(`rulings applied: ${ap.applied.map(a => a.issue).join(', ')}${ap.commit ? ` (${short(ap.commit, 12)})` : ''}`)
+  // A refused ruling still stops the run, before any task, once the others are applied. No stop issue: the issue is the one
+  // the user ruled on. apply reopened it (open again, the option invalid with the reason) when plan-lint or an action refused
+  // the option, or when the issue has no entry in ISSUES.json; it dropped the ruling, marking nothing, on an unknown or
+  // already settled issue, an absent option or an option already invalid. Its output does not say which: the detail says both
+  if (ap.rejected.length) return await stopBefore('awaiting-ruling', `rulings refused by apply: ${ap.rejected.map(x => `${x.issue} (${x.option != null ? `option ${x.option}` : 'text'}: ${x.reason})`).join('; ')}. An issue is open again only when apply reopened it, its option invalid with the reason (refused by plan-lint or by an action, or no entry in ISSUES.json); a ruling on an unknown or already settled issue, an absent option or an option already invalid is dropped, and nothing is reopened. No task started.`, { rulings_refused: ap.rejected })
+}
 // Copy checked (0.18.1): everything that follows (statuses, dependencies, verifications, prerequisites) comes from this copy
 const faithful = p => typeof p.digest === 'string' && p.digest === planDigest(p)
 if (plan && !faithful(plan)) {
@@ -450,11 +523,18 @@ function applyRecommended(t, pt, updates) {
   // The issue as raised, options included: if the scribe is interrupted, the decision is never applied (merged_unclosed)
   updates.decided.push(issueOf(t, pt))
   updates.auto.push(`${pt.title}: ${rec.description}`)
-  updates.entries.push({ type: 'decision', severity: 'major', description: `${pt.title}: option ${rec.id} taken automatically (autonomous mode) — ${rec.description}` }, ...(rec.entries || []))
-  updates.tasks.push(...(rec.added_tasks || []).map(toPhase))
+  // With progress (0.20.0), these entries, tasks and amendments reach the plan through the decided issue (auto), which close
+  // applies; viaAuto keeps them out of the close's own lists. Without progress, the scribe writes them all
+  const entries = [{ type: 'decision', severity: 'major', description: `${pt.title}: option ${rec.id} taken automatically (autonomous mode) — ${rec.description}` }, ...(rec.entries || [])]
+  const tasks = (rec.added_tasks || []).map(toPhase)
+  updates.entries.push(...entries)
+  updates.tasks.push(...tasks)
+  for (const x of [...entries, ...tasks]) updates.viaAuto.add(x)
   const fresh = new Set([...added, ...updates.tasks].map(x => x.id))
+  const applied = []
   for (const am of rec.amendments || []) {
     if (done.has(am.id) || doneElsewhere(am.id) || running.has(am.id)) { const d = { task: t.id, ...am }; updates.discarded.push(am); updates.discardedHere.push(d); discardedRun.push(d); continue }
+    applied.push(am)
     updates.amendments.push(am)
     const c = T.get(am.id)
     if (!c) continue
@@ -464,6 +544,9 @@ function applyRecommended(t, pt, updates) {
     // New dependency on a task added during this run: the task waits for the next run
     if ((am.depends_on || []).some(d => fresh.has(d)) && pending.delete(am.id)) deferred.push(am.id)
   }
+  // The issue whole for close, auto naming the option applied; its amendments without those discarded here (task done or
+  // running), which close notes as amendments not applied
+  updates.autoIssues.push(wholeIssue(issueOf(t, pt), rec.id, applied))
 }
 
 // Circuit breaker: a close interrupted at its scribe wrote nothing. What it put in the run's state (issues, auto-decisions,
@@ -476,12 +559,54 @@ function forget(u, kept) {
   if (gone.has(stop)) stop = null
 }
 
+// Output of close copied by the agent (0.20.0): kept only if it is about this close and matches its digest
+const closeOut = (x, t, status) => (x && typeof x === 'object' && x.task === t.id && x.status === status && typeof x.digest === 'string' && x.digest === payloadDigest(x, 'digest') ? x : null)
+// Close of a task with progress (0.20.0): a single call, to the clerk without a finding nor a flaky test, to the scribe
+// otherwise (pClose). The input of close is the whole close: HANDOFF entries, texts uncut, issues with their actions, tasks
+// with their content; an auto-decided issue carries auto and close applies its option. A refusal for an altered payload
+// wrote nothing: the call runs again once; refused again, or refused for another reason, the run stops for a human, as for a
+// failed scribe. The output is read back through its digest
+async function closeWithProgress(t, final, attempts, r, gaps, updates, { flaky, rejections, unverifiable, allReviews, replan }) {
+  const findings = (r && r.findings) || []
+  const entries = updates.entries.filter(e => !updates.viaAuto.has(e))
+  const tasks = updates.tasks.filter(x => !updates.viaAuto.has(x))
+  const issues = [...updates.issues.map(p => wholeIssue(p)), ...updates.autoIssues]
+  const E = {
+    task: t.id, status: final, attempts, branch: r ? r.branch : null,
+    ...(entries.length ? { entries } : {}), ...(gaps.length ? { blocker: gaps.map(oneLine) } : {}),
+    ...(rejections.length ? { rejections: rejections.map(x => ({ ...x, gaps: (x.gaps || []).map(oneLine) })) } : {}),
+    ...(unverifiable.length ? { unverifiable: unverifiable.map(oneLine) } : {}), ...(flaky.length ? { flaky: flaky.map(oneLine) } : {}),
+    // Reviews on one line but whole: progress matches them with their HANDOFF.md entry, word for word
+    ...(allReviews.length ? { reviews: allReviews.map(oneLine) } : {}), ...(issues.length ? { issues } : {}),
+    ...(tasks.length ? { added_tasks: tasks.map(x => ({ id: x.id, title: x.title, phase: x.phase, content: x.content })) } : {}),
+    ...(updates.discarded.length ? { discarded_amendments: updates.discarded.map(a => ({ id: a.id, reason: a.reason ?? '' })) } : {}),
+    ...(replan ? { replanning: true } : {}),
+  }
+  const scribe = findings.length > 0 || flaky.length > 0
+  const opts = { label: `${t.id} · progress`, ...(scribe ? { agentType: AG('scribe'), model: 'sonnet' } : { agentType: AG('clerk'), model: 'haiku' }), schema: CLOSE_S }
+  const call = again => exclusive(() => ask(pClose(t, final, E, { scribe, findings, flaky, auto: updates.auto }, again), opts))
+  let s = await call(false)
+  if (altered(s)) { log(`${t.id}: close refused, payload altered in transit; run again`); s = await call(true) }
+  noteProgress(t.id, 'close', s)
+  if (!s) return stopOn(humanIssue(t.id, `Progress of ${t.id} not committed`, `${scribe ? 'Scribe' : 'Clerk'} without an answer.`))
+  if (s.progress_ok !== true) {
+    const lost = entries.map(e => `${e.type} · ${e.severity} · ${oneLine(e.description)}`)
+    return stopOn(humanIssue(t.id, `Progress of ${t.id} not committed`, `close refused${altered(s) ? ' twice' : ''}: ${s.progress_error || 'result not reported'}. Nothing of the close is written (HANDOFF.md, tasks, amendments, ISSUES.json); the run end closes ${t.id} in progress.json from the summary.${lost.length ? ` HANDOFF entries not written: ${JSON.stringify(lost)}` : ''}`))
+  }
+  const out = closeOut(s.close, t, final)
+  if (!out) return stopOn(humanIssue(t.id, `Progress of ${t.id}: output of close not read`, `the copy of the output of progress.mjs close does not match its digest: the close ran, but what it rejected or discarded is unknown. Read the commit "progress(${t.id}): ${final}" on ${INTEG} and HANDOFF.md under "## ${t.id}" before the next run.`))
+  discardedRun.push(...arr(out.discarded).map(e => ({ task: t.id, ...e })))
+  // Rejected by close (plan-lint), or a path cited by an auto-decision that neither exists nor belongs to a task created here
+  const rejected = [...arr(out.rejected), ...arr(s.missing).map(p => ({ id: p, reason: 'cited by an auto-decision: it does not exist and no task created by this close owns it' }))]
+  if (rejected.length) stopOn(humanIssue(t.id, `Progress of ${t.id}: tasks, amendments or decisions rejected`, JSON.stringify(rejected)))
+}
+
 async function closeTask(t, status, attempts, r, gaps = [], trace = {}) {
   const flaky = [...new Set(trace.flaky || [])], rejections = trace.rejections || [], unverifiable = trace.unverifiable || []
   // issues and decisions: those of this close, passed to progress (close); tasks running in parallel have their own
   // Scope of the branch not checked (0.19.0): two copies of plan-lint --scope that did not match their digest
   const scopeBlind = trace.scopeUnread ? [{ type: 'blind-spot', severity: 'minor', description: trace.scopeUnread }] : []
-  const updates = { entries: [...(trace.entries || []), ...scopeBlind], tasks: [], amendments: [], discarded: [], auto: [], issues: [...(trace.issues || [])], decisions: [], decided: [], discardedHere: [] }
+  const updates = { entries: [...(trace.entries || []), ...scopeBlind], tasks: [], amendments: [], discarded: [], auto: [], issues: [...(trace.issues || [])], decisions: [], decided: [], discardedHere: [], viaAuto: new Set(), autoIssues: [] }
   // Files and commands the agents may not read, write or run: review by the human before the PR, without an issue or a stop
   const reviews = reviewsOf(r, trace)
   const deviations = deviationsOf(r)
@@ -536,29 +661,19 @@ async function closeTask(t, status, attempts, r, gaps = [], trace = {}) {
   const final = status !== 'merged' && (humanSeen || needs.length) ? 'needs-human' : status
   added.push(...updates.tasks)
   for (const x of updates.tasks) parents.set(x.id, t.id)
-  // Close in progress (0.8.0): what the scribe passes to progress.mjs close
-  const closeInput = PROGRESS ? {
-    task: t.id, status: final, attempts, branch: r ? r.branch : null,
-    ...(rejections.length ? { rejections: rejections.map(x => ({ ...x, gaps: shorts(x.gaps) })) } : {}), ...(flaky.length ? { flaky: shorts(flaky) } : {}), ...(unverifiable.length ? { unverifiable: shorts(unverifiable) } : {}),
-    // Reviews on one line but whole: progress matches them with their HANDOFF.md entry, word for word
-    ...(final !== 'merged' ? { blocker: shorts(gaps) } : {}), ...(allReviews.length ? { reviews: allReviews.map(oneLine) } : {}),
-    ...(updates.decisions.length ? { auto_decisions: updates.decisions.map(d => ({ ...d, description: short(d.description) })) } : {}), ...(updates.issues.length ? { issues: updates.issues.map(withoutActions) } : {}),
-    ...(updates.tasks.length ? { added_tasks: updates.tasks.map(x => ({ id: x.id, title: short(x.title), phase: x.phase })) } : {}),
-    ...(updates.amendments.length ? { amendments: updates.amendments.map(m => ({ id: m.id, reason: short(m.reason) })) } : {}),
-    ...(replan ? { replanning: true } : {}),
-  } : null
-  const s = await exclusive(() => ask(pScribe(t, final, attempts, r, updates, gaps, { flaky, rejections, unverifiable }, closeInput), { label: `${t.id} · progress`, agentType: AG('scribe'), model: 'sonnet', schema: requireFields(SCRIBE_S, 'progress_ok') }))
-    .catch(err => {
-      if (err === INTERRUPT) { const kept = trace.issues || []; forget(updates, kept); unclosed([...updates.issues.filter(p => !kept.includes(p)), ...updates.decided]) }
-      throw err
-    })
+  // Circuit breaker at the close: nothing of it is written (forget), and a merged task comes out in merged_unclosed
+  const interruptedClose = err => {
+    if (err === INTERRUPT) { const kept = trace.issues || []; forget(updates, kept); unclosed([...updates.issues.filter(p => !kept.includes(p)), ...updates.decided]) }
+    throw err
+  }
+  if (PROGRESS) await closeWithProgress(t, final, attempts, r, gaps, updates, { flaky, rejections, unverifiable, allReviews, replan }).catch(interruptedClose)
+  else {
+    const s = await exclusive(() => ask(pScribe(t, final, attempts, r, updates, gaps, { flaky, rejections, unverifiable }), { label: `${t.id} · progress`, agentType: AG('scribe'), model: 'sonnet', schema: SCRIBE_S })).catch(interruptedClose)
+    if (s) discardedRun.push(...(s.discarded || []).map(e => ({ task: t.id, ...e })))
+    if (!s || !s.ok) stopOn(humanIssue(t.id, `Progress of ${t.id} not committed`, s ? 'The scribe could not commit.' : 'Scribe without an answer.'))
+    else if ((s.rejected || []).length) stopOn(humanIssue(t.id, `Progress of ${t.id}: tasks, amendments or decisions rejected`, JSON.stringify(s.rejected)))
+  }
   for (const am of updates.amendments) { const n = (amended.get(am.id) || 1) - 1; if (n > 0) amended.set(am.id, n); else amended.delete(am.id) }
-  if (s) discardedRun.push(...(s.discarded || []).map(e => ({ task: t.id, ...e })))
-  if (!s || !s.ok) stopOn(humanIssue(t.id, `Progress of ${t.id} not committed`, s ? 'The scribe could not commit.' : 'Scribe without an answer.'))
-  else if ((s.rejected || []).length) stopOn(humanIssue(t.id, `Progress of ${t.id}: tasks, amendments or decisions rejected`, JSON.stringify(s.rejected)))
-  // Close not written in progress.json: stop, as for a failed scribe; the clerk closes the task from the summary at the end of the run
-  else if (PROGRESS && s.progress_ok !== true) stopOn(humanIssue(t.id, `Progress of ${t.id}: close not written in progress.json`, `${s.progress_error || 'result not reported'}. HANDOFF.md and DISCOVERY.md are committed; the run end closes ${t.id} in progress.json from the summary and regenerates PROGRESS.md.`))
-  noteProgress(t.id, 'close', s && s.ok ? s : null)
   log(`${t.id}: ${final}`)
   return { id: t.id, status: final, attempts, branch: r ? r.branch : null, summary: r ? r.summary : '', ...(final !== 'merged' ? { blocker: gaps } : {}), ...(flaky.length ? { flaky } : {}), ...(rejections.length ? { rejections } : {}), ...(unverifiable.length ? { unverifiable } : {}), ...(allReviews.length ? { reviews: allReviews } : {}) }
 }
@@ -589,7 +704,12 @@ async function noteStart(t, model) {
   if (!PROGRESS) return
   let g = null
   // The circuit breaker is not a failure of the clerk: the task stops there
-  try { g = await ask(pStart(t, model), { label: `${t.id} · start`, agentType: AG('clerk'), model: 'haiku', schema: CLERK_S }) } catch (err) { if (err === INTERRUPT) throw err; g = { progress_ok: false, progress_error: `clerk failed: ${String(err)}` } }
+  const start = again => ask(pStart(t, model, again), { label: `${t.id} · start`, agentType: AG('clerk'), model: 'haiku', schema: CLERK_S })
+  try {
+    g = await start(false)
+    // The step refused, its JSON altered on the way (0.20.0): nothing was written, the clerk runs again once
+    if (altered(g)) { log(`${t.id}: start refused, payload altered in transit; run again`); g = await start(true) }
+  } catch (err) { if (err === INTERRUPT) throw err; g = { progress_ok: false, progress_error: `clerk failed: ${String(err)}` } }
   noteProgress(t.id, 'worker', g || { progress_ok: false, progress_error: 'clerk without an answer' })
 }
 

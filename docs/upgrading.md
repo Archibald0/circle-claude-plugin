@@ -2,6 +2,16 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.19.0 to 0.20.0
+
+`progress.json` moves from `orchestre-progress/3` to `/4`; the plans and the settings keep their format. After the update, `/reload-plugins`, or a new session.
+
+1. Before updating, settle the open issues of your plans. A `/3` file is read and converted at the first write of 0.20.0, and an issue left open in it no longer has its actions: it can only be settled by a free-text answer. An issue you settle before the update, in 0.19.0, is applied by that version as before.
+2. Update between two runs, never during one. The first command that writes `progress.json` (`/orchestre:run`, a button of `/progress`) converts the file; `/orchestre:status` and the pane read both formats.
+3. Answers are now recorded, not passed to the run: the pilot settles an issue with the question tool, then `progress.mjs rule` notes the answer in `progress.json`, and the next run applies it at its start (`progress.mjs apply`). `args.rulings` no longer exists. An answer not applied yet can be withdrawn with `progress.mjs unrule`. If you delete `progress.json` before it is applied, the answer is lost and the issue stays open.
+4. A new file, `plans/<name>/ISSUES.json`, appears in the plan, tracked by git: commit it with the plan. Do not edit it by hand.
+5. A task a ruling adds that shares files with another task of its phase gets a dependency on it automatically, where 0.19 stopped the run.
+
 ## From 0.18.2 to 0.19.0
 
 Nothing to migrate: plans, `progress.json` and the settings keep their format. After the update, `/reload-plugins`, or a new session; the next `/orchestre:ready` or `/orchestre:run` offers the rules of the new version if `settings.mjs check` finds any missing (they name the version of the plugin). No plan to convert.

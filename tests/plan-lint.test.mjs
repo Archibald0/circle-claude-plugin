@@ -55,7 +55,8 @@ try {
   test('valid plan: full JSON (tasks, all, max_phase, language), readable estimate', () => {
     const r = lint(p, '--json')
     assert.equal(r.code, 0, r.out + r.err); assert.equal(r.json.ok, true)
-    assert.deepEqual(Object.keys(r.json), ['ok', 'errors', 'warnings', 'tasks', 'all', 'max_phase', 'prerequisites', 'ready', 'fable', 'language', 'used_prefixes'])
+    assert.deepEqual(Object.keys(r.json), ['ok', 'errors', 'warnings', 'tasks', 'all', 'max_phase', 'prerequisites', 'ready', 'fable', 'language', 'used_prefixes', 'overlaps'])
+    assert.deepEqual(r.json.overlaps, [])
     assert.equal(r.json.max_phase, 2); assert.equal(r.json.all.length, 4); assert.equal(r.json.tasks.length, 4); assert.equal(r.json.language, 'en')
     const t02b = r.json.tasks.find(t => t.id === 'T02B')
     assert.deepEqual(Object.keys(t02b), ['id', 'title', 'file', 'phase', 'model', 'model_reason', 'effort', 'depends_on', 'resources', 'status', 'verification', 'token_estimate', 'open_prerequisites'])
@@ -230,6 +231,26 @@ Checked by /orchestre:ready on 2026-11-03: not ready.
   test('shared resource: no file error, the tasks will be serialized', () => {
     const q = plan('res', { R01: task('R01', { files: ['src/c/**'], resources: '[db]' }), R02: task('R02', { files: ['src/c/y.ts'], resources: '[db]' }) })
     assert.equal(lint(q, '--json').code, 0)
+    assert.deepEqual(lint(q, '--json').json.overlaps, [])
+  })
+  test('overlaps (0.20.0): the pairs of one phase that can run together and share files, with the entries that overlap; not with a dependency, a resource or another phase', () => {
+    const q = plan('overlaps', {
+      O01: task('O01', { files: ['src/common/**', 'docs/a.md # the doc'] }), O02: task('O02', { files: ['src/common/x.ts', 'lib/**'] }),
+      O03: task('O03', { files: ['docs/a.md', 'src/common/y.ts'] }),
+      // A dependency, a resource in common, another phase: the files are shared, the pair is not listed
+      O04: task('O04', { files: ['src/common/x.ts'], depends_on: '[O01, O02]' }), O05: task('O05', { files: ['lib/**'], resources: '[db]' }), O06: task('O06', { files: ['lib/**'], resources: '[db]' }),
+      O07: task('O07', { phase: 2, files: ['src/common/**'] }),
+    })
+    const r = lint(q, '--json'); assert.equal(r.code, 1)
+    assert.deepEqual(r.json.overlaps, [
+      { a: 'O01', b: 'O02', files: ['src/common/**', 'src/common/x.ts'] },
+      { a: 'O01', b: 'O03', files: ['src/common/**', 'src/common/y.ts', 'docs/a.md'] },
+      { a: 'O02', b: 'O05', files: ['lib/**'] }, { a: 'O02', b: 'O06', files: ['lib/**'] },
+    ])
+    // Each pair is also the error, and no error without its pair
+    const share = r.json.errors.filter(e => e.endsWith('can run together and share files'))
+    assert.deepEqual(share, r.json.overlaps.map(o => `${o.a} and ${o.b} can run together and share files`))
+    assert.ok(!('overlaps' in JSON.parse(lint(q, '--reader').out)), '--reader keeps its fields: its digest does not move')
   })
   test('folder without tasks/: clear stop; plan in the French format of 0.11: stop that names migrate.mjs', () => {
     mkdirSync(join(root, 'plans', 'empty'), { recursive: true })

@@ -20,7 +20,7 @@
 //   DISCOVERY.md : section titles;
 //   orchestre.config.json : keys, default_mode "devia", evaluator "systematique"; "language": "fr" added if missing when
 //                           taches/ is migrated, since the free text of the plan is in French;
-//   suivi.json → progress.json (outside git): orchestre-suivi/2 or /1 → orchestre-progress/3, and the git exclusions.
+//   suivi.json → progress.json (outside git): orchestre-suivi/2 or /1 → orchestre-progress/4 (its issues without their actions), and the git exclusions.
 // Git history is never rewritten: branches tache/* and commits "tâche <id> : " stay, and the 0.12 scripts read them.
 // Exit codes: 0 done, or nothing to do; 1 refused or failed (plan folder as it was), or commit failed (files migrated and
 // staged, not committed); 2 invalid call.
@@ -313,7 +313,7 @@ function plan(ctx) {
 
 function convertProgressFile(p) {
   const at = now(), doc = convertLegacy(p.doc)
-  doc.log.push({ at, kind: 'run', task: null, text: conversionNote(p.from, 'migrate.mjs') })
+  doc.log.push({ at, kind: 'run', task: null, text: conversionNote(p.from, 'migrate.mjs', (Array.isArray(doc.issues) ? doc.issues : []).filter(x => x && x.status === 'open').length) })
   truncate(doc)
   const err = validate(doc)
   if (err.length) throw new Refusal(`suivi.json does not convert into a valid progress.json:\n${err.slice(0, 8).map(e => '  - ' + e).join('\n')}\nDelete suivi.json, it will be rebuilt from PROGRESS.md, HANDOFF.md and plan-lint; then run migrate again`)

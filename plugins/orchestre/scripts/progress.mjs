@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// progress (orchestre plugin 0.12.0): sole writer of plans/<name>/progress.json (format orchestre-progress/3) and of its view
-// PROGRESS.md. Node 18 or later, no dependencies. Contract: 0.12.0/CONTRACT.md; schema: SCHEMA below, a copy of
-// progress.v3.schema.json without the descriptions.
-// A progress.json in a format of orchestre 0.11 and earlier (orchestre-suivi/2 or /1, French keys and values) is read and
-// converted in memory; the first write turns it into /3. scripts/migrate.mjs converts it the same way (convertLegacy).
+// progress (orchestre plugin 0.12.0): sole writer of plans/<name>/progress.json (format orchestre-progress/4 since 0.20.0) and
+// of its view PROGRESS.md, and of the issue register plans/<name>/ISSUES.json (format orchestre-issues/1, tracked by git).
+// Node 18 or later, no dependencies. Schemas: SCHEMA and REGISTER_SCHEMA below.
+// A progress.json in /3 (0.12 to 0.19) is read and converted in memory, its issues without their actions (settled by a free
+// answer); a progress.json in a format of orchestre 0.11 and earlier (orchestre-suivi/2 or /1, French keys and values) too.
+// The first write turns it into /4. scripts/migrate.mjs converts the formats of 0.11 the same way (convertLegacy).
 //
 // Usage: node <plugin root>/scripts/progress.mjs <command> [<plan-dir>] [options]
 // Writes read a JSON object on standard input, or in the option --json '<object>'. The workflow gives its agents a heredoc
@@ -15,10 +16,43 @@
 //              replanning, progress; worker resets the task's run fields; fix adds rejection { attempt, by, gaps };
 //              model: the model launched (worker, fix), noted in model_used; change { from, to, reason }: "model" event
 //   close      { task, status, attempts, branch, actual_tokens?, rejections?, flaky?, unverifiable?, blocker?, reviews?,
-//                auto_decisions?, issues?, added_tasks?, amendments?, replanning? }      regenerates PROGRESS.md
+//                auto_decisions?, issues?, added_tasks?, amendments?, replanning?, entries?, discarded_amendments? }
+//              (0.20.0) writes and commits the plan, on the integration branch only (refused elsewhere, nothing written):
+//              HANDOFF.md under "## <task>" (entries word for word, then the blocker, the rejections, the unverifiable criteria,
+//              the flaky tests, the automatic decisions, the amendments, the amendments discarded and what is rejected), the task
+//              files of added_tasks that carry their content, the amendments appended to the frontmatter lists, plan-lint on the
+//              result (a task created or amended that it refuses is put back and comes out in "rejected"), ISSUES.json with the
+//              dry run of each option of each issue (an issue with auto: <option> is settled by auto and its option applied),
+//              progress.json and PROGRESS.md; then one commit "progress(<task>): <status>" of these files and of DISCOVERY.md
+//              when it changed. Prints one line of JSON: { task, status, commit, rejected, discarded, issues, pending, message,
+//              digest }. A task added that shares files with a task of its phase depends on it (noted "amendment · minor").
+//              An automatic decision whose option cites a path that neither exists nor is owned by a task this close adds is
+//              rejected: its issue stays open, nothing of its option is written, "needs-human · major · inconsistent
+//              auto-decision: <path> …" in HANDOFF.md and an item in "rejected". Run twice, it records no issue again: an
+//              issue of this run with the same task and title keeps its id
+//              (plan-lint, the dry run and the plan's files outside .progress.lock; under it, progress.json, ISSUES.json, the commit:
+//              a slow pre-commit hook makes the other progress commands wait, and refuse after 20 s)
 //   ruling     { task, title, option, added_tasks?, amendments?, discarded_amendments? }      regenerates PROGRESS.md
+//   rule       { issue, option } or { issue, text }, or { items: [ that object, … ] } (0.20.0, decision D1): the user's ruling on
+//              an open issue, recorded in progress.json (pending_rulings) and nowhere else, until apply reports it into the plan;
+//              refused for an unknown or settled issue, an issue that already has a ruling recorded, an option absent or
+//              invalid (the dry run, or an issue inherited from /3); a list is applied whole or not at all
+//   unrule     { issue }, or { items: [ … ] } (0.20.0): removes a ruling recorded and not applied yet; refused once applied
+//   apply      no input (0.20.0, decision D1): applies the rulings of pending_rulings to the plan and commits them, on the
+//              integration branch only (refused elsewhere, nothing written); without a ruling recorded, writes nothing.
+//              An option: its HANDOFF entries, added tasks and amendments, as close applies an automatic decision; a task it
+//              adds that shares files with a task of its phase, without a dependency (plan-lint's overlaps), depends on it
+//              (noted in HANDOFF.md); a task it adds in a phase earlier than that of the run in progress (or of the last run)
+//              joins that phase (noted in HANDOFF.md); an option plan-lint still refuses is put back, its issue open again and
+//              the option invalid with the reason. A text: one decision entry. A ruling withdrawn or changed while apply runs
+//              refuses the whole apply (code 1, every file put back). HANDOFF.md ("decision · major · <title>: option <id>
+//              settled by the user — …"), the task files, ISSUES.json (issue settled, ruling with author user) and PROGRESS.md
+//              in one commit "progress: rulings <ids>"; progress.json: the copies settled, the rulings out of pending_rulings.
+//              Prints one line of JSON: { applied, rejected, discarded, amended: [{ id, verification, depends_on }],
+//              added_tasks, commit, message, digest }
 //   run-end    the workflow's return value (status, detail, stop_issue, open_issues, tasks…);
-//              closes, from the summary, the tasks left without a close (workflow exception) and then regenerates PROGRESS.md
+//              closes, from the summary, the tasks left without a close (workflow exception) and then regenerates PROGRESS.md;
+//              rulings_applied and discarded_amendments of the summary are added to those of the run, never in their place
 //   pilot      { task, status: "merged" | "cancelled", reason? }      pilot's manual action; regenerates PROGRESS.md
 //   ack        { kind: "review" | "decision", task, text }, or { items: [ that object, … ] }      a review before the PR or an
 //              auto-decision marked done (0.15.1, /orchestre:done; a list in one write and the /progress pane since 0.16.0):
@@ -39,21 +73,32 @@
 //   triage [<plan-dir>]    end-of-run sorting of the open reviews and auto-decisions, as JSON { plan, base, integration, safe, open };
 //                          read-only. safe: what the pilot closes alone (decision D6), in the input format of ack ({ items: safe }),
 //                          each with its reason: duplicate, superseded, no-diff or worktree-gone; open: the rest, grouped by task
-//   validate [--file <f>]  validates progress.json against the schema
+//   validate [--file <f>]  validates progress.json against the schema, and ISSUES.json when the plan has one; --file: that
+//                          file only, a progress.json or a register (by its format)
+// _digest (0.20.0): a write whose JSON carries "_digest" is checked against payloadDigest, and refused when they differ
+// (code 1, "payload altered in transit", nothing written); a JSON without it (the pilot, the pane) is accepted as before.
 // Exit codes: 0 done; 1 write refused, progress.json and PROGRESS.md unchanged; 2 invalid call.
 //
-// Guarantees: lock plans/<name>/.progress.lock (8 tasks at most in parallel); write to .progress.<pid>.tmp then rename;
+// Guarantees: lock plans/<name>/.progress.lock (8 tasks at most in parallel; never removed while its process runs, a writer
+// waits and refuses after 20 s); write to .progress.<pid>.tmp then rename;
 // validation of each write; files always in the main checkout, even when called from a worktree;
 // progress.json, .progress.lock and .progress.*.tmp added to .git/info/exclude if not already ignored.
 // progress.json absent: rebuilt from PROGRESS.md, HANDOFF.md and plan-lint; the run fields start empty again.
-import { readFileSync, writeFileSync, existsSync, readdirSync, openSync, closeSync, writeSync, renameSync, unlinkSync, statSync, mkdirSync, appendFileSync, realpathSync } from 'node:fs'
+// ISSUES.json absent: an empty register. A write that changes it validates it and writes it under the same lock.
+import { readFileSync, writeFileSync, existsSync, readdirSync, openSync, closeSync, writeSync, renameSync, unlinkSync, statSync, mkdirSync, appendFileSync, realpathSync, copyFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, resolve, relative, dirname, basename, isAbsolute, sep } from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { tmpdir } from 'node:os'
 
-export const FORMAT = 'orchestre-progress/3'
+export const FORMAT = 'orchestre-progress/4'
+// The format of 0.12 to 0.19: read, then converted (convertV3); its issues have no actions
+export const PREVIOUS_FORMAT = 'orchestre-progress/3'
 // Formats of orchestre 0.11 and earlier, in French: read, then converted (convertLegacy)
 export const LEGACY_FORMATS = ['orchestre-suivi/2', 'orchestre-suivi/1']
+// The issue register (0.20.0, decision DO3): tracked by git, written by this script alone
+export const REGISTER = 'ISSUES.json'
+export const REGISTER_FORMAT = 'orchestre-issues/1'
 const STATUSES = ['todo', 'added', 'merged', 'blocked', 'failed', 'needs-human', 'cancelled']
 const STEPS = ['worker', 'verification', 'evaluation', 'fix', 'merge', 'replanning', 'progress']
 const RUN_ENDS = ['finished', 'partial', 'awaiting-ruling', 'rerun', 'error']
@@ -61,6 +106,8 @@ const CLOSES = ['merged', 'blocked', 'failed', 'needs-human']
 const KINDS = ['run', 'task', 'step', 'rejection', 'status', 'added', 'amendment', 'review', 'auto-decision', 'issue', 'ruling', 'pilot', 'error', 'model']
 export const LOG_MAX = 200
 const RE_ID = /^[A-Z]+[0-9]+[A-Z]*$/
+// An issue: <task>-<n>, stable (0.20.0)
+const RE_ISSUE = /^[A-Z]+[0-9]+[A-Z]*-[1-9][0-9]*$/
 const DONE = s => s === 'merged' || s === 'cancelled'
 const ENV = { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -112,13 +159,16 @@ export function now(d = new Date()) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${o >= 0 ? '+' : '-'}${p(Math.floor(a / 60))}:${p(a % 60)}`
 }
 
-// ─── Schema orchestre-progress/3, without the descriptions ──────────────────────────────────────────────────────────
+// ─── Schema orchestre-progress/4, without the descriptions ──────────────────────────────────────────────────────────
+// /4 (0.20.0) is /3 plus: an id for each issue; for each option, valid and invalid_reason (the dry run), effect and amends;
+// without_actions on an issue inherited from /3; pending_rulings, the rulings recorded by rule and not applied yet (D1)
 const ref = n => ({ $ref: `#/$defs/${n}` })
 const arrayOf = items => ({ type: 'array', items })
 const object = (required, properties, extra = {}) => ({ type: 'object', additionalProperties: false, required, properties, ...extra })
 const INT1 = { type: 'integer', minimum: 1 }
+const TEXT1 = { type: 'string', minLength: 1 }
 export const SCHEMA = {
-  ...object(['format', 'plan', 'dir', 'integration', 'base', 'updated', 'tasks', 'runs', 'issues', 'auto_decisions', 'reviews', 'prerequisites', 'handoff', 'lint', 'log', 'log_omitted'], {
+  ...object(['format', 'plan', 'dir', 'integration', 'base', 'updated', 'tasks', 'runs', 'issues', 'pending_rulings', 'auto_decisions', 'reviews', 'prerequisites', 'handoff', 'lint', 'log', 'log_omitted'], {
     format: { const: FORMAT },
     plan: { type: 'string', minLength: 1 },
     dir: { type: 'string', minLength: 1 },
@@ -128,6 +178,7 @@ export const SCHEMA = {
     tasks: arrayOf(ref('task')),
     runs: arrayOf(ref('run')),
     issues: arrayOf(ref('issue')),
+    pending_rulings: arrayOf(object(['issue', 'option', 'text', 'at'], { issue: ref('issueId'), option: { type: ['string', 'null'], minLength: 1 }, text: { type: ['string', 'null'], minLength: 1 }, at: ref('date') })),
     auto_decisions: arrayOf(ref('autoDecision')),
     reviews: arrayOf(ref('review')),
     prerequisites: arrayOf(ref('prerequisite')),
@@ -141,6 +192,7 @@ export const SCHEMA = {
     date: { type: 'string', format: 'date-time' },
     dateOrNull: { oneOf: [ref('date'), { type: 'null' }] },
     taskId: { type: 'string', pattern: '^[A-Z]+[0-9]+[A-Z]*$' },
+    issueId: { type: 'string', pattern: RE_ISSUE.source },
     texts: arrayOf({ type: 'string' }),
     ids: arrayOf(ref('taskId')),
     count: object(['minor', 'major'], { minor: { type: 'integer', minimum: 0 }, major: { type: 'integer', minimum: 0 } }),
@@ -188,7 +240,9 @@ export const SCHEMA = {
       waiting: ref('ids'),
       waiting_on_prerequisites: arrayOf(object(['id', 'prerequisites'], { id: ref('taskId'), prerequisites: arrayOf({ type: 'string' }) })),
     }),
-    issue: object(['run', 'task', 'title', 'context', 'human', 'role', 'status', 'chosen_option', 'options'], {
+    // The short copy of an issue, for display; the whole issue, with the actions of its options, is in ISSUES.json
+    issue: object(['id', 'run', 'task', 'title', 'context', 'human', 'role', 'status', 'chosen_option', 'options'], {
+      id: ref('issueId'),
       run: INT1,
       task: ref('taskId'),
       title: { type: 'string', minLength: 1 },
@@ -199,7 +253,12 @@ export const SCHEMA = {
       chosen_option: { type: ['string', 'null'] },
       circuit_breaker: { type: 'boolean' },
       inconsistency: { type: 'string' },
-      options: arrayOf(object(['id', 'description'], { id: { type: 'string', minLength: 1 }, description: { type: 'string' }, impact: { type: 'string' }, recommended: { type: 'boolean' } })),
+      without_actions: { type: 'boolean' },
+      options: arrayOf(object(['id', 'description', 'valid', 'invalid_reason', 'effect', 'amends'], {
+        id: TEXT1, description: { type: 'string' }, impact: { type: 'string' }, recommended: { type: 'boolean' },
+        // valid: null until a dry run decides it
+        valid: { type: ['boolean', 'null'] }, invalid_reason: { type: ['string', 'null'] }, effect: { type: 'string' }, amends: ref('ids'),
+      })),
     }),
     autoDecision: object(['run', 'task', 'title', 'option', 'description'], { run: INT1, task: ref('taskId'), title: { type: 'string' }, option: { type: 'string' }, description: { type: 'string' }, done: ref('date'), ticket: ref('date'), label: { type: 'string', minLength: 1 } }),
     review: object(['task', 'phase', 'text', 'run', 'at'], {
@@ -227,10 +286,11 @@ export const SCHEMA = {
 const RE_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
 const describe = x => (x === undefined ? 'nothing' : typeof x === 'string' ? `"${clip(x, 40)}"` : clip(JSON.stringify(x), 40))
 const isOfType = (t, x) => ({ null: x === null, boolean: typeof x === 'boolean', string: typeof x === 'string', integer: Number.isInteger(x), number: typeof x === 'number' && Number.isFinite(x), array: Array.isArray(x), object: !!x && typeof x === 'object' && !Array.isArray(x) })[t]
-function check(s, x, at, err) {
-  if (s.$ref) s = SCHEMA.$defs[s.$ref.split('/').pop()]
+// root: the schema whose $defs the references name (SCHEMA or REGISTER_SCHEMA)
+function check(s, x, at, err, root = SCHEMA) {
+  if (s.$ref) s = root.$defs[s.$ref.split('/').pop()]
   if (s.oneOf) {
-    if (s.oneOf.filter(o => { const e = []; check(o, x, at, e); return !e.length }).length !== 1) err.push(`${at}: ${describe(x)} matches no allowed form`)
+    if (s.oneOf.filter(o => { const e = []; check(o, x, at, e, root); return !e.length }).length !== 1) err.push(`${at}: ${describe(x)} matches no allowed form`)
     return
   }
   if ('const' in s && x !== s.const) return err.push(`${at}: ${describe(x)} instead of "${s.const}"`)
@@ -247,27 +307,104 @@ function check(s, x, at, err) {
   }
   if (Array.isArray(x)) {
     if (s.maxItems != null && x.length > s.maxItems) err.push(`${at}: ${x.length} items, at most ${s.maxItems}`)
-    if (s.items) x.forEach((y, i) => check(s.items, y, `${at}[${i}]`, err))
+    if (s.items) x.forEach((y, i) => check(s.items, y, `${at}[${i}]`, err, root))
   } else if (x && typeof x === 'object') {
     for (const k of s.required || []) if (x[k] === undefined) err.push(`${at ? at + '.' : ''}${k}: missing`)
     for (const [k, y] of Object.entries(x)) {
       if (y === undefined) continue
       const sk = s.properties && s.properties[k]
-      if (sk) check(sk, y, at ? `${at}.${k}` : k, err)
-      else if (s.additionalProperties === false) err.push(`${at ? at + '.' : ''}${k}: field unknown to format ${FORMAT}`)
-      else if (s.additionalProperties && typeof s.additionalProperties === 'object') check(s.additionalProperties, y, at ? `${at}.${k}` : k, err)
+      if (sk) check(sk, y, at ? `${at}.${k}` : k, err, root)
+      else if (s.additionalProperties === false) err.push(`${at ? at + '.' : ''}${k}: field unknown to format ${root.properties.format.const}`)
+      else if (s.additionalProperties && typeof s.additionalProperties === 'object') check(s.additionalProperties, y, at ? `${at}.${k}` : k, err, root)
     }
   }
 }
-export function validate(doc) { const err = []; check(SCHEMA, doc, '', err); return err }
+const twice = (xs, key, at, err) => { const seen = new Set(); xs.forEach((x, i) => { const k = key(x); if (seen.has(k)) err.push(`${at}[${i}]: ${k} given twice`); seen.add(k) }) }
+// A ruling names an option or gives a text, never both, never neither
+const oneOfOptionText = (r, at, err) => { if ((r.option == null) === (r.text == null)) err.push(`${at}: an option or a text, not ${r.option == null ? 'neither' : 'both'}`) }
+export function validate(doc) {
+  const err = []
+  check(SCHEMA, doc, '', err)
+  if (err.length) return err
+  twice(doc.issues, p => p.id, 'issues', err)
+  twice(doc.pending_rulings, r => r.issue, 'pending_rulings', err)
+  doc.pending_rulings.forEach((r, i) => oneOfOptionText(r, `pending_rulings[${i}]`, err))
+  return err
+}
 
-// ─── Legacy formats: orchestre-suivi/2 and /1 (French) → orchestre-progress/3 ───────────────────────────────────────
+// ─── Schema of the issue register ISSUES.json (orchestre-issues/1, 0.20.0) ─────────────────────────────────────────
+// One entry per issue, whole: its options with their actions (HANDOFF entries, added tasks, amendments) and, once a dry run
+// has looked at them, valid and invalid_reason; its status and its ruling (option or text, user or auto, date, commit of
+// application, null until apply has committed it)
+const ACTIONS = arrayOf({ type: 'object' })
+export const REGISTER_SCHEMA = {
+  ...object(['format', 'issues'], { format: { const: REGISTER_FORMAT }, issues: arrayOf(ref('entry')) }),
+  $defs: {
+    date: SCHEMA.$defs.date,
+    taskId: SCHEMA.$defs.taskId,
+    issueId: SCHEMA.$defs.issueId,
+    entry: object(['id', 'task', 'title', 'context', 'human', 'options', 'status', 'ruling'], {
+      id: ref('issueId'), task: ref('taskId'), title: TEXT1, context: { type: 'string' }, human: { type: 'boolean' },
+      options: arrayOf(object(['id', 'description'], {
+        id: TEXT1, description: { type: 'string' }, impact: { type: 'string' }, recommended: { type: 'boolean' },
+        valid: { type: ['boolean', 'null'] }, invalid_reason: { type: ['string', 'null'] }, entries: ACTIONS, added_tasks: ACTIONS, amendments: ACTIONS,
+      })),
+      status: { enum: ['open', 'settled', 'dropped'] },
+      ruling: { oneOf: [ref('ruling'), { type: 'null' }] },
+    }),
+    ruling: object(['option', 'text', 'author', 'at', 'commit'], {
+      option: { type: ['string', 'null'], minLength: 1 }, text: { type: ['string', 'null'], minLength: 1 }, author: { enum: ['user', 'auto'] }, at: ref('date'), commit: { type: ['string', 'null'], minLength: 1 },
+    }),
+  },
+}
+export function validateRegister(reg) {
+  const err = []
+  check(REGISTER_SCHEMA, reg, '', err, REGISTER_SCHEMA)
+  if (err.length) return err
+  twice(reg.issues, p => p.id, 'issues', err)
+  reg.issues.forEach((p, i) => {
+    const at = `issues[${i}]`
+    if (!p.id.startsWith(`${p.task}-`)) err.push(`${at}: id ${p.id} is not an issue of ${p.task}`)
+    twice(p.options, o => o.id, `${at}.options`, err)
+    if (p.status === 'settled' && !p.ruling) err.push(`${at}: settled without a ruling`)
+    if (p.status !== 'settled' && p.ruling) err.push(`${at}: ${p.status} with a ruling`)
+    if (!p.ruling) return
+    oneOfOptionText(p.ruling, `${at}.ruling`, err)
+    if (p.ruling.option != null && !p.options.some(o => o.id === p.ruling.option)) err.push(`${at}.ruling: option ${p.ruling.option} is not an option of ${p.id}`)
+  })
+  return err
+}
+
+// ─── orchestre-progress/3 → /4 ─────────────────────────────────────────────────────────────────────────────────
+// Each issue gets its id, <task>-<n> in the order of the file. A /3 issue only kept the text of its options, not their
+// actions: it is marked without_actions, and each option is invalid for rule, so that it is settled by a free answer.
+// Everything else is kept as is. Returns null for a document in another format.
+export const INHERITED = `inherited from ${PREVIOUS_FORMAT} without its actions: settle it with a free answer`
+export function convertV3(doc) {
+  if (!doc || doc.format !== PREVIOUS_FORMAT) return null
+  const n = new Map()
+  const issue = p => {
+    p = objectOf(p)
+    n.set(p.task, (n.get(p.task) || 0) + 1)
+    return { id: `${p.task}-${n.get(p.task)}`, ...p, without_actions: true, options: listOf(p.options, o => ({ ...objectOf(o), valid: false, invalid_reason: INHERITED, effect: '', amends: [] })) }
+  }
+  const out = {}
+  for (const [k, v] of Object.entries(doc)) {
+    out[k] = k === 'format' ? FORMAT : k === 'issues' ? listOf(v, issue) : v
+    if (k === 'issues') out.pending_rulings = []
+  }
+  out.pending_rulings ??= []
+  return out
+}
+
+// ─── Legacy formats: orchestre-suivi/2 and /1 (French) → orchestre-progress/3, then /4 ──────────────────────────────
 // Keys renamed, enumerated values translated; free texts (titles, log, reviews, details) are kept as written.
 // /1 had no modele_utilise: model_used starts at null. Returns null for a document in another format.
 const tr = (map, x) => (typeof x === 'string' && Object.hasOwn(map, x) ? map[x] : x)
 const listOf = (x, f) => (Array.isArray(x) ? x.map(f) : x)
 const objectOf = x => (x && typeof x === 'object' && !Array.isArray(x) ? x : {})
-export function convertLegacy(doc) {
+export function convertLegacy(doc) { return convertV3(legacyToV3(doc)) }
+function legacyToV3(doc) {
   if (!doc || !LEGACY_FORMATS.includes(doc.format)) return null
   const L = LEGACY
   const task = t => (t = objectOf(t), {
@@ -294,7 +431,7 @@ export function convertLegacy(doc) {
   const handoff = Object.fromEntries(Object.entries(objectOf(doc.handoff)).map(([section, types]) => [tr(L.section, section),
     Object.fromEntries(Object.entries(objectOf(types)).map(([type, c]) => [tr(L.handoffType, type), { minor: objectOf(c).mineur, major: objectOf(c).majeur }]))]))
   return {
-    format: FORMAT, plan: doc.plan, dir: doc.dossier, integration: doc.integration, base: doc.base, updated: doc.maj,
+    format: PREVIOUS_FORMAT, plan: doc.plan, dir: doc.dossier, integration: doc.integration, base: doc.base, updated: doc.maj,
     tasks: listOf(doc.taches, task), runs: listOf(doc.runs, run), issues: listOf(doc.points, issue),
     auto_decisions: listOf(doc.decisions_office, d => (d = objectOf(d), { run: d.run, task: d.tache, title: d.titre, option: d.option, description: d.description })),
     reviews: listOf(doc.relectures, r => (r = objectOf(r), { task: r.tache, phase: r.phase, text: r.texte, run: r.run, at: r.quand })),
@@ -304,13 +441,13 @@ export function convertLegacy(doc) {
     log_omitted: doc.journal_omis,
   }
 }
-// The log note that a conversion leaves, at the first write or by migrate.mjs
-export const conversionNote = (from, by = null) => `progress.json converted from ${from} to ${FORMAT}${by ? ` by ${by}` : ''}${from === LEGACY_FORMATS[1] ? ': model used unknown until now' : ''}`
+// The log note that a conversion leaves, at the first write or by migrate.mjs; open: the open issues it kept without actions
+export const conversionNote = (from, by = null, open = 0) => `progress.json converted from ${from} to ${FORMAT}${by ? ` by ${by}` : ''}${from === LEGACY_FORMATS[1] ? ': model used unknown until now' : ''}${open ? `; ${open} open issue${open > 1 ? 's' : ''} kept without ${open > 1 ? 'their' : 'its'} actions: settle ${open > 1 ? 'them' : 'it'} with a free answer` : ''}`
 
 // ─── Plan: main checkout, configuration, plan-lint, frontmatter, HANDOFF.md ─────────────────────────────────────
 const isPlan = d => existsSync(join(d, 'tasks')) || existsSync(join(d, 'taches'))
 // The main checkout is the first block of « git worktree list --porcelain » (as status.mjs): the progress files always live there
-function locate(arg) {
+export function locate(arg) {
   const cwd = process.cwd()
   const here = attempt(() => git(['rev-parse', '--show-toplevel'], cwd).trim())
   if (!here) throw new UsageError('not in a git repository')
@@ -501,7 +638,7 @@ const newTask = x => ({
 })
 const emptyDoc = (ctx, at) => ({
   format: FORMAT, plan: ctx.name, dir: ctx.rel, integration: ctx.integration, base: ctx.base, updated: at,
-  tasks: [], runs: [], issues: [], auto_decisions: [], reviews: [], prerequisites: [], handoff: {}, lint: { ok: true, errors: [] }, log: [], log_omitted: 0,
+  tasks: [], runs: [], issues: [], pending_rulings: [], auto_decisions: [], reviews: [], prerequisites: [], handoff: {}, lint: { ok: true, errors: [] }, log: [], log_omitted: 0,
 })
 export const logger = (doc, at) => (kind, task, text) => doc.log.push({ at, kind, task: task ?? null, text: clip(text, 300) })
 const currentRun = doc => doc.runs.filter(r => r.status === 'in-progress').pop() || null
@@ -587,8 +724,11 @@ function rebuild(ctx, L, handoff, at) {
   return doc
 }
 
-const checkFormat = doc => { if (!doc || (doc.format !== FORMAT && !LEGACY_FORMATS.includes(doc.format))) refuse(`progress.json is in format ${doc && doc.format}, this reader reads ${[FORMAT, ...LEGACY_FORMATS].join(', ')}`) }
-const CONVERTED = Symbol('converted from a legacy format')
+const READS = [FORMAT, PREVIOUS_FORMAT, ...LEGACY_FORMATS]
+const checkFormat = doc => { if (!doc || !READS.includes(doc.format)) refuse(`progress.json is in format ${doc && doc.format}, this reader reads ${READS.join(', ')}`) }
+const CONVERTED = Symbol('converted from an earlier format')
+// A document of an earlier format, in /4
+const upgrade = doc => (doc.format === FORMAT ? doc : doc.format === PREVIOUS_FORMAT ? convertV3(doc) : convertLegacy(doc))
 
 function load(ctx) {
   const f = join(ctx.dir, 'progress.json')
@@ -597,9 +737,21 @@ function load(ctx) {
   try { doc = JSON.parse(readFileSync(f, 'utf8')) } catch (e) { refuse(`progress.json unreadable (${e.message}): fix it, or delete it so that it is rebuilt from PROGRESS.md, HANDOFF.md and plan-lint`) }
   checkFormat(doc)
   if (doc.format === FORMAT) return doc
-  const converted = convertLegacy(doc)
+  const converted = upgrade(doc)
   converted[CONVERTED] = doc.format
   return converted
+}
+
+// The issue register: absent, an empty register; unreadable, in another format or invalid, refused (it is in git: restore it)
+const emptyRegister = () => ({ format: REGISTER_FORMAT, issues: [] })
+function loadRegister(ctx) {
+  const f = join(ctx.dir, REGISTER)
+  if (!existsSync(f)) return emptyRegister()
+  let reg
+  try { reg = JSON.parse(readFileSync(f, 'utf8')) } catch (e) { refuse(`${REGISTER} unreadable (${e.message}): it is tracked by git, restore it`) }
+  const err = validateRegister(reg)
+  if (err.length) refuse(`${REGISTER} invalid:\n${err.slice(0, 12).map(e => '  - ' + e).join('\n')}`)
+  return reg
 }
 
 // progress.json and its working files out of git: otherwise a "modified" checkout at pre-flight, or a blocked git switch.
@@ -615,7 +767,9 @@ export function excludeFromGit(root, rel) {
   appendFileSync(f, `${before && !before.endsWith('\n') ? '\n' : ''}# orchestre: progress of plan ${rel}, outside git\n${missing.join('\n')}\n`)
 }
 
-// Lock: exclusive creation; a lock whose process no longer runs, or older than a minute, is removed
+// Lock: exclusive creation. A lock whose process still runs is never removed, whatever its age (close and apply commit under
+// it, and a slow pre-commit hook must not let another writer take it): the writer waits, then refuses after 20 s. A lock is
+// removed only when its process no longer runs, or when its pid cannot be read and it is older than a minute.
 const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 const alive = pid => { try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
 function underLock(ctx, fn) {
@@ -624,7 +778,7 @@ function underLock(ctx, fn) {
     try { const fd = openSync(p, 'wx'); writeSync(fd, `${process.pid}\n`); closeSync(fd); break } catch (e) {
       if (e.code !== 'EEXIST') throw e
       const pid = Number((readOrNull(p) || '').split('\n')[0]) || 0, age = attempt(() => Date.now() - statSync(p).mtimeMs)
-      if ((pid && !alive(pid)) || (age != null && age > 60000)) { attempt(() => unlinkSync(p)); continue }
+      if (pid ? !alive(pid) : (age != null && age > 60000)) { attempt(() => unlinkSync(p)); continue }
       if (Date.now() > deadline) refuse(`lock ${ctx.rel}/.progress.lock held by process ${pid || '?'} for more than 20 s; if it no longer runs, delete the file`)
       sleep(10 + Math.floor(Math.random() * 30))
     }
@@ -633,7 +787,7 @@ function underLock(ctx, fn) {
 }
 // Temporary file renamed: a reader never sees a half-written file
 function writeFile(ctx, name, content) {
-  const tmp = join(ctx.dir, `.progress.${process.pid}.${name === 'PROGRESS.md' ? 'view.' : ''}tmp`)
+  const tmp = join(ctx.dir, `.progress.${process.pid}.${name === 'PROGRESS.md' ? 'view.' : name === REGISTER ? 'issues.' : ''}tmp`)
   try { writeFileSync(tmp, content); renameSync(tmp, join(ctx.dir, name)) } finally { attempt(() => unlinkSync(tmp)) }
 }
 
@@ -641,29 +795,40 @@ export const truncate = doc => { const k = doc.log.length - LOG_MAX; if (k > 0) 
 
 // One write: plan-lint and HANDOFF.md read outside the lock, then under the lock: read, change, derived fields, validation, write.
 // change(doc, tools) returns { view: true } for a durable transition: PROGRESS.md regenerated, plan fields reread.
-function write(ctx, change, { runStart = false } = {}) {
+// tools.register() reads ISSUES.json under the same lock, once; the change returns { register: true } to write it back,
+// validated before anything is written.
+const refusedAs = (what, err) => `write refused, ${what} unchanged:\n${err.slice(0, 12).map(e => '  - ' + e).join('\n')}${err.length > 12 ? `\n  - … ${err.length - 12} more` : ''}`
+export function write(ctx, change, opts = {}) {
   const L = planLint(ctx), handoff = readOrNull(join(ctx.dir, 'HANDOFF.md')) || ''
-  return underLock(ctx, () => {
+  return underLock(ctx, () => writeLocked(ctx, change, opts, L, handoff))
+}
+// The same write, for a caller that already holds the lock and has read plan-lint and HANDOFF.md (close, 0.20.0)
+function writeLocked(ctx, change, { runStart = false } = {}, L, handoff) {
+  {
     const at = now()
     const existing = load(ctx)
     if (!existing && !L.tasks) refuse(`${L.errors[0]}: progress.json missing, it cannot be rebuilt without plan-lint; nothing is written`)
     const doc = existing || rebuild(ctx, L, handoff, at)
     const J = logger(doc, at)
-    if (existing && existing[CONVERTED]) J('run', null, conversionNote(existing[CONVERTED]))
+    if (existing && existing[CONVERTED]) J('run', null, conversionNote(existing[CONVERTED], null, existing.issues.filter(p => p.status === 'open').length))
     if (!L.tasks) { const note = `${L.errors[0]}: plan fields, git statuses and prerequisites kept as they are`; if (!doc.log.slice(-20).some(e => e.text === clip(note, 300))) J('error', null, note) }
     if (!existing || runStart) excludeFromGit(ctx.root, ctx.rel)
-    const r = change(doc, { L, handoff, at, J, ctx }) || {}
+    let register = null
+    const r = change(doc, { L, handoff, at, J, ctx, register: () => (register ??= loadRegister(ctx)) }) || {}
     if (r.view && existing) sync(doc, L, ctx, J, { statuses: false })
     derive(doc, L, handoff)
     doc.updated = at
     truncate(doc)
     const err = validate(doc)
-    if (err.length) refuse(`write refused, progress.json unchanged:\n${err.slice(0, 12).map(e => '  - ' + e).join('\n')}${err.length > 12 ? `\n  - … ${err.length - 12} more` : ''}`)
+    if (err.length) refuse(refusedAs('progress.json', err))
+    const registerText = r.register && register ? JSON.stringify(register, null, 2) + '\n' : null
+    if (registerText != null) { const e = validateRegister(register); if (e.length) refuse(refusedAs(`progress.json and ${REGISTER}`, e)) }
     const viewText = r.view ? render(doc, readOrNull(join(ctx.dir, 'PROGRESS.md'))) : null
+    if (registerText != null) writeFile(ctx, REGISTER, registerText)
     writeFile(ctx, 'progress.json', JSON.stringify(doc, null, 2) + '\n')
     if (viewText != null) writeFile(ctx, 'PROGRESS.md', viewText)
     return { doc, ...r }
-  })
+  }
 }
 
 // ─── Write commands ─────────────────────────────────────────────────────────────────────────────────────────
@@ -716,10 +881,28 @@ function step(doc, E, { J, at }) {
   return { message: `${t.id} → ${E.step}${t.model_used && (model || ch) ? ` (${t.model_used})` : ''}` }
 }
 
-const optionWithoutActions = o => ({ id: o.id, description: o.description ?? '', ...(o.impact !== undefined ? { impact: o.impact } : {}), ...(o.recommended !== undefined ? { recommended: o.recommended } : {}) })
-const issueOf = (p, run, task, role) => ({
-  run, task: p.task ?? task, title: p.title, context: p.context ?? '', human: !!p.human, role: p.role ?? role, status: 'open', chosen_option: null,
-  options: (p.options || []).map(optionWithoutActions), ...(p.circuit_breaker ? { circuit_breaker: true } : {}), ...(p.inconsistency ? { inconsistency: p.inconsistency } : {}),
+// What an option does to the plan, in one sentence, from its actions: "amends AH04, AH05", "adds AH03B in phase 2", or
+// "a note in HANDOFF, no task changes"
+export function effectOf(o) {
+  const ids = xs => (Array.isArray(xs) ? xs : []).map(x => x && x.id).filter(id => RE_ID.test(id || ''))
+  const amends = [...new Set(ids(o.amendments))]
+  const adds = (Array.isArray(o.added_tasks) ? o.added_tasks : []).filter(x => x && RE_ID.test(x.id || '')).map(x => `${x.id}${Number.isInteger(x.phase) ? ` in phase ${x.phase}` : ''}`)
+  const parts = [...(amends.length ? [`amends ${amends.join(', ')}`] : []), ...(adds.length ? [`adds ${adds.join(', ')}`] : [])]
+  return { effect: parts.length ? parts.join('; ') : 'a note in HANDOFF, no task changes', amends }
+}
+// The short copy of an option for progress.json: its text, what the dry run said of it (null: not looked at yet), its effect
+const optionCopy = o => ({
+  id: String(o.id), description: o.description ?? '', ...(o.impact !== undefined ? { impact: o.impact } : {}), ...(o.recommended !== undefined ? { recommended: o.recommended } : {}),
+  valid: typeof o.valid === 'boolean' ? o.valid : null, invalid_reason: o.valid === false && typeof o.invalid_reason === 'string' ? o.invalid_reason : null, ...effectOf(o),
+})
+// The next id of an issue of a task: after those of progress.json and of the register (read if it can be)
+function nextIssueId(doc, task, tools) {
+  const ids = [...doc.issues.map(p => p.id), ...(attempt(() => tools.register().issues.map(p => p.id)) || [])].filter(id => typeof id === 'string' && id.startsWith(`${task}-`))
+  return `${task}-${Math.max(0, ...ids.map(id => Number(id.slice(task.length + 1))).filter(Number.isInteger)) + 1}`
+}
+const issueOf = (doc, p, run, task, role, tools) => ({
+  id: nextIssueId(doc, p.task ?? task, tools), run, task: p.task ?? task, title: p.title, context: p.context ?? '', human: !!p.human, role: p.role ?? role, status: 'open', chosen_option: null,
+  options: (p.options || []).map(optionCopy), ...(p.circuit_breaker ? { circuit_breaker: true } : {}), ...(p.inconsistency ? { inconsistency: p.inconsistency } : {}),
 })
 const runNumber = doc => currentRun(doc)?.number ?? refuse('no run in progress: run run-start first')
 
@@ -770,18 +953,53 @@ function close(doc, E, tools) {
     doc.reviews.push({ task: t.id, phase: t.phase, text, run: currentRun(doc)?.number ?? null, at })
     J('review', t.id, `${t.id}: review before the PR — ${text}`)
   }
+  // An issue with auto: <option> (0.20.0) is an automatic decision: the same decision given in auto_decisions is not noted twice
+  const issues = list(E, 'issues'), autoKey = (title, option) => JSON.stringify([title, String(option)])
+  const autos = new Set(issues.filter(p => p && p.auto != null).map(p => autoKey(p.title, p.auto)))
+  const decided = d => doc.auto_decisions.some(x => x.run === nrun() && x.task === d.task && x.title === d.title && String(x.option) === String(d.option))
   for (const d of list(E, 'auto_decisions')) {
+    if (autos.has(autoKey(d.title, d.option)) || decided({ ...d, task: d.task ?? t.id })) continue
     doc.auto_decisions.push({ run: nrun(), task: d.task ?? t.id, title: d.title, option: d.option, description: d.description })
     J('auto-decision', t.id, `${t.id}: "${d.title}", option ${d.option} taken automatically`)
   }
-  for (const p of list(E, 'issues')) {
-    doc.issues.push(issueOf(p, nrun(), t.id, 'open'))
-    J('issue', t.id, `${t.id}: issue "${p.title}"${p.human ? ' (human)' : ''}`)
+  // Each issue: its short copy in progress.json and, whole, in ISSUES.json (0.20.0). An issue this run already recorded for the
+  // same task with the same title (the match of run-end) is the same issue, given again by a close run twice: it keeps its id
+  // and is recorded neither again nor, settled by auto, as a second automatic decision
+  const ids = [], same = new Set()
+  let recorded = 0
+  for (const p of issues) {
+    const already = doc.issues.find(x => !same.has(x) && x.run === nrun() && x.task === (p.task ?? t.id) && x.title === p.title)
+    if (already) { same.add(already); ids.push(already.id); continue }
+    const copy = issueOf(doc, p, nrun(), t.id, 'open', tools), auto = p.auto != null ? String(p.auto) : null
+    if (auto != null) {
+      const o = copy.options.find(o => o.id === auto) || refuse(`close: issue "${p.title}": auto names option ${auto}, which it does not have`)
+      Object.assign(copy, { status: 'settled', chosen_option: auto })
+      doc.auto_decisions.push({ run: nrun(), task: copy.task, title: copy.title, option: auto, description: o.description })
+      J('auto-decision', t.id, `${t.id}: "${p.title}", option ${auto} taken automatically`)
+    } else J('issue', t.id, `${t.id}: issue "${p.title}"${p.human ? ' (human)' : ''}`)
+    doc.issues.push(copy)
+    same.add(copy)
+    tools.register().issues.push(registerEntry(copy, p, auto, at))
+    ids.push(copy.id)
+    recorded++
   }
   const skipped = add(doc, list(E, 'added_tasks'), t.id, tools)
+  for (const x of list(E, 'rejected')) J('error', RE_ID.test(x.id || '') ? x.id : null, `${x.id} not applied after ${t.id}: ${x.reason}`)
   logAmendments(E, J, t.id)
-  return { view: true, message: `${t.id} ${E.status}; PROGRESS.md regenerated${notAdded(skipped)}` }
+  return { view: true, register: recorded > 0, issues: ids, message: `${t.id} ${E.status}; PROGRESS.md regenerated${notAdded(skipped)}` }
 }
+// The whole issue for ISSUES.json: its options with their actions and the dry run's verdict; settled by auto when auto names
+// one of its options (the commit of application is the one close makes, unknown before it: null)
+const actionsOf = (o, k) => (Array.isArray(o[k]) ? o[k] : [])
+const registerEntry = (copy, p, auto, at) => ({
+  id: copy.id, task: copy.task, title: copy.title, context: copy.context, human: copy.human,
+  options: (p.options || []).map((o, i) => ({
+    id: copy.options[i].id, description: copy.options[i].description, ...(o.impact !== undefined ? { impact: o.impact } : {}), ...(o.recommended !== undefined ? { recommended: o.recommended } : {}),
+    valid: copy.options[i].valid, invalid_reason: copy.options[i].invalid_reason, entries: actionsOf(o, 'entries'), added_tasks: actionsOf(o, 'added_tasks'), amendments: actionsOf(o, 'amendments'),
+  })),
+  status: auto != null ? 'settled' : 'open',
+  ruling: auto != null ? { option: auto, text: null, author: 'auto', at, commit: null } : null,
+})
 
 function ruling(doc, E, tools) {
   const { J } = tools
@@ -802,6 +1020,63 @@ function ruling(doc, E, tools) {
   return { view: true, message: `ruling ${t.id} option ${option}; PROGRESS.md regenerated${notAdded(skipped)}` }
 }
 
+// ─── Rulings by reference (0.20.0, decision D1) ────────────────────────────────────────────────────────────────────
+// rule records the user's answer to an open issue in progress.json only (pending_rulings): during a run, nothing tracked by
+// git may be written. apply reports it into ISSUES.json, HANDOFF.md and the tasks, then commits; until then unrule withdraws it.
+// An issue is looked up by its id in progress.json (the copy the pane shows) and in ISSUES.json (the whole issue, which
+// prevails for the options and the status); settled in either one, it is settled.
+function findIssue(doc, x, cmd, tools) {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) refuse(`${cmd}: each item is an object { issue${cmd === 'rule' ? ', option } or { issue, text' : ''} }`)
+  if (typeof x.issue !== 'string' || !RE_ISSUE.test(x.issue)) refuse(`${cmd}: "issue" must be the id of an issue, such as T02-1 (${describe(x.issue)} received)`)
+  const copy = doc.issues.find(p => p.id === x.issue) || null, entry = tools.register().issues.find(p => p.id === x.issue) || null
+  if (!copy && !entry) refuse(`${cmd}: unknown issue ${x.issue}`)
+  const state = entry && entry.status !== 'open' ? entry.status : copy && copy.status === 'settled' ? 'settled' : 'open'
+  return { id: x.issue, task: (entry || copy).task, state, options: (entry || copy).options, pending: doc.pending_rulings.find(r => r.issue === x.issue) || null }
+}
+const answer = r => (r.option != null ? `option ${r.option}` : 'a free answer')
+function rule(doc, E, { J, at, ...tools }) {
+  const seen = new Set()
+  const rulings = itemsOf(E, 'rule').map(x => {
+    const p = findIssue(doc, x, 'rule', tools)
+    if (seen.has(p.id)) refuse(`rule: issue ${p.id} given twice`)
+    seen.add(p.id)
+    if (p.state !== 'open') refuse(`rule: issue ${p.id} already ${p.state}`)
+    if (p.pending) refuse(`rule: issue ${p.id} already has a ruling recorded (${answer(p.pending)}); unrule it first`)
+    if ((x.option == null) === (x.text == null)) refuse(`rule: ${p.id}: give "option" or "text", not ${x.option == null ? 'neither' : 'both'}`)
+    if (x.text != null) {
+      const text = typeof x.text === 'string' ? squash(x.text) : ''
+      if (!text) refuse(`rule: ${p.id}: "text" must be a non-empty text`)
+      return { p, r: { issue: p.id, option: null, text, at } }
+    }
+    if (typeof x.option !== 'string' || !x.option) refuse(`rule: ${p.id}: "option" must be the id of an option`)
+    const o = p.options.find(o => o.id === x.option)
+    if (!o) refuse(`rule: option ${x.option} absent from issue ${p.id} (${p.options.map(o => o.id).join(', ') || 'it has no option'}): give a text instead`)
+    if (o.valid === false) refuse(`rule: option ${x.option} of ${p.id} is invalid: ${o.invalid_reason || 'refused by the dry run'}`)
+    return { p, r: { issue: p.id, option: x.option, text: null, at } }
+  })
+  for (const { p, r } of rulings) {
+    doc.pending_rulings.push(r)
+    J('ruling', p.task, `${r.issue}: ${answer(r)} recorded`)
+  }
+  return { message: rulings.length === 1 ? `${rulings[0].r.issue}: ${answer(rulings[0].r)} recorded; it leaves "Your turn"` : `${rulings.length} rulings recorded; they leave "Your turn"` }
+}
+function unrule(doc, E, { J, ...tools }) {
+  const seen = new Set()
+  const drop = itemsOf(E, 'unrule').map(x => {
+    const p = findIssue(doc, x, 'unrule', tools)
+    if (seen.has(p.id)) refuse(`unrule: issue ${p.id} given twice`)
+    seen.add(p.id)
+    if (p.state !== 'open') refuse(`unrule: the ruling of ${p.id} is already applied (issue ${p.state})`)
+    if (!p.pending) refuse(`unrule: no ruling recorded for ${p.id}`)
+    return p
+  })
+  for (const p of drop) {
+    doc.pending_rulings.splice(doc.pending_rulings.indexOf(p.pending), 1)
+    J('ruling', p.task, `${p.id}: ${answer(p.pending)} withdrawn`)
+  }
+  return { message: drop.length === 1 ? `${drop[0].id}: ruling withdrawn; back in "Your turn"` : `${drop.length} rulings withdrawn; back in "Your turn"` }
+}
+
 function runEnd(doc, E, tools) {
   const { J, at } = tools
   const run = currentRun(doc) || refuse('no run in progress: run run-start first')
@@ -809,10 +1084,15 @@ function runEnd(doc, E, tools) {
   run.status = E.status
   run.end = at
   run.detail = E.detail == null ? null : Array.isArray(E.detail) ? E.detail.map(String).join('; ') : String(E.detail)
-  // Summary lists: they are the source of truth for this run
   const ids = k => list(E, k).map(x => (typeof x === 'string' ? x : x && x.id))
-  if (E.rulings_applied) run.rulings_applied = list(E, 'rulings_applied').map(a => ({ task: a.task, title: a.title, option: String(a.option && typeof a.option === 'object' ? a.option.id : a.option) }))
-  if (E.discarded_amendments) run.discarded_amendments = list(E, 'discarded_amendments').map(a => ({ task: a.task, id: a.id, reason: a.reason ?? '' }))
+  // Rulings applied and amendments discarded (0.20.0): what apply, close and ruling already noted in this run stays; the summary
+  // only adds what is not there yet (same task, title and option; same task and id). A summary with empty lists erases nothing.
+  for (const a of list(E, 'rulings_applied').map(objectOf).map(a => ({ task: a.task, title: a.title, option: String(a.option && typeof a.option === 'object' ? a.option.id : a.option) }))) {
+    if (!run.rulings_applied.some(y => y.task === a.task && y.title === a.title && y.option === a.option)) run.rulings_applied.push(a)
+  }
+  for (const a of list(E, 'discarded_amendments').map(objectOf).map(a => ({ task: a.task, id: a.id, reason: a.reason ?? '' }))) {
+    if (!run.discarded_amendments.some(y => y.task === a.task && y.id === a.id)) run.discarded_amendments.push(a)
+  }
   // Added tasks: the summary does not know those of the rulings, already noted by the ruling command; we complete without removing.
   // A summary task missing from the progress file (close not written) gets in, with the task that created it if the summary gives it.
   let viewNeeded = false
@@ -832,7 +1112,7 @@ function runEnd(doc, E, tools) {
   for (const [p, role] of [...(E.stop_issue ? [[E.stop_issue, 'stop']] : []), ...list(E, 'open_issues').map(p => [p, 'open'])]) {
     const already = doc.issues.find(x => x.run === run.number && x.task === p.task && x.title === p.title)
     if (already) { already.role = role; continue }
-    doc.issues.push(issueOf(p, run.number, p.task, role))
+    doc.issues.push(issueOf(doc, p, run.number, p.task, role, tools))
     J('issue', p.task, `${p.task}: issue "${p.title}"${role === 'stop' ? ', which stops the run' : ''}`)
   }
   // Workflow exception: a summary task without a close in this run is closed here, from the summary
@@ -1096,12 +1376,14 @@ function status(arg) {
   const counts = parseHandoff(handoff).counts
   const count = type => Object.values(counts).reduce((n, c) => n + (c[type] ? c[type].minor + c[type].major : 0), 0)
   const ms = x => { const t = typeof x === 'string' ? Date.parse(x) : NaN; return Number.isNaN(t) ? null : t }
+  // An issue whose ruling is recorded (rule, 0.20.0) and not applied yet no longer waits for the user
+  const ruled = new Set((doc ? doc.pending_rulings : []).map(r => r.issue))
   const yourTurn = momentLines({
     now: Date.now(), updated: doc ? ms(doc.updated) : null,
     tasks: all.map(t => { const s = S.get(t.id); return { id: t.id, phase: t.phase, status: t.status, step: typeof s?.step === 'string' ? s.step : null, start: ms(s?.start), end: ms(s?.end) } }),
     runs: doc ? doc.runs.map(r => ({ status: r.status, phase: Number.isInteger(r.phase) ? r.phase : 0, start: ms(r.start), ruled: (r.rulings_applied || []).map(a => a.task) })) : [],
     prerequisites: (L.prerequisites || []).filter(x => x.status === 'open').map(p => ({ id: p.id, type: p.type, blocks: p.blocks || [] })),
-    issues: doc ? doc.issues.filter(p => p.status !== 'settled').map(p => ({ task: p.task })) : [],
+    issues: doc ? doc.issues.filter(p => p.status !== 'settled' && !ruled.has(p.id)).map(p => ({ task: p.task })) : [],
     reviews: doc ? doc.reviews.filter(r => !closedAs(r)).map(r => ({ task: r.task ?? null, phase: Number.isInteger(r.phase) ? r.phase : null, text: String(r.text ?? '') })) : parseHandoff(handoff).reviews.map(r => ({ task: r.task, phase: null, text: r.text })),
     decisions: doc ? doc.auto_decisions.filter(d => !closedAs(d)).map(d => ({ task: d.task })) : [],
     lint: { ok: !!L.ok, errors: (L.errors || []).length },
@@ -1195,6 +1477,486 @@ function triage(arg) {
   return { plan: ctx.name, base, integration: ctx.integration, safe, open }
 }
 
+// ─── close writes and commits the plan (0.20.0) ────────────────────────────────────────────────────────────────────
+// Before 0.20.0 the scribe wrote HANDOFF.md, the tasks created and the amendments by hand, then committed. close does it now,
+// under the lock and on the integration branch only; any refusal puts every file it wrote back as it was.
+
+// Fingerprint of a payload (0.20.0): the JSON the workflow hands to an agent for a progress command carries it in "_digest",
+// the output of close in "digest". Keys sorted at every level, the field `skip` of the top level left out; FNV-1a on 32 bits,
+// 8 hexadecimal digits. Self-contained: the workflow, which can load no module, carries the same text.
+export function payloadDigest(p, skip = '_digest') {
+  const sorted = (x, top) => (Array.isArray(x) ? x.map(y => sorted(y, false)) : x && typeof x === 'object' ? Object.fromEntries(Object.keys(x).filter(k => !(top && k === skip)).sort().map(k => [k, sorted(x[k], false)])) : x)
+  const c = JSON.stringify(sorted(p, true))
+  let h = 0x811c9dc5
+  for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193)
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
+// A JSON with "_digest" whose fingerprint differs was altered between the workflow and this script: refused, nothing written
+function checkDigest(cmd, E) {
+  if (!Object.hasOwn(E, '_digest')) return E
+  const computed = payloadDigest(E)
+  if (E._digest !== computed) refuse(`${cmd}: payload altered in transit (_digest ${describe(E._digest)}, ${computed} computed): nothing is written`)
+  const { _digest, ...rest } = E
+  return rest
+}
+
+// The main checkout must be on the integration branch: a blocked or failed task of the main checkout leaves it on task/<id>
+function onIntegration(ctx, cmd) {
+  const head = attempt(() => git(['symbolic-ref', '--quiet', '--short', 'HEAD'], ctx.root).trim())
+  if (head !== ctx.integration) refuse(`${cmd}: the main checkout is on ${head ? `the branch ${head}` : 'a detached HEAD'}, not on the integration branch ${ctx.integration}: nothing is written; run git switch ${ctx.integration} first`)
+}
+
+// Amendment of a task: the items appended to the end of its frontmatter lists, without removing or rewording anything; an item
+// already in the list is not added twice. A list written inline ([a, b]) stays inline. null without a frontmatter.
+const AMENDED_LISTS = ['definition_of_done', 'owned_files', 'verification', 'depends_on']
+const yamlItem = x => (RE_ID.test(x) ? x : JSON.stringify(x))
+export function amendText(text, am) {
+  const m = text.match(/^---(\r?\n)([\s\S]*?)\r?\n---/)
+  if (!m) return null
+  const eol = m[1], lines = m[2].split(/\r?\n/)
+  for (const k of AMENDED_LISTS) {
+    const items = (Array.isArray(am[k]) ? am[k] : []).map(squash).filter(Boolean)
+    if (!items.length) continue
+    const i = lines.findIndex(l => l.startsWith(`${k}:`))
+    if (i < 0) { lines.push(`${k}:`, ...[...new Set(items)].map(x => `  - ${yamlItem(x)}`)); continue }
+    const rest = lines[i].slice(k.length + 1).trim()
+    if (rest) {
+      const inner = rest.startsWith('[') ? rest.replace(/^\[/, '').replace(/\]\s*(#.*)?$/, '') : rest
+      const have = inner.split(',').map(s => s.trim()).filter(Boolean)
+      const fresh = [...new Set(items)].filter(x => !have.map(unquote).includes(x))
+      if (fresh.length) lines[i] = `${k}: [${[...have, ...fresh.map(yamlItem)].join(', ')}]`
+      continue
+    }
+    let j = i + 1
+    while (j < lines.length && /^\s+-\s/.test(lines[j])) j++
+    const indent = j > i + 1 ? lines[i + 1].match(/^\s+/)[0] : '  '
+    const have = lines.slice(i + 1, j).map(l => unquote(l.replace(/^\s+-\s+/, '')))
+    lines.splice(j, 0, ...[...new Set(items)].filter(x => !have.includes(x)).map(x => `${indent}- ${yamlItem(x)}`))
+  }
+  return `---${eol}${lines.join(eol)}${eol}---${text.slice(m[0].length)}`
+}
+// The task files of a plan folder, by the id of their frontmatter
+function taskFiles(dir) {
+  const out = new Map(), t = join(dir, 'tasks')
+  for (const f of (attempt(() => readdirSync(t)) || []).filter(f => f.endsWith('.md')).sort()) {
+    const id = ((readOrNull(join(t, f)) || '').match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] || '').match(/^id:[ \t]*(.*)$/m)
+    if (id && !out.has(unquote(id[1]))) out.set(unquote(id[1]), join(t, f))
+  }
+  return out
+}
+const slug = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').split('-').slice(0, 6).join('-')
+// What added tasks and amendments do to a plan folder: a task is created from its content (one already there is left as is);
+// an amendment of a task merged or cancelled is discarded, of a task missing from the plan refused. keep(file) is called
+// before a file is written, so that it can be put back.
+function applyActions(dir, statuses, { added_tasks, amendments }, keep = () => {}) {
+  const files = taskFiles(dir), created = [], amended = [], discarded = [], refused = []
+  for (const x of added_tasks) {
+    if (!x || !RE_ID.test(x.id || '')) { refused.push({ id: String((x && x.id) ?? '?'), reason: 'added task without a valid id' }); continue }
+    if (files.has(x.id)) continue
+    if (typeof x.content !== 'string' || !x.content.trim()) { refused.push({ id: x.id, reason: `no task file for ${x.id}, and no content to create it` }); continue }
+    const f = join(dir, 'tasks', `${x.id}${slug(x.title) ? '-' + slug(x.title) : ''}.md`)
+    if (existsSync(f)) { refused.push({ id: x.id, reason: `${basename(f)} already exists for another task` }); continue }
+    keep(f)
+    writeFileSync(f, x.content)
+    files.set(x.id, f)
+    created.push({ id: x.id, file: f })
+  }
+  for (const a of amendments) {
+    if (!a || !RE_ID.test(a.id || '')) { refused.push({ id: String((a && a.id) ?? '?'), reason: 'amendment without a valid id' }); continue }
+    const f = files.get(a.id), reason = a.reason ?? 'no reason'
+    if (!f) { refused.push({ id: a.id, reason: `amends ${a.id}, a task missing from the plan` }); continue }
+    if (DONE(statuses.get(a.id))) { discarded.push({ id: a.id, reason }); continue }
+    const text = amendText(readFileSync(f, 'utf8'), a)
+    if (text == null) { refused.push({ id: a.id, reason: `${basename(f)}: frontmatter not found` }); continue }
+    keep(f)
+    writeFileSync(f, text)
+    amended.push({ id: a.id, file: f, reason })
+  }
+  return { created, amended, discarded, refused }
+}
+// An error of plan-lint names a task when its id stands alone in it (T01 does not name T01B)
+const names = (e, id) => new RegExp(`(?:^|[^A-Za-z0-9])${id}(?:[^A-Za-z0-9]|$)`).test(e)
+// plan-lint on the plan as close left it: a task created or amended that a new error names, or that plan-lint does not read,
+// is put back as it was; a new error that names none of them puts them all back. Returns plan-lint on the final plan.
+function lintTouched(ctx, L0, touched, restore) {
+  const before = new Set(L0.tasks ? L0.errors : [])
+  let L = touched.length ? planLint(ctx) : L0
+  for (;;) {
+    const live = touched.filter(t => !t.out)
+    if (!live.length) return L
+    const fresh = L.tasks ? L.errors.filter(e => !before.has(e)) : [L.errors[0]]
+    const why = t => [...(L.tasks && t.kind === 'created' && !L.tasks.some(x => x.id === t.id) ? [`no task ${t.id} in ${basename(t.file)}`] : []), ...(L.tasks ? fresh.filter(e => names(e, t.id)) : fresh)]
+    let bad = live.filter(t => why(t).length)
+    const reason = t => clip(`plan-lint: ${(why(t).length ? why(t) : fresh).join('; ')}`, 300)
+    if (!bad.length && fresh.length) bad = live
+    if (!bad.length) return L
+    for (const t of bad) for (const u of live) if (u.file === t.file && !u.out) { u.out = reason(t); restore(u.file) }
+    L = planLint(ctx)
+  }
+}
+// A task created that shares files with a task of its phase, without a dependency between them (plan-lint's overlaps,
+// 0.20.0): it gets a dependency on that task, written into its file; of two tasks created, the later one depends on the
+// earlier one. Same rule for close, its dry run and apply. Returns the dependencies added: [{ task, on, files, phase }]
+function dependOnOverlaps(created, L) {
+  const ids = created.map(x => x.id), deps = []
+  for (const v of (L.tasks && Array.isArray(L.overlaps) ? L.overlaps : [])) {
+    const ia = ids.indexOf(v.a), ib = ids.indexOf(v.b)
+    if (ia < 0 && ib < 0) continue
+    const [task, on] = ia > ib ? [v.a, v.b] : [v.b, v.a]
+    deps.push({ task, on, files: (v.files || []).map(String), phase: L.tasks.find(t => t.id === task)?.phase ?? null })
+  }
+  for (const d of deps) {
+    const f = created.find(x => x.id === d.task).file, text = readFileSync(f, 'utf8')
+    writeFileSync(f, amendText(text, { depends_on: [d.on] }) ?? text)
+  }
+  return deps
+}
+const dependencyNote = d => `${d.task}: depends on ${d.on}, added automatically: the two tasks of phase ${d.phase} share ${d.files.join(', ')}`
+// A line of HANDOFF.md, "type · severity · text"; an entry of an option without its type, severity or text is left out
+const entryLine = (type, severity, text) => `${type} · ${severity} · ${squash(text)}`
+const isEntry = e => !!e && typeof e.type === 'string' && /^[\p{L}][\p{L}-]*$/u.test(e.type) && ['minor', 'major'].includes(e.severity) && typeof e.description === 'string' && !!e.description.trim()
+// The lines of the actions of an option, the same for close (an automatic decision) and apply (a ruling of the user), after the
+// line of the decision: its entries, the amendments made, the dependencies added on an overlap, the amendments discarded
+function actionLines({ entries = [], amended = [], deps = [], discarded = [] }) {
+  return [
+    ...entries.filter(isEntry).map(e => entryLine(e.type, e.severity, e.description)),
+    ...amended.map(a => entryLine('amendment', 'major', `${a.id}: ${a.reason}`)),
+    ...deps.map(d => entryLine('amendment', 'minor', dependencyNote(d))),
+    ...discarded.map(a => entryLine('blind-spot', 'major', `amendment not applied to ${a.id}: ${a.reason ?? 'no reason'}`)),
+  ]
+}
+// A list of a task's frontmatter (owned_files of an added task given by its content)
+function frontList(text, k) {
+  const lines = (String(text || '').match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] || '').split(/\r?\n/), i = lines.findIndex(l => l.startsWith(`${k}:`))
+  if (i < 0) return []
+  const rest = lines[i].slice(k.length + 1).trim()
+  if (rest) return rest.replace(/^\[/, '').replace(/\]\s*(#.*)?$/, '').split(',').map(unquote).filter(Boolean)
+  const out = []
+  for (let j = i + 1; j < lines.length && /^\s+-\s/.test(lines[j]); j++) out.push(unquote(lines[j].replace(/^\s+-\s+/, '')))
+  return out
+}
+// The paths an automatic decision cites (0.20.0): the owned_files its amendments add, and each backquoted text of its description
+// and of its amendments' criteria and verifications that holds a "/", no space, no "<" and no "://", and whose first segment
+// exists at the root of the main checkout (a branch such as task/T01 or a placeholder such as <plan>/tasks/ is not a path).
+// A path with "*" is checked on the folder before its first "*"; a line number (:12, :12-30) is not part of the path.
+const pathPart = p => { const s = String(p).replace(/:\d+(?:-\d+)?$/, ''); return s.includes('*') ? s.slice(0, s.indexOf('*')) : s }
+function citedPaths(ctx, o) {
+  const ams = actionsOf(o, 'amendments').map(objectOf), strings = x => (Array.isArray(x) ? x.filter(y => typeof y === 'string') : [])
+  const owned = ams.flatMap(a => strings(a.owned_files)).map(squash).filter(Boolean)
+  const texts = [o.description, ...ams.flatMap(a => [...strings(a.definition_of_done), ...strings(a.verification)])].filter(x => typeof x === 'string')
+  const ticked = texts.flatMap(x => [...x.matchAll(/`([^`]+)`/g)].map(m => m[1]))
+    .filter(x => x.includes('/') && !/\s/.test(x) && !x.includes('<') && !x.includes('://') && x.split('/')[0] && existsSync(join(ctx.root, x.split('/')[0])))
+  return [...new Set([...owned, ...ticked])]
+}
+// A path owned by one of the owned_files entries given
+const ownedBy = (p, owners) => owners.some(o => { const b = pathPart(o), q = pathPart(p); return o.includes('*') ? q.startsWith(b) : q === b || q.startsWith(b.endsWith('/') ? b : `${b}/`) })
+// The paths of an automatic decision that neither exist in the main checkout nor are owned by a task the same close adds
+const missingPaths = (ctx, o, owners) => citedPaths(ctx, o).filter(p => !existsSync(join(ctx.root, pathPart(p))) && !ownedBy(p, owners))
+const ownedOf = x => (x && Array.isArray(x.owned_files) ? x.owned_files.map(String) : frontList(x && x.content, 'owned_files'))
+// A task an option adds, brought to the phase of the run that applies it when its own phase is earlier, both in its phase field
+// and in the phase: line of its content, as toPhase of the workflow does (0.20.0): a ruling applied at the start of phase 2 on
+// an issue raised in phase 1 does not leave its task in a phase that is over. raised_from: its own phase, when raised.
+function toRunPhase(x, phase) {
+  if (!x || typeof x !== 'object' || !Number.isInteger(phase)) return x
+  const own = Number(x.phase) || Number(frontList(x.content, 'phase')[0]) || 0
+  if (own >= phase) return x
+  return { ...x, phase, ...(typeof x.content === 'string' ? { content: x.content.replace(/^phase:[ \t]*\d+/m, `phase: ${phase}`) } : {}), raised_from: own }
+}
+const raisedNote = x => `${x.id}: phase ${x.raised_from} raised to phase ${x.phase}, the phase of the run that applies the ruling`
+// A copy of a plan folder
+function copyPlan(from, to) {
+  mkdirSync(to, { recursive: true })
+  for (const e of readdirSync(from, { withFileTypes: true })) {
+    if (e.isDirectory()) copyPlan(join(from, e.name), join(to, e.name))
+    else if (e.isFile()) copyFileSync(join(from, e.name), join(to, e.name))
+  }
+}
+// Dry run (0.20.0): each option that adds or amends a task is applied to a temporary copy of the plan, as close leaves it, then
+// plan-lint runs on it; valid: true when it raises no new error, otherwise false with the reason. An option without such an
+// action changes no task: valid. Only the issues of this close: an issue inherited from /3 keeps what T13 set.
+function dryRun(ctx, issues) {
+  const options = issues.flatMap(p => p.options || [])
+  const acting = options.filter(o => actionsOf(o, 'added_tasks').length || actionsOf(o, 'amendments').length)
+  for (const o of options) if (!acting.includes(o)) Object.assign(o, { valid: true, invalid_reason: null })
+  if (!acting.length) return
+  const tmp = mkdtempSync(join(tmpdir(), 'orchestre-dry-run-')), copy = join(tmp, ctx.name)
+  try {
+    const lint = () => planLint({ ...ctx, rel: copy })
+    copyPlan(ctx.dir, copy)
+    const base = lint(), known = new Set(base.tasks ? base.errors : [])
+    const statuses = new Map((base.all || []).map(t => [t.id, t.status]))
+    for (const o of acting) {
+      rmSync(copy, { recursive: true, force: true })
+      copyPlan(ctx.dir, copy)
+      const done = applyActions(copy, statuses, { added_tasks: actionsOf(o, 'added_tasks'), amendments: actionsOf(o, 'amendments') })
+      let L = lint()
+      // The dependency apply would add: an overlap it settles does not make the option invalid
+      if (dependOnOverlaps(done.created, L).length) L = lint()
+      const unread = L.tasks ? done.created.filter(x => !L.tasks.some(t => t.id === x.id)).map(x => `no task ${x.id} in ${basename(x.file)}`) : []
+      const why = [...done.refused.map(x => x.reason), ...unread, ...(L.tasks ? L.errors.filter(e => !known.has(e)) : [L.errors[0]])]
+      Object.assign(o, why.length ? { valid: false, invalid_reason: clip(`dry run: ${why.join('; ')}`, 300) } : { valid: true, invalid_reason: null })
+    }
+  } finally { rmSync(tmp, { recursive: true, force: true }) }
+}
+// One commit of the plan's files; null when none of them changed. A refused commit leaves the index as it was.
+function commitPlan(ctx, files, message, cmd = 'close') {
+  const rel = [...new Set(files)].filter(f => existsSync(f)).map(f => relative(ctx.root, f).split(sep).join('/'))
+  const run = args => spawnSync('git', ['--literal-pathspecs', ...args], { cwd: ctx.root, env: ENV, encoding: 'utf8' })
+  const firstLine = r => String(r.stderr || r.stdout || r.error || 'no message').trim().split('\n')[0]
+  if (!rel.length) return null
+  const a = run(['add', '--', ...rel])
+  if (a.status !== 0) refuse(`${cmd}: git add refused (${firstLine(a)}): nothing is written`)
+  if (run(['diff', '--cached', '--quiet', '--', ...rel]).status === 0) return null
+  const c = run(['commit', '-q', '-m', message, '--', ...rel])
+  if (c.status !== 0) { run(['reset', '-q', '--', ...rel]); refuse(`${cmd}: commit refused (${firstLine(c)}): nothing is written`) }
+  return git(['rev-parse', 'HEAD'], ctx.root).trim()
+}
+
+// close (0.20.0). Outside the lock: plan-lint, the tasks and HANDOFF.md written (the workflow runs one close at a time), the
+// dry run. Under the lock: progress.json and ISSUES.json read, changed and written, then the commit, so that a refused commit
+// puts them back before any other writer reads them. A plan-lint under the lock would hold it past its stale limit (60 s).
+function closeAndCommit(ctx, E) {
+  onIntegration(ctx, 'close')
+  // An unknown task or a status not allowed is refused by the close of progress.json, after which every file is put back
+  const id = E.task
+  const entries = list(E, 'entries'), given = list(E, 'issues')
+  entries.forEach((e, i) => { if (!isEntry(e)) refuse(`close: entries[${i}] must be { type, severity: minor or major, description }`) })
+  given.forEach((p, i) => {
+    if (!p || typeof p !== 'object' || typeof p.title !== 'string' || !p.title.trim()) refuse(`close: issues[${i}] must be an object with a title`)
+    if (!(p.options == null || (Array.isArray(p.options) && p.options.every(o => o && typeof o === 'object' && !Array.isArray(o))))) refuse(`close: issues[${i}].options must be a list of objects`)
+    if (p.auto != null && !(p.options || []).some(o => String(o.id) === String(p.auto))) refuse(`close: issue "${p.title}": auto names option ${p.auto}, which it does not have`)
+  })
+  // An automatic decision whose option cites a path that neither exists nor is owned by a task this close adds is rejected
+  // before anything is written: its issue stays open, nothing of its option is applied, a needs-human entry says why
+  const decided = given.filter(p => p.auto != null).map(p => ({ p, o: p.options.find(o => String(o.id) === String(p.auto)) }))
+  const owners = [...list(E, 'added_tasks'), ...decided.flatMap(({ o }) => actionsOf(o, 'added_tasks'))].flatMap(ownedOf)
+  const inconsistent = decided.flatMap(({ p, o }) => missingPaths(ctx, o, owners).map(path => ({ p, o, path })))
+  const autos = decided.filter(({ p }) => !inconsistent.some(x => x.p === p))
+  const issues = given.map(p => (inconsistent.some(x => x.p === p) ? (({ auto, ...rest }) => rest)(p) : p))
+  const added = [...list(E, 'added_tasks'), ...autos.flatMap(({ o }) => actionsOf(o, 'added_tasks'))]
+  const amendments = [...list(E, 'amendments'), ...autos.flatMap(({ o }) => actionsOf(o, 'amendments'))]
+  const kept = new Map()
+  const keep = f => { if (!kept.has(f)) kept.set(f, readOrNull(f)) }
+  const restore = f => { const c = kept.get(f); if (c == null) attempt(() => unlinkSync(f)); else writeFileSync(f, c) }
+  try {
+    const L0 = planLint(ctx)
+    // Tasks created and amended, then plan-lint: what it refuses is put back
+    const done = applyActions(ctx.dir, new Map((L0.all || L0.tasks || []).map(t => [t.id, t.status])), { added_tasks: added, amendments }, keep)
+    // A task created that shares files with a task of its phase depends on it (0.20.0), as in the dry run and apply
+    const deps = done.created.length ? dependOnOverlaps(done.created, planLint(ctx)) : []
+    const touched = [...done.created.map(x => ({ ...x, kind: 'created' })), ...done.amended.map(x => ({ ...x, kind: 'amended' }))]
+    const L = lintTouched(ctx, L0, touched, restore)
+    const rejected = []
+    for (const x of [...done.refused, ...touched.filter(t => t.out).map(t => ({ id: t.id, reason: t.out }))]) if (!rejected.some(y => y.id === x.id)) rejected.push(x)
+    const out = new Set(rejected.map(x => x.id))
+    // HANDOFF.md, under "## <task>", in the order of the scribe's instruction; the actions of the options with the code of apply
+    const lines = [
+      ...actionLines({ entries }),
+      ...list(E, 'blocker').map(g => entryLine('blocker', 'major', g)),
+      ...list(E, 'rejections').map(objectOf).map(r => entryLine('rejection', 'minor', `attempt ${r.attempt}, ${r.by}: ${(Array.isArray(r.gaps) ? r.gaps : []).map(squash).join('; ')}`)),
+      ...list(E, 'unverifiable').map(c => entryLine('blind-spot', 'minor', `criterion unverifiable in the context of the task: ${c}`)),
+      ...list(E, 'flaky').map(x => entryLine('debt', 'minor', `flaky test, passed on the second run: ${x}`)),
+      ...autos.flatMap(({ p, o }) => [entryLine('decision', 'major', `${p.title}: option ${o.id} taken automatically (autonomous mode) — ${o.description ?? ''}`), ...actionLines({ entries: actionsOf(o, 'entries') })]),
+      ...actionLines({ amended: touched.filter(t => t.kind === 'amended' && !t.out), deps: deps.filter(d => !out.has(d.task)), discarded: [...done.discarded, ...list(E, 'discarded_amendments').map(objectOf)] }),
+      ...rejected.map(x => entryLine('needs-human', 'major', `${x.id} not applied: ${x.reason}`)),
+      ...inconsistent.map(x => entryLine('needs-human', 'major', `inconsistent auto-decision: ${x.path} does not exist and no task creates it`)),
+    ]
+    rejected.push(...inconsistent.map(x => ({ id: x.path, reason: `inconsistent auto-decision on issue "${x.p.title}", option ${x.o.id}: ${x.path} does not exist and no task creates it` })))
+    const handoffFile = join(ctx.dir, 'HANDOFF.md')
+    if (lines.length) { keep(handoffFile); writeFileSync(handoffFile, handoffWith(readOrNull(handoffFile) || '', id, lines)) }
+    // Dry run of the options of the new issues
+    dryRun(ctx, issues)
+    const dropped = new Set(inconsistent.map(x => JSON.stringify([x.p.title, String(x.o.id)])))
+    const E2 = {
+      ...E, issues, rejected,
+      auto_decisions: list(E, 'auto_decisions').filter(d => !dropped.has(JSON.stringify([d && d.title, String(d && d.option)]))),
+      added_tasks: [...new Map(added.filter(x => x && RE_ID.test(x.id || '') && !out.has(x.id)).map(x => [x.id, x])).values()].map(x => ({ id: x.id, title: x.title, phase: x.phase })),
+      amendments: touched.filter(t => t.kind === 'amended' && !t.out).map(t => ({ id: t.id, reason: t.reason })),
+    }
+    const handoff = readOrNull(handoffFile) || ''
+    // Under the lock: progress.json, ISSUES.json and PROGRESS.md, then one commit of the plan's files
+    return underLock(ctx, () => {
+      const held = new Map(['progress.json', 'PROGRESS.md', REGISTER].map(f => [join(ctx.dir, f), readOrNull(join(ctx.dir, f))]))
+      try {
+        const r = writeLocked(ctx, (doc, tools) => close(doc, E2, tools), {}, L, handoff)
+        const files = [handoffFile, join(ctx.dir, 'PROGRESS.md'), join(ctx.dir, REGISTER), join(ctx.dir, 'DISCOVERY.md'), ...touched.filter(t => !t.out).map(t => t.file)]
+        const commit = commitPlan(ctx, files, `progress(${id}): ${E.status}`)
+        const result = {
+          task: id, status: E.status, commit, rejected, discarded: done.discarded.map(a => ({ id: a.id, reason: a.reason })), issues: r.issues,
+          pending: r.doc.pending_rulings.map(x => x.issue), message: `${r.message}; ${commit ? `committed ${commit.slice(0, 7)}` : 'nothing to commit'}`,
+        }
+        return { ...result, digest: payloadDigest(result, 'digest') }
+      } catch (e) {
+        for (const [f, c] of held) { if (c == null) attempt(() => unlinkSync(f)); else writeFileSync(f, c) }
+        throw e
+      }
+    })
+  } catch (e) {
+    for (const f of kept.keys()) restore(f)
+    throw e
+  }
+}
+// Entries under "## <id>" (the heading created at the end of the file when it is missing), after the last line of the
+// section; an entry already written there word for word is not written twice
+function handoffWith(text, id, lines) {
+  const all = text.replace(/\s+$/, '').split('\n'), h = all.findIndex(l => l.trim() === `## ${id}`)
+  if (h < 0) return `${all.join('\n')}${all.join('').trim() ? '\n\n' : ''}## ${id}\n\n${lines.map(l => `- ${l}`).join('\n')}\n`
+  let end = h + 1
+  while (end < all.length && !/^##\s/.test(all[end])) end++
+  let last = end - 1
+  while (last > h && !all[last].trim()) last--
+  const there = new Set(all.slice(h + 1, end).map(l => l.trim()))
+  const add = [...new Set(lines.map(l => `- ${l}`))].filter(l => !there.has(l))
+  all.splice(last + 1, 0, ...(last === h && add.length ? ['', ...add] : add))
+  return all.join('\n') + '\n'
+}
+
+// ─── apply: the rulings recorded, reported into the plan (0.20.0, decision D1) ─────────────────────────────────────────
+// Each ruling of pending_rulings, in the order recorded, on top of those applied before it. An option is applied as close
+// applies an automatic decision: its HANDOFF entries, its added tasks, its amendments; a text adds one decision entry and
+// changes no task. A task the option adds that shares files with a task of its phase, without a dependency between them
+// (plan-lint's overlaps), gets a dependency on that task, noted in HANDOFF.md. An option that plan-lint still refuses is put
+// back as it was, and its issue is open again, the option invalid with the reason; the others are applied. Then, in one
+// commit "progress: rulings <ids>": HANDOFF.md, the task files, ISSUES.json (each issue applied settled, with its ruling;
+// commit null: the hash of the commit that holds the register cannot be written in it) and PROGRESS.md; progress.json too
+// (the copy of each issue settled, the ruling out of pending_rulings). Without a ruling recorded, nothing is written.
+const FREE_ANSWER = 'free answer'
+const registerOf = copy => ({
+  id: copy.id, task: copy.task, title: copy.title, context: copy.context, human: copy.human,
+  options: copy.options.map(o => ({ id: o.id, description: o.description, ...(o.impact !== undefined ? { impact: o.impact } : {}), ...(o.recommended !== undefined ? { recommended: o.recommended } : {}), valid: o.valid, invalid_reason: o.invalid_reason, entries: [], added_tasks: [], amendments: [] })),
+  status: 'open', ruling: null,
+})
+// Outside the lock: progress.json read (written by rename, a read sees a whole file), plan-lint, the tasks and HANDOFF.md
+// written. Under the lock: the rulings read checked unchanged (a ruling withdrawn or changed by unrule or rule meanwhile
+// refuses the whole apply, every file put back), progress.json and ISSUES.json written, then the commit.
+function applyRulings(ctx) {
+  onIntegration(ctx, 'apply')
+  const doc0 = load(ctx), pending = doc0 ? doc0.pending_rulings : []
+  const result = { applied: [], rejected: [], discarded: [], amended: [], added_tasks: [], commit: null }
+  const answerOf = (o, message) => { const x = { ...o, message }; return { ...x, digest: payloadDigest(x, 'digest') } }
+  if (!pending.length) return answerOf(result, 'no ruling to apply')
+  const reg0 = loadRegister(ctx), L0 = planLint(ctx)
+  const statuses = new Map((L0.all || L0.tasks || []).map(t => [t.id, t.status]))
+  // The phase of the run in progress, of the last run when none is: a task an option adds joins it when its own phase is earlier
+  const runPhase = (currentRun(doc0) || doc0.runs[doc0.runs.length - 1] || {}).phase
+  const kept = new Map()
+  const restore = f => { const c = kept.get(f); if (c == null) attempt(() => unlinkSync(f)); else writeFileSync(f, c) }
+  const lists = L => new Map((L.tasks || []).map(t => [t.id, { verification: t.verification || [], depends_on: t.depends_on || [] }]))
+  let L = L0, known = new Set(L0.tasks ? L0.errors : []), state = lists(L0)
+  const lines = new Map(), written = [], amended = new Map(), outcomes = []
+  const note = (task, ...ls) => { if (!lines.has(task)) lines.set(task, []); lines.get(task).push(...ls) }
+  const grow = (id, verification, dependsOn) => {
+    const a = amended.get(id) || { id, verification: [], depends_on: [] }
+    for (const [k, xs] of [['verification', verification], ['depends_on', dependsOn]]) for (const x of xs) if (!a[k].includes(x)) a[k].push(x)
+    amended.set(id, a)
+  }
+  try {
+    for (const r of pending) {
+      const copy = doc0.issues.find(p => p.id === r.issue) || null, entry = reg0.issues.find(p => p.id === r.issue) || null
+      // reopen: the option is marked invalid with the reason, so that rule refuses it and the pane says why
+      const reject = (reason, reopen = true) => { outcomes.push({ r, reason, reopen }); result.rejected.push({ issue: r.issue, option: r.option, text: r.text, reason }) }
+      if (!copy && !entry) { reject('unknown issue', false); continue }
+      const issueState = entry && entry.status !== 'open' ? entry.status : copy && copy.status === 'settled' ? 'settled' : 'open'
+      if (issueState !== 'open') { reject(`issue already ${issueState}`, false); continue }
+      const p = entry || copy
+      if (r.text != null) {
+        note(p.task, entryLine('decision', 'major', `${p.title}: settled by the user — ${r.text}`))
+        outcomes.push({ r, p, created: [], discarded: [] })
+        continue
+      }
+      const o = p.options.find(x => x.id === r.option)
+      if (!o) { reject(`option ${r.option} absent from issue ${r.issue}`, false); continue }
+      if (!entry) { reject(`no entry in ${REGISTER}: the actions of option ${r.option} are unknown; answer with a text`); continue }
+      if (o.valid === false) { reject(`option ${r.option} invalid: ${o.invalid_reason || 'refused by the dry run'}`, false); continue }
+      // The option's files, as they were before it: put back if it fails
+      const mine = new Map()
+      const keep = f => { if (!kept.has(f)) kept.set(f, readOrNull(f)); if (!mine.has(f)) mine.set(f, readOrNull(f)) }
+      const putBack = () => { for (const [f, c] of mine) { if (c == null) attempt(() => unlinkSync(f)); else writeFileSync(f, c) } }
+      // Its tasks in the phase of this run at least, before plan-lint and the dependencies
+      const adds = actionsOf(o, 'added_tasks').map(x => toRunPhase(x, runPhase))
+      const done = applyActions(ctx.dir, statuses, { added_tasks: adds, amendments: actionsOf(o, 'amendments') }, keep)
+      if (done.refused.length) { putBack(); reject(clip(done.refused.map(x => x.reason).join('; '), 300)); continue }
+      let deps = [], L1 = L
+      if (done.created.length || done.amended.length) {
+        L1 = planLint(ctx)
+        deps = dependOnOverlaps(done.created, L1)
+        if (deps.length) L1 = planLint(ctx)
+        const unread = L1.tasks ? done.created.filter(x => !L1.tasks.some(t => t.id === x.id)).map(x => `no task ${x.id} in ${basename(x.file)}`) : []
+        const fresh = [...unread, ...(L1.tasks ? L1.errors.filter(e => !known.has(e)) : [L1.errors[0]])]
+        if (fresh.length) { putBack(); reject(clip(`plan-lint: ${fresh.join('; ')}`, 300)); continue }
+      }
+      const created = adds.filter(x => done.created.some(c => c.id === x.id))
+      // Applied: the decision, then the actions of the option with the code of close, then each phase raised
+      note(p.task, entryLine('decision', 'major', `${p.title}: option ${o.id} settled by the user${o.description ? ` — ${o.description}` : ''}`),
+        ...actionLines({ entries: actionsOf(o, 'entries'), amended: done.amended, deps, discarded: done.discarded }),
+        ...created.filter(x => x.raised_from != null).map(x => entryLine('amendment', 'minor', raisedNote(x))))
+      // What the workflow reads back: the verifications and dependencies added to each task amended
+      const fresh = new Set(done.created.map(x => x.id)), after = lists(L1)
+      for (const a of done.amended) if (!fresh.has(a.id)) { const b = state.get(a.id) || { verification: [], depends_on: [] }, t = after.get(a.id) || b; grow(a.id, t.verification.filter(x => !b.verification.includes(x)), t.depends_on.filter(x => !b.depends_on.includes(x))) }
+      for (const d of deps) grow(d.task, [], [d.on])
+      L = L1; known = new Set(L1.tasks ? L1.errors : []); state = after
+      written.push(...mine.keys())
+      result.added_tasks.push(...created.map(x => ({ id: x.id, title: x.title ?? x.id, phase: L1.tasks.find(t => t.id === x.id)?.phase ?? x.phase ?? null })))
+      result.discarded.push(...done.discarded.map(a => ({ id: a.id, reason: a.reason })))
+      outcomes.push({ r, p, created, discarded: done.discarded })
+    }
+    result.applied = outcomes.filter(x => x.p).map(({ r, p }) => ({ issue: r.issue, task: p.task, option: r.option, text: r.text }))
+    result.amended = [...amended.values()]
+    // HANDOFF.md, under "## <task>" of each issue
+    const handoffFile = join(ctx.dir, 'HANDOFF.md')
+    if (lines.size) {
+      if (!kept.has(handoffFile)) kept.set(handoffFile, readOrNull(handoffFile))
+      let text = readOrNull(handoffFile) || ''
+      for (const [task, ls] of lines) text = handoffWith(text, task, ls)
+      writeFileSync(handoffFile, text)
+    }
+    const handoff = readOrNull(handoffFile) || ''
+    return underLock(ctx, () => {
+      const held = new Map(['progress.json', 'PROGRESS.md', REGISTER].map(f => [join(ctx.dir, f), readOrNull(join(ctx.dir, f))]))
+      try {
+        // progress.json and ISSUES.json: each issue applied settled, each ruling out of pending_rulings
+        writeLocked(ctx, (doc, tools) => {
+          const same = (a, b) => a.issue === b.issue && a.option === b.option && a.text === b.text && a.at === b.at
+          const moved = pending.filter(r => !doc.pending_rulings.some(y => same(r, y))).map(r => r.issue)
+          if (moved.length) refuse(`apply: the ruling of ${moved.join(', ')} was withdrawn or changed while apply ran (unrule, rule): nothing is written; run apply again`)
+          const { J } = tools, reg = tools.register(), run = currentRun(doc)
+          for (const x of outcomes) {
+            const { r } = x
+            doc.pending_rulings = doc.pending_rulings.filter(y => y.issue !== r.issue)
+            const copy = doc.issues.find(p => p.id === r.issue) || null
+            let entry = reg.issues.find(p => p.id === r.issue) || null
+            if (!x.p) {
+              if (x.reopen) for (const opts of [copy && copy.options, entry && entry.options]) { const o = (opts || []).find(y => y.id === r.option); if (o) Object.assign(o, { valid: false, invalid_reason: x.reason }) }
+              J('ruling', copy?.task ?? entry?.task ?? null, `${r.issue}: ${answer(r)} not applied: ${x.reason}${x.reopen ? '; the issue is open again' : ''}`)
+              continue
+            }
+            if (!entry) { entry = registerOf(copy); reg.issues.push(entry) }
+            Object.assign(entry, { status: 'settled', ruling: { option: r.option, text: r.text, author: 'user', at: r.at, commit: null } })
+            if (copy) Object.assign(copy, { status: 'settled', chosen_option: r.option })
+            J('ruling', x.p.task, `${r.issue}: ${answer(r)} applied`)
+            if (run && !run.rulings_applied.some(a => a.task === x.p.task && a.title === x.p.title)) run.rulings_applied.push({ task: x.p.task, title: x.p.title, option: r.option ?? FREE_ANSWER })
+            for (const a of x.discarded) if (run) run.discarded_amendments.push({ task: x.p.task, id: a.id, reason: a.reason })
+            add(doc, x.created, x.p.task, tools)
+          }
+          // PROGRESS.md regenerated when a task was added or amended
+          return { view: written.length > 0, register: true }
+        }, {}, L, handoff)
+        // One commit of the plan's files
+        const ids = result.applied.map(x => x.issue)
+        result.commit = commitPlan(ctx, [handoffFile, join(ctx.dir, 'PROGRESS.md'), join(ctx.dir, REGISTER), ...written], ids.length ? `progress: rulings ${ids.join(', ')}` : `progress: rulings refused ${result.rejected.map(x => x.issue).join(', ')}`, 'apply')
+        const said = [...(ids.length ? [`${plural(ids.length, 'ruling')} applied (${ids.join(', ')})`] : []), ...(result.rejected.length ? [`${result.rejected.length} refused (${result.rejected.map(x => x.issue).join(', ')})`] : [])]
+        return answerOf(result, `${said.join('; ')}; ${result.commit ? `committed ${result.commit.slice(0, 7)}` : 'nothing to commit'}`)
+      } catch (e) {
+        for (const [f, c] of held) { if (c == null) attempt(() => unlinkSync(f)); else writeFileSync(f, c) }
+        throw e
+      }
+    })
+  } catch (e) {
+    for (const f of kept.keys()) restore(f)
+    throw e
+  }
+}
+
 // ─── Entry ──────────────────────────────────────────────────────────────────────────────────────────────────────
 // The object of --json if given, otherwise standard input
 function input(json) {
@@ -1208,8 +1970,8 @@ function input(json) {
   return E
 }
 
-const WRITES = { 'run-start': runStart, step, close, ruling, 'run-end': runEnd, pilot, ack, ticket, reopen, relabel, 'close-plan': closePlan, 'reopen-plan': reopenPlan }
-const USAGE = 'usage: progress.mjs <run-start|step|close|ruling|run-end|pilot|ack|ticket|reopen|relabel|close-plan|reopen-plan|view|status|triage|validate> [<plan-dir>] [--stdout] [--file <progress.json>] [--json <object>]; for writes, JSON in --json or on standard input'
+const WRITES = { 'run-start': runStart, step, close, ruling, rule, unrule, 'run-end': runEnd, pilot, ack, ticket, reopen, relabel, 'close-plan': closePlan, 'reopen-plan': reopenPlan }
+const USAGE = 'usage: progress.mjs <run-start|step|close|ruling|rule|unrule|apply|run-end|pilot|ack|ticket|reopen|relabel|close-plan|reopen-plan|view|status|triage|validate> [<plan-dir>] [--stdout] [--file <progress.json>] [--json <object>]; for writes, JSON in --json or on standard input'
 
 function main() {
   const argv = process.argv.slice(2), cmd = argv[0]
@@ -1228,18 +1990,38 @@ function main() {
     console.log(JSON.stringify(triage(arg), null, 2))
     return 0
   }
+  // apply reads no input: the rulings are those of progress.json (0.20.0)
+  if (cmd === 'apply') {
+    console.log(JSON.stringify(applyRulings(locate(arg))))
+    return 0
+  }
   if (cmd === 'validate') {
-    const f = file ? resolve(file) : join(locate(arg).dir, 'progress.json')
+    const dir = file ? null : locate(arg).dir
+    const f = file ? resolve(file) : join(dir, 'progress.json')
     if (!existsSync(f)) refuse(`${f}: missing; it will be rebuilt at the next write`)
     let doc
-    try { doc = JSON.parse(readFileSync(f, 'utf8')) } catch (e) { refuse(`progress.json unreadable: ${e.message}`) }
+    try { doc = JSON.parse(readFileSync(f, 'utf8')) } catch (e) { refuse(`${file ? basename(f) : 'progress.json'} unreadable: ${e.message}`) }
+    // --file: a register is validated as one
+    const register = reg => {
+      const err = validateRegister(reg)
+      if (err.length) refuse(`${REGISTER} invalid:\n${err.map(e => '  - ' + e).join('\n')}`)
+      return `progress: ${REGISTER} valid (${REGISTER_FORMAT}, ${plural(reg.issues.length, 'issue')}, ${reg.issues.filter(p => p.status === 'open').length} open)`
+    }
+    if (file && doc && doc.format === REGISTER_FORMAT) { console.log(register(doc)); return 0 }
     checkFormat(doc)
-    // A legacy file is validated as it will be converted
+    // A file of an earlier format is validated as it will be converted
     const from = doc.format === FORMAT ? null : doc.format
-    if (from) doc = convertLegacy(doc)
+    if (from) doc = upgrade(doc)
     const err = validate(doc)
     if (err.length) refuse(`progress.json invalid:\n${err.map(e => '  - ' + e).join('\n')}`)
-    console.log(`progress: progress.json valid (${from ? `${from}, converted to ${FORMAT} at the next write` : FORMAT}, ${plural(doc.tasks.length, 'task')}, ${plural(doc.runs.length, 'run')})`)
+    const lines = [`progress: progress.json valid (${from ? `${from}, converted to ${FORMAT} at the next write` : FORMAT}, ${plural(doc.tasks.length, 'task')}, ${plural(doc.runs.length, 'run')})`]
+    // The plan's register, when it has one
+    if (dir && existsSync(join(dir, REGISTER))) {
+      let reg
+      try { reg = JSON.parse(readFileSync(join(dir, REGISTER), 'utf8')) } catch (e) { refuse(`${REGISTER} unreadable: ${e.message}`) }
+      lines.push(register(reg))
+    }
+    console.log(lines.join('\n'))
     return 0
   }
   if (cmd === 'view') {
@@ -1262,7 +2044,9 @@ function main() {
   }
   const change = WRITES[cmd]
   if (!change) throw new UsageError(USAGE)
-  const ctx = locate(arg), E = input(json)
+  const ctx = locate(arg), E = checkDigest(cmd, input(json))
+  // close writes and commits the plan, and answers in JSON (0.20.0)
+  if (cmd === 'close') { console.log(JSON.stringify(closeAndCommit(ctx, E))); return 0 }
   const r = write(ctx, (doc, tools) => change(doc, E, tools), { runStart: cmd === 'run-start' })
   console.log(`progress: ${r.message}`)
   return 0

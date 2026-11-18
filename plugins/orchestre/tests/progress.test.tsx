@@ -520,11 +520,11 @@ test('task lines: the model used, "planned → used" when they differ, the plann
   expect(text.text ?? '').toMatch(/T01 .*sonnet → opus/)
   expect(text.text ?? '').toMatch(/T03 .*haiku/)
   // A format this mod does not read: said once, nothing else
-  w.file.text = MODELS.replace('"orchestre-progress/3"', '"orchestre-progress/4"')
+  w.file.text = MODELS.replace('"orchestre-progress/3"', '"orchestre-progress/5"')
   w.file.mtime = 2
   await $.command.run(CMD('text'))
   await $.command.run(CMD('text'))
-  expect(w.toasts.filter(t => /format/.test(t))).toEqual(['orchestre: plans/demo/progress.json is in the format orchestre-progress/4; this mod reads orchestre-progress/3. Update the orchestre plugin. (15000 ms)'])
+  expect(w.toasts.filter(t => /format/.test(t))).toEqual(['orchestre: plans/demo/progress.json is in the format orchestre-progress/5; this mod reads orchestre-progress/4 and orchestre-progress/3. Update the orchestre plugin. (15000 ms)'])
   // /clear resets $.state, not what was already said
   memory.erase()
   await $.classic.SessionStart({ source: 'clear' } as never)
@@ -533,7 +533,14 @@ test('task lines: the model used, "planned → used" when they differ, the plann
   w.file.text = MODELS.replace('"orchestre-progress/3"', '"orchestre-suivi/2"')
   w.file.mtime = 3
   await $.command.run(CMD('text'))
-  expect(w.toasts.filter(t => /format/.test(t)).at(-1)).toBe('orchestre: plans/demo/progress.json is in a format of orchestre 0.11 (orchestre-suivi/2); this mod reads orchestre-progress/3: the next write of progress.mjs converts it. (15000 ms)')
+  expect(w.toasts.filter(t => /format/.test(t)).at(-1)).toBe('orchestre: plans/demo/progress.json is in a format of orchestre 0.11 (orchestre-suivi/2); this mod reads orchestre-progress/4: the next write of progress.mjs converts it. (15000 ms)')
+  // The same file in /4 (0.20.0): read as in /3, nothing said
+  const said = w.toasts.filter(t => /format/.test(t)).length
+  w.file.text = MODELS.replace('"orchestre-progress/3"', '"orchestre-progress/4"')
+  w.file.mtime = 4
+  const v4 = await $.command.run(CMD('text'))
+  expect(w.toasts.filter(t => /format/.test(t)).length).toBe(said)
+  expect(v4.text ?? '').toBe(text.text ?? '')
 })
 
 test('nothing to follow: no banner, /progress says it; a hosted session waits for its surface, a -p reads nothing', async ($, on) => {
@@ -1047,4 +1054,25 @@ test('pane opened by itself: never for the demo', { timeoutMs: 30000 }, async ($
   await $.command.run(CMD('demo'))
   await clock.advance(frameInstant(5, 0) + 100)
   expect(opens).toEqual([])
+})
+
+// progress.json /4: the same stopped run, its issue with an id, and a ruling recorded for it and not applied yet (rule, 0.20.0)
+const asFour = (pending: object[]) => {
+  const raw = JSON.parse(STOPPED)
+  return JSON.stringify({ ...raw, format: 'orchestre-progress/4', issues: raw.issues.map((p: object) => ({ id: 'T02-1', ...p })), pending_rulings: pending })
+}
+
+test('/progress pane on a /4 file: an issue with a ruling recorded and not applied yet is no longer in Your turn; without it, it is', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  state(on)
+  const w = world(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  for (const [pending, shown] of [[[], true], [[{ issue: 'T02-1', option: null, text: 'Use the staging key', at: '2026-10-08T11:55:00+02:00' }], false]] as const) {
+    w.file.text = asFour([...pending])
+    w.file.mtime = (w.file.mtime ?? 0) + 1
+    await $.command.run({ ...(CMD('') as object), presentation: { isFullscreen: true, columns: 160 } } as never)
+    const ui = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...PANE })
+    expect((await ui.find({ type: 'Button', key: 'action-1' }))?.props.label).toBe(shown ? 'T02 · Missing secret (human)' : 'T02 · waits for a human')
+    await ui.unmount()
+  }
 })

@@ -24,11 +24,26 @@ const scopeIn = prompt => {
   return sealScope({ task: m[1], branch: m[2], files: [], outside: [], tests_removed: [], skips_added: [] })
 }
 const PROOFS = [{ criterion: 'every criterion of the definition of done', by: 'diff', ref: 'src/a.ts:1' }]
+// Likewise (0.20.0): every JSON of a progress command carries "_digest", checked by parse below; a close agent that reports
+// progress_ok=true without a "close" key gets a faithful copy of the output of close, from the input of its instruction and
+// the commit, rejected and discarded of its answer
+const payloadDigest = new Function(src.match(/\nfunction payloadDigest\(p, skip = '_digest'\) \{\n[\s\S]*?\n\}/)[0] + '\nreturn payloadDigest')()
+const closeIn = prompt => { const c = progressCommands(prompt).map(parse).find(x => x.cmd === 'close'); return c && c.E }
+const sealClose = (E, a) => { const o = { task: E.task, status: E.status, commit: a.commit ?? 'p1', rejected: a.rejected || [], discarded: a.discarded || [], issues: [], pending: [], message: `${E.task} ${E.status}` }; return { ...o, digest: payloadDigest(o, 'digest') } }
+// Likewise (0.20.0): a plan-reader that opens the run (run_start_ok=true) with neither an "apply" nor an "apply_ok" key gets a
+// faithful output of apply without a ruling, when its instruction has the apply command
+const sealApply = o => ({ ...o, digest: payloadDigest(o, 'digest') })
+const NO_RULING = sealApply({ applied: [], rejected: [], discarded: [], amended: [], added_tasks: [], commit: null, message: 'no ruling to apply' })
+const applyCmdIn = prompt => (String(prompt).match(/~~~sh\n(node "?[^\n"]*progress\.mjs"? apply [^\n]*)\n~~~/) || [])[1] || null
 const sealed = (k, a, prompt) => {
   if (!a || typeof a !== 'object') return a
-  if (k.startsWith('plan-reader') && !('digest' in a)) return { ...a, digest: planDigest(a) }
+  if (k.startsWith('plan-reader')) {
+    const b = 'digest' in a ? a : { ...a, digest: planDigest(a) }
+    return a.run_start_ok === true && !('apply' in a) && !('apply_ok' in a) && applyCmdIn(prompt) ? { ...b, apply_ok: true, apply: NO_RULING } : b
+  }
   if (k.endsWith(' · verification') && !('scope' in a)) return { ...a, scope: scopeIn(prompt) }
   if (k.endsWith(' · evaluation') && a.verdict === 'pass' && !('proofs' in a)) return { ...a, proofs: PROOFS }
+  if (k.endsWith(' · progress') && a.progress_ok === true && !('close' in a) && closeIn(prompt)) return { ...a, close: sealClose(closeIn(prompt), a) }
   return a
 }
 // lint is required since 0.12.0 (/orchestre:run passes it): no default path any more
@@ -204,7 +219,7 @@ await test('I1: by phase, the issue stays open with its actions; task added in p
   const rp = { ...RP_E, added_tasks: [{ id: 'T09', title: 'Doc', phase: 2, content: '---\nid: T09\nphase: 2\n---' }] }
   const { res, calls, q } = await scenario('I1', { 'plan-reader': [plan(T00, T01)], ...t00(DEVIATION), 'T00 · replanning': [rp], 'T00 · progress': [SOK], ...t01() })
   assert.equal(res.status, 'finished'); assert.equal(res.open_issues.length, 1); assert.equal(res.auto_decisions.length, 0)
-  assert.equal(res.open_issues[0].options[0].amendments[0].id, 'T01', 'actions kept for args.rulings')
+  assert.equal(res.open_issues[0].options[0].amendments[0].id, 'T01', 'actions kept in the summary of the pilot')
   assert.equal(byLabel(calls, 'T00 · replanning')[0].opts.model, 'opus')
   assert.ok(!byLabel(calls, 'T01 · verification')[0].prompt.includes('pnpm test:rule-d'), 'nothing applied without a ruling')
   assert.deepEqual(res.added_tasks, [{ id: 'T09', phase: 2, title: 'Doc' }])
@@ -215,27 +230,14 @@ await test('I2: stop on deviation', async () => {
   assert.equal(res.status, 'awaiting-ruling'); assert.equal(res.stop_issue.title, 'UpdateUserSchema contract'); assert.deepEqual(res.not_started, ['T01'])
   drained('I2', q)
 })
+// 0.20.0: no args.rulings any more. An arg rulings is ignored: no ruling scribe, the plan reader first
 const RULING = [{ task: 'T02', title: 'Contract', option: { id: 'B', description: 'Test rule d', entries: [{ type: 'debt', severity: 'minor', description: 'x' }], amendments: [{ id: 'T01', verification: ['pnpm test:d'], reason: 'r' }], added_tasks: [{ id: 'T01B', title: 'Doc', phase: 0, content: '---\nid: T01B\nphase: 0\n---' }] } }]
-await test("J: the user's ruling applied by the scribe before the plan is read", async () => {
-  const { res, calls, q } = await scenario('J', { 'ruling T02 · progress': [SOK], 'plan-reader': [plan(T00)], ...t00(), 'T00 · progress': [SOK] }, { rulings: RULING })
-  assert.equal(idx(calls, 'ruling T02 · progress'), 0); assert.equal(idx(calls, 'plan-reader'), 1)
-  const sc = byLabel(calls, 'ruling T02 · progress')[0].prompt
-  for (const x of ['option B settled by the user', 'pnpm test:d', 'phase: 1', '## T02', 'plan-lint.mjs', 'ruling B']) assert.ok(sc.includes(x), 'ruling: ' + x)
-  assert.ok(byLabel(calls, 'T00 · worker')[0].prompt.includes('Test rule d (settled by the user)'))
-  assert.deepEqual(res.rulings_applied, [{ task: 'T02', title: 'Contract', option: 'B' }]); assert.equal(res.status, 'finished')
+await test('J: an arg rulings (0.19) is no longer read: no scribe applies a ruling, the plan reader comes first, no option reaches an agent', async () => {
+  const { res, calls, q } = await scenario('J', { 'plan-reader': [plan(T00)], ...t00(), 'T00 · progress': [SOK] }, { rulings: RULING })
+  assert.equal(idx(calls, 'plan-reader'), 0); assert.ok(calls.every(c => !c.opts.label.startsWith('ruling ')))
+  assert.ok(calls.every(c => !c.prompt.includes('Test rule d') && !c.prompt.includes('pnpm test:d')), 'nothing of the option in a prompt')
+  assert.deepEqual(res.rulings_applied, []); assert.equal(res.status, 'finished')
   drained('J', q)
-})
-await test('J2: ruling rejected by plan-lint → stop, nothing read', async () => {
-  const { res, calls, q } = await scenario('J2', { 'ruling T02 · progress': [{ ok: true, commit: 'x', rejected: [{ id: 'T01', reason: 'plan-lint: unknown dependency' }] }] }, { rulings: RULING })
-  assert.equal(res.status, 'awaiting-ruling'); assert.equal(res.stop_issue.human, true); assert.deepEqual(res.rulings_applied, [{ task: 'T02', title: 'Contract', option: 'B' }])
-  assert.equal(res.stop_issue.title, 'Ruling "Contract" partly applied')
-  assert.equal(idx(calls, 'plan-reader'), -1)
-  drained('J2', q)
-})
-await test('J3: scribe without an answer on a ruling', async () => {
-  const { res, q } = await scenario('J3', { 'ruling T02 · progress': [null] }, { rulings: RULING })
-  assert.equal(res.status, 'awaiting-ruling'); assert.deepEqual(res.rulings_applied, []); assert.equal(res.stop_issue.title, 'Ruling "Contract" not applied')
-  drained('J3', q)
 })
 await test('K: amendment rejected by the scribe at the close → stop', async () => {
   const { res, calls, q } = await scenario('K', { 'plan-reader': [plan(T00, T01)], ...t00(DEVIATION), 'T00 · replanning': [RP_E], 'T00 · progress': [{ ok: true, commit: 's', rejected: [{ id: 'T01', reason: 'plan-lint' }] }] }, { mode: 'auto' })
@@ -431,14 +433,6 @@ await test('Q2: base branch passed to plan-lint (reading and scribe)', async () 
   assert.ok(byLabel(calls, 'plan-reader')[0].prompt.includes('--integration plan/p --base develop'))
   assert.ok(byLabel(calls, 'T00 · progress')[0].prompt.includes('--integration plan/p --base develop'))
   drained('Q2', q)
-})
-await test('Q3: ruling whose amendment targets a task merged in the meantime → discarded, the run goes on', async () => {
-  const { res, calls, q } = await scenario('Q3', { 'ruling T02 · progress': [{ ok: true, commit: 'x', rejected: [], discarded: [{ id: 'T01', reason: 'merged' }] }], 'plan-reader': [plan(T00)], ...t00(), 'T00 · progress': [SOK] }, { rulings: RULING })
-  assert.equal(res.status, 'finished'); assert.deepEqual(res.discarded_amendments, [{ task: 'T02', id: 'T01', reason: 'merged' }])
-  const sc = byLabel(calls, 'ruling T02 · progress')[0].prompt
-  assert.ok(sc.includes('return it in "discarded", not in "rejected"') && sc.includes('amendment not applied'))
-  assert.ok(byLabel(calls, 'ruling T02 · progress')[0].opts.schema.properties.discarded, 'scribe: discarded in the schema')
-  drained('Q3', q)
 })
 await test('Q4: autonomous, amendment of a task of another phase already merged → discarded, not sent to the scribe', async () => {
   const rp = { major: true, entries: [], issues: [{ title: 'W', options: [{ id: 'A', description: 'a', recommended: true, amendments: [{ id: 'T09', verification: ['z'], reason: 'r9' }] }] }] }
@@ -665,9 +659,16 @@ const withProgress = x => ({ ...x, progress_ok: true })
 const planOpened = (...ts) => ({ ...plan(...ts), run_start_ok: true })
 const COK = { progress_ok: true, commit: 'g1', detail: '' }
 // Progress commands of an instruction (0.18.0): a block between ~~~ lines, the JSON object on its own line in a heredoc
-// whose delimiter is quoted
-const progressCommands = prompt => [...prompt.matchAll(/~~~sh\n(node "?[^\n"]*progress\.mjs"? [^\n]*<<'ORCHESTRE_JSON'\n[^\n]*\nORCHESTRE_JSON)\n~~~/g)].map(m => m[1])
-const parse = c => { const m = c.match(/progress\.mjs"? (\S+) ("[^"]*"|\S+) <<'ORCHESTRE_JSON'\n([^\n]*)\nORCHESTRE_JSON$/); assert.ok(m, 'malformed progress command: ' + c); return { cmd: m[1], plan: m[2], E: JSON.parse(m[3]) } }
+// whose delimiter is quoted (a declaration, hoisted: sealed uses it from the first scenarios on)
+function progressCommands(prompt) { return [...prompt.matchAll(/~~~sh\n(node "?[^\n"]*progress\.mjs"? [^\n]*<<'ORCHESTRE_JSON'\n[^\n]*\nORCHESTRE_JSON)\n~~~/g)].map(m => m[1]) }
+// Each JSON carries its "_digest" (0.20.0), which must match: parse checks it and gives the object without it
+function parse(c) {
+  const m = c.match(/progress\.mjs"? (\S+) ("[^"]*"|\S+) <<'ORCHESTRE_JSON'\n([^\n]*)\nORCHESTRE_JSON$/)
+  assert.ok(m, 'malformed progress command: ' + c)
+  const { _digest, ...E } = JSON.parse(m[3])
+  assert.equal(_digest, payloadDigest(E), `${m[1]}: _digest missing or wrong`)
+  return { cmd: m[1], plan: m[2], E }
+}
 // The Bash tool of Claude Code decodes the \uXXXX sequences of a command before the shell reads it (issue #1); the agents
 // played by play() go through the same decoding when BASH_TOOL.decodes is on
 const BASH_TOOL = { decodes: false }
@@ -677,6 +678,8 @@ const HEADER = 'Plan progress: your first command, before any other'
 const s00 = (extra = {}) => ({ 'T00 · worker': [withProgress(report(0))], 'T00 · verification': [withProgress(ok(1))], 'T00 · evaluation': [withProgress({ verdict: 'pass' })], 'T00 · merge': [withProgress(MOK)], 'T00 · progress': [withProgress(SOK)], ...extra })
 const s01 = () => ({ 'T01 · worker': [withProgress(report(1, { branch: 'task/T01' }))], 'T01 · verification': [withProgress(ok(2))], 'T01 · evaluation': [withProgress({ verdict: 'pass' })], 'T01 · merge': [withProgress(MOK)], 'T01 · progress': [withProgress(SOK)] })
 const ISSUE_E = { task: 'T00', title: 'UpdateUserSchema contract', context: 'isSuperAdmin optional', human: false, options: [{ id: 'A', description: 'Keep optional and test rule (d)', impact: 'one more test', recommended: true }, { id: 'B', description: 'Make the field required', impact: 'breaks partial calls', recommended: false }] }
+// The issue of RP_E as close gets it (0.20.0): whole, its options with their actions, the task added brought back to phase 1
+const ISSUE_WHOLE = { ...ISSUE_E, options: [{ ...RP_E.issues[0].options[0], added_tasks: [{ id: 'T00C', title: 'Rule d test', phase: 1, content: '---\nid: T00C\nphase: 1\nmodel: sonnet\n---\n' }] }, RP_E.issues[0].options[1]] }
 
 await test('V1: progress — the plan reader opens the run, each agent first runs its step, the scribe closes before its commit, the clerk closes the run', async () => {
   const { res, calls, q } = await scenario('V1', { 'plan-reader': [planOpened(T00)], ...s00(), 'run end · progress': [COK] }, AP)
@@ -691,8 +694,10 @@ await test('V1: progress — the plan reader opens the run, each agent first run
   }
   const sc = byLabel(calls, 'T00 · progress')[0].prompt
   assert.deepEqual(progressOf(calls, 'T00 · progress'), [{ cmd: 'step', plan: 'plans/p', E: { task: 'T00', step: 'progress' } }, { cmd: 'close', plan: 'plans/p', E: { task: 'T00', status: 'merged', attempts: 1, branch: 'task/T00' } }])
-  assert.ok(!sc.includes('- PROGRESS.md: row') && sc.includes('never touch it yourself') && sc.includes('commit PROGRESS.md, HANDOFF.md and DISCOVERY.md'))
+  // 0.20.0: a task with findings closes through the scribe, which writes DISCOVERY.md only, then runs close, which commits
+  assert.ok(!sc.includes('- PROGRESS.md: row') && sc.includes('Never write HANDOFF.md, PROGRESS.md, a task or an amendment yourself, and make no commit') && sc.includes('commits them with DISCOVERY.md, with the message "progress(T00): merged"'))
   assert.ok(sc.indexOf('progress.mjs close') > sc.indexOf('DISCOVERY.md: integrate'), 'close written after the rest')
+  assert.deepEqual([byLabel(calls, 'T00 · progress')[0].opts.agentType, byLabel(calls, 'T00 · progress')[0].opts.model], ['orchestre:scribe', 'sonnet'])
   const clerk = byLabel(calls, 'run end · progress')
   assert.equal(clerk.length, 1); assert.equal(idx(calls, 'run end · progress'), calls.length - 1, 'the clerk comes last')
   assert.deepEqual([clerk[0].opts.agentType, clerk[0].opts.model, clerk[0].opts.schema.required], ['orchestre:clerk', 'haiku', ['progress_ok']])
@@ -701,7 +706,7 @@ await test('V1: progress — the plan reader opens the run, each agent first run
   assert.deepEqual(re.E.tasks, [{ id: 'T00', status: 'merged', attempts: 1, branch: 'task/T00' }], 'summary without the workers\' summaries')
   for (const x of ['1. `git switch plan/p`', '`git diff --quiet HEAD -- plans/p/PROGRESS.md`', '`git commit -m "progress: end of the run of phase 1" -- plans/p/PROGRESS.md`']) assert.ok(clerk[0].prompt.includes(x), 'clerk: ' + x)
   assert.ok(!clerk[0].prompt.includes('git add'), 'the clerk only commits PROGRESS.md')
-  assert.deepEqual([byLabel(calls, 'plan-reader')[0].opts.schema.required, byLabel(calls, 'T00 · progress')[0].opts.schema.required, byLabel(calls, 'T00 · worker')[0].opts.schema.required], [['ok', 'tasks', 'digest', 'run_start_ok'], ['ok', 'progress_ok'], ['status', 'summary', 'branch', 'path']], 'result required only where it decides what follows')
+  assert.deepEqual([byLabel(calls, 'plan-reader')[0].opts.schema.required, byLabel(calls, 'T00 · progress')[0].opts.schema.required, byLabel(calls, 'T00 · worker')[0].opts.schema.required], [['ok', 'tasks', 'digest', 'run_start_ok', 'apply_ok'], ['progress_ok'], ['status', 'summary', 'branch', 'path']], 'result required only where it decides what follows')
   drained('V1', q)
 })
 await test('V2: progress — fix and its rejection, escaped text; full close in autonomous mode (auto-decision, added task, amendment, replanning)', async () => {
@@ -719,13 +724,18 @@ await test('V2: progress — fix and its rejection, escaped text; full close in 
   assert.ok(progressCommands(fix).every(c => c.split('\n').length === 3), 'the JSON on one line, between the command and the delimiter')
   assert.ok(fix.includes("the option's `--force` costs $5") && !fix.includes('\\u0027'), 'apostrophe, backtick and dollar as they are, in the quoted heredoc')
   const D = { task: 'T00', title: 'UpdateUserSchema contract', option: 'A', description: 'Keep optional and test rule (d)' }
+  // 0.20.0: the whole close goes to close: the replanner's entries, the rejection uncut, the decided issue whole with auto (close
+  // applies its option: its entries, its task brought back to phase 1, its amendment); nothing of it in the scribe's instruction
+  const [A, B] = RP_E.issues[0].options
   assert.deepEqual(progressOf(calls, 'T00 · progress')[1].E, {
-    task: 'T00', status: 'merged', attempts: 2, branch: 'task/T00', rejections: [{ attempt: 1, by: 'evaluation', gaps: [M, LONG1] }], auto_decisions: [D],
-    added_tasks: [{ id: 'T00C', title: 'Rule d test', phase: 1 }], amendments: [{ id: 'T01', reason: 'security rule without a test' }], replanning: true })
+    task: 'T00', status: 'merged', attempts: 2, branch: 'task/T00', entries: [{ type: 'deviation', severity: 'major', description: 'contract widened' }],
+    rejections: [{ attempt: 1, by: 'evaluation', gaps: [M, 'npm test: 2 failures at a.test.ts:12 ' + 'x'.repeat(400)] }],
+    issues: [{ task: 'T00', title: 'UpdateUserSchema contract', context: 'isSuperAdmin optional', human: false, auto: 'A', options: [
+      { ...A, added_tasks: [{ id: 'T00C', title: 'Rule d test', phase: 1, content: '---\nid: T00C\nphase: 1\nmodel: sonnet\n---\n' }] }, B] }],
+    replanning: true })
   const sc = byLabel(calls, 'T00 · progress')[0].prompt
-  assert.ok(sc.includes('do not touch PROGRESS.md: the progress command below adds their row') && sc.includes('remove its file).') && !sc.includes('its row of PROGRESS.md'))
-  assert.ok(sc.indexOf('progress.mjs close') > sc.indexOf('plan-lint.mjs plans/p --integration'), 'close after plan-lint')
-  assert.ok(sc.includes(JSON.stringify(LONG).slice(1, -1)), 'HANDOFF gets the whole rejection')
+  assert.ok(sc.includes('Decisions taken automatically in this close: ["UpdateUserSchema contract: Keep optional and test rule (d)"]') && sc.includes('(`test -e <path>`)') && sc.includes('Return in "missing" each path'))
+  assert.ok(!sc.includes('plan-lint.mjs') && !sc.includes('- HANDOFF.md') && !sc.includes('New tasks: create them'), 'neither plan-lint, nor HANDOFF.md, nor a task for the scribe')
   assert.deepEqual(progressOf(calls, 'T01 · progress')[1].E, { task: 'T01', status: 'merged', attempts: 1, branch: 'task/T01' }, 'nothing of T00 in the close of T01')
   const re = progressOf(calls, 'run end · progress')[0].E
   assert.deepEqual([re.status, re.auto_decisions, re.added_tasks], ['rerun', [D], [{ id: 'T00C', phase: 1, title: 'Rule d test', added_by: 'T00' }]])
@@ -746,38 +756,22 @@ await test('V3: progress — parallel tasks → worker step with isolated=true, 
   assert.ok(byLabel(calls, 'T02 · start')[0].prompt.includes(`~~~sh\nnode "${PROG_SPACE}" step plans/p <<'ORCHESTRE_JSON'\n`))
   drained('V3', q)
 })
-await test('V4: progress — issues of the close passed without their actions; the stop issue goes to the clerk', async () => {
+await test('V4: progress — issues of the close passed whole, with their actions (0.20.0); run-end gets them without; the stop issue goes to the clerk', async () => {
   // Fresh answers for each scenario: the queues drain
   const withDev = () => ({ 'T00 · worker': [withProgress(report(0, { deviations: DEVIATION }))], 'T00 · replanning': [RP_E] })
   let { res, calls, q } = await scenario('V4a', { 'plan-reader': [planOpened(T00, T01)], ...s00(withDev()), ...s01(), 'run end · progress': [COK] }, AP)
   assert.equal(res.status, 'finished')
-  assert.deepEqual(progressOf(calls, 'T00 · progress')[1].E.issues, [ISSUE_E])
+  assert.deepEqual(progressOf(calls, 'T00 · progress')[1].E.issues, [ISSUE_WHOLE])
   assert.equal(res.open_issues[0].options[0].amendments[0].id, 'T01', 'the summary of the pilot keeps the actions')
   let re = progressOf(calls, 'run end · progress')[0].E
   assert.deepEqual(re.open_issues, [ISSUE_E]); assert.ok(!('stop_issue' in re))
   drained('V4a', q)
   ;({ res, calls, q } = await scenario('V4b', { 'plan-reader': [planOpened(T00, T01)], ...s00(withDev()), 'run end · progress': [COK] }, { ...AP, mode: 'deviation' }))
   assert.equal(res.status, 'awaiting-ruling'); assert.deepEqual(res.not_started, ['T01'])
-  assert.deepEqual(progressOf(calls, 'T00 · progress')[1].E.issues, [ISSUE_E])
+  assert.deepEqual(progressOf(calls, 'T00 · progress')[1].E.issues, [ISSUE_WHOLE])
   re = progressOf(calls, 'run end · progress')[0].E
   assert.deepEqual([re.status, re.stop_issue, re.open_issues, re.not_started], ['awaiting-ruling', ISSUE_E, [], ['T01']])
   drained('V4b', q)
-})
-await test('V5: progress — with rulings, the first scribe opens the run; each notes its own just before its commit', async () => {
-  const RULING2 = [RULING[0], { task: 'T00', title: 'Threshold', option: { id: 'A', description: "Cap at 30 s, today's safe option" } }]
-  const { res, calls, q } = await scenario('V5', { 'ruling T02 · progress': [{ ...withProgress(SOK), run_start_ok: true }], 'ruling T00 · progress': [withProgress(SOK)], 'plan-reader': [plan(T00)], ...s00(), 'run end · progress': [COK] }, { ...AP, rulings: RULING2 })
-  assert.equal(res.status, 'finished'); assert.deepEqual(res.progress_failures, [])
-  const a1 = progressOf(calls, 'ruling T02 · progress'), a2 = progressOf(calls, 'ruling T00 · progress')
-  assert.deepEqual([a1.map(x => x.cmd), a2.map(x => x.cmd)], [['run-start', 'ruling'], ['ruling']])
-  assert.ok(byLabel(calls, 'ruling T02 · progress')[0].prompt.startsWith(HEADER + ', opens the run'))
-  assert.deepEqual(a1[1].E, { task: 'T02', title: 'Contract', option: 'B', added_tasks: [{ id: 'T01B', title: 'Doc', phase: 1 }], amendments: [{ id: 'T01', reason: 'r' }] })
-  assert.deepEqual(a2[0].E, { task: 'T00', title: 'Threshold', option: 'A' })
-  const lp = byLabel(calls, 'plan-reader')[0].prompt
-  assert.ok(!lp.includes('progress.mjs') && !lp.includes('run_start_ok'), 'the plan reader does not open a second time')
-  const sa = byLabel(calls, 'ruling T02 · progress')[0].prompt
-  assert.ok(sa.includes('the progress command below adds their row') && !sa.includes('its row of PROGRESS.md') && sa.indexOf('progress.mjs ruling') > sa.indexOf('plan-lint.mjs plans/p --integration'))
-  assert.deepEqual(progressOf(calls, 'run end · progress')[0].E.rulings_applied, [{ task: 'T02', title: 'Contract', option: 'B' }, { task: 'T00', title: 'Threshold', option: 'A' }])
-  drained('V5', q)
 })
 await test('V6: progress — run start refused by the script → error, no task and no clerk', async () => {
   const E1 = 'progress: PROGRESS.md, row 5: unknown status "in-progress" for T00'
@@ -785,16 +779,13 @@ await test('V6: progress — run start refused by the script → error, no task 
   assert.equal(res.status, 'error'); assert.ok(res.detail.startsWith('progress: run not opened') && res.detail.includes(E1))
   assert.deepEqual(res.progress_failures, [{ task: null, step: 'run-start', error: E1 }]); assert.equal(calls.length, 1)
   drained('V6a', q)
-  ;({ res, calls, q } = await scenario('V6b', { 'ruling T02 · progress': [{ ok: false, run_start_ok: false, progress_error: E1 }] }, { ...AP, rulings: RULING }))
-  assert.equal(res.status, 'error'); assert.deepEqual(res.rulings_applied, [], 'ruling to replay'); assert.equal(calls.length, 1)
-  drained('V6b', q)
+  // 0.20.0: a run start refused runs no apply: the rulings stay recorded
+  assert.ok(byLabel(calls, 'plan-reader')[0].prompt.includes('Otherwise, stop there without doing anything else'))
+  assert.deepEqual(res.rulings_applied, [])
   ;({ res, calls, q } = await scenario('V6c', { 'plan-reader': [plan(T00)] }, AP))
   assert.equal(res.status, 'error'); assert.deepEqual(res.progress_failures, [{ task: null, step: 'run-start', error: 'result not reported' }])
   drained('V6c', q)
   // First agent without an answer: we do not know if the run is opened, no clerk
-  ;({ res, calls, q } = await scenario('V6d', { 'ruling T02 · progress': [null] }, { ...AP, rulings: RULING }))
-  assert.deepEqual([res.status, res.stop_issue.context, calls.length], ['awaiting-ruling', 'scribe without an answer', 1])
-  drained('V6d', q)
   ;({ res, calls, q } = await scenario('V6e', { 'plan-reader': [null] }, AP))
   assert.deepEqual([res.status, calls.length], ['error', 1])
   drained('V6e', q)
@@ -816,21 +807,16 @@ await test('V7: progress — step failed or not reported → the run goes on, pr
     drained(name, r3.q)
   }
 })
-await test('V8: progress — close not written → human stop; ruling not noted → status awaiting-ruling; the clerk runs all the same', async () => {
-  let { res, calls, q } = await scenario('V8a', { 'plan-reader': [planOpened(T00, T01)], ...s00({ 'T00 · progress': [{ ...SOK, progress_ok: false, progress_error: 'progress: write refused' }] }), 'run end · progress': [COK] }, AP)
-  assert.deepEqual([res.status, res.stop_issue.title, res.stop_issue.human, res.not_started], ['awaiting-ruling', 'Progress of T00: close not written in progress.json', true, ['T01']])
-  assert.ok(res.stop_issue.context.startsWith('progress: write refused'))
+await test('V8: progress — close not written → human stop; the clerk runs all the same', async () => {
+  // 0.20.0: close writes everything or nothing; refused for another reason than an altered payload, it is not run again
+  let { res, calls, q } = await scenario('V8a', { 'plan-reader': [planOpened(T00, T01)], ...s00({ 'T00 · worker': [withProgress(report(0, { deviations: DEVIATION }))], 'T00 · replanning': [{ major: false, entries: [{ type: 'deviation', severity: 'minor', description: 'isSuperAdmin optional' }], issues: [] }], 'T00 · progress': [{ progress_ok: false, progress_error: 'progress: write refused' }] }), 'run end · progress': [COK] }, AP)
+  assert.deepEqual([res.status, res.stop_issue.title, res.stop_issue.human, res.not_started], ['awaiting-ruling', 'Progress of T00 not committed', true, ['T01']])
+  assert.equal(res.stop_issue.context, 'close refused: progress: write refused. Nothing of the close is written (HANDOFF.md, tasks, amendments, ISSUES.json); the run end closes T00 in progress.json from the summary. HANDOFF entries not written: ["deviation · minor · isSuperAdmin optional"]')
   assert.deepEqual(res.progress_failures, [{ task: 'T00', step: 'close', error: 'progress: write refused' }])
+  assert.equal(byLabel(calls, 'T00 · progress').length, 1, 'not run again')
   const re = progressOf(calls, 'run end · progress')[0].E
-  assert.deepEqual([re.status, re.stop_issue.title, re.tasks], ['awaiting-ruling', 'Progress of T00: close not written in progress.json', [{ id: 'T00', status: 'merged', attempts: 1, branch: 'task/T00' }]])
+  assert.deepEqual([re.status, re.stop_issue.title, re.tasks], ['awaiting-ruling', 'Progress of T00 not committed', [{ id: 'T00', status: 'merged', attempts: 1, branch: 'task/T00' }]])
   drained('V8a', q)
-  ;({ res, calls, q } = await scenario('V8b', { 'ruling T02 · progress': [{ ...SOK, run_start_ok: true, progress_ok: false, progress_error: 'progress: task unknown to progress: T02' }], 'run end · progress': [COK] }, { ...AP, rulings: RULING }))
-  assert.deepEqual([res.status, res.stop_issue.title], ['awaiting-ruling', 'Ruling "Contract" partly applied'])
-  assert.ok(res.stop_issue.context.includes('progress.json and PROGRESS.md not written: progress: task unknown to progress: T02'))
-  assert.deepEqual(res.rulings_applied, [{ task: 'T02', title: 'Contract', option: 'B' }], 'applied in HANDOFF: not to replay')
-  assert.equal(byLabel(calls, 'run end · progress').length, 1)
-  assert.deepEqual(res.progress_failures, [{ task: 'T02', step: 'ruling', error: 'progress: task unknown to progress: T02' }])
-  drained('V8b', q)
   // Post-merge check failed: its issue goes with the close
   ;({ res, calls, q } = await scenario('V8c', { 'plan-reader': [planOpened(T00)], ...s00({ 'T00 · merge': [withProgress({ ok: false, merged: true, check_ok: false, detail: 'typecheck failed' })] }), 'run end · progress': [COK] }, AP))
   assert.equal(res.status, 'awaiting-ruling')
@@ -855,7 +841,7 @@ await test('V13: progress — close with flaky tests, unverifiable criterion and
   const R = { type: 'review', description: '.env.example: add MR_MAX' }
   let { res, calls, q } = await scenario('V13a', { 'plan-reader': [planOpened(T00)], ...s00({ 'T00 · worker': [withProgress(report(0, { deviations: [R] }))], 'T00 · verification': [withProgress({ ...ok(1), flaky: ['journal.spec.ts:53'] })], 'T00 · evaluation': [withProgress({ verdict: 'pass', unverifiable: [UV] })], 'T00 · replanning': [NOTHING] }), 'run end · progress': [COK] }, AP)
   assert.equal(res.status, 'finished')
-  assert.deepEqual(progressOf(calls, 'T00 · progress')[1].E, { task: 'T00', status: 'merged', attempts: 1, branch: 'task/T00', flaky: ['journal.spec.ts:53'], unverifiable: [UV], reviews: ['.env.example: add MR_MAX'], replanning: true })
+  assert.deepEqual(progressOf(calls, 'T00 · progress')[1].E, { task: 'T00', status: 'merged', attempts: 1, branch: 'task/T00', entries: [{ type: 'review', severity: 'major', description: '.env.example: add MR_MAX' }], flaky: ['journal.spec.ts:53'], unverifiable: [UV], reviews: ['.env.example: add MR_MAX'], replanning: true })
   drained('V13a', q)
   const P2 = { title: 'Two recommended', context: '', options: [{ id: 'A', description: 'a', recommended: true }, { id: 'B', description: 'b', recommended: true }] }
   ;({ res, calls, q } = await scenario('V13b', { 'plan-reader': [planOpened(T00, T01)], ...s00({ 'T00 · worker': [withProgress(report(0, { deviations: DEVIATION }))], 'T00 · replanning': [{ major: true, entries: [], issues: [P2] }] }), 'run end · progress': [COK] }, { ...AP, mode: 'auto' }))
@@ -882,6 +868,8 @@ await test('V10: without args.progress, instructions of 0.6.3: no progress comma
 
 // ——— 0.8.0: the workflow played with the real progress.mjs, in a temporary repository; the simulated agents run the commands of their instruction ———
 const PROGRESS_SCRIPT = join(resolve(dirname(SRC), '..'), 'scripts', 'progress.mjs')
+// A task file that plan-lint accepts, and that close writes from the content of an added task (0.20.0)
+const taskText = (id, dep, phase = 1) => `---\nid: ${id}\ntitle: Task ${id}\nphase: ${phase}\nmodel: sonnet\ndepends_on: [${dep.join(', ')}]\nparallel_batch: 1A\nowned_files:\n  - src/${id}/**\nresources: []\ntoken_estimate: 1.0M\nverification:\n  - "npm test"\ndefinition_of_done:\n  - "the test passes"\n---\n\n## Launch prompt\nYou carry out ${id}.\n`
 // A plan in the 0.12 format (tasks/, PROGRESS.md, English keys): plan-lint refuses a French plan (taches/)
 function toyRepo() {
   const root = fs.mkdtempSync(join(tmpdir(), 'scenarios-progress-'))
@@ -890,7 +878,7 @@ function toyRepo() {
   fs.writeFileSync(join(root, 'README.md'), 'x\n'); git('add', '.'); git('commit', '-qm', 'init')
   const d = join(root, 'plans', 'p')
   fs.mkdirSync(join(d, 'tasks'), { recursive: true })
-  const writeTask = (id, dep) => fs.writeFileSync(join(d, 'tasks', `${id}-x.md`), `---\nid: ${id}\ntitle: Task ${id}\nphase: 1\nmodel: sonnet\ndepends_on: [${dep.join(', ')}]\nparallel_batch: 1A\nowned_files:\n  - src/${id}/**\nresources: []\ntoken_estimate: 1.0M\nverification:\n  - "npm test"\ndefinition_of_done:\n  - "the test passes"\n---\n\n## Launch prompt\nYou carry out ${id}.\n`)
+  const writeTask = (id, dep) => fs.writeFileSync(join(d, 'tasks', `${id}-x.md`), taskText(id, dep))
   writeTask('T00', []); writeTask('T01', ['T00'])
   fs.writeFileSync(join(d, 'PROGRESS.md'), '# PROGRESS — p\n\n| ID | Title | Phase | Batch | Depends on | Model | Status | Attempts | Branch | Tokens est. / actual |\n|---|---|---|---|---|---|---|---|---|---|\n| T00 | Task T00 | 1 | 1A | — | sonnet | todo | 0 | — | 1.0M / — |\n| T01 | Task T01 | 1 | 1A | T00 | sonnet | todo | 0 | — | 1.0M / — |\n\nStatuses: todo · added · merged · blocked · failed · needs-human · cancelled\n')
   fs.writeFileSync(join(d, 'HANDOFF.md'), '# HANDOFF — p\n\nEntries: `deviation`, `blind-spot`, `decision`, `debt`, `needs-human`, `ticket`, `review`, rated `minor` or `major`.\n')
@@ -903,32 +891,46 @@ function toyRepo() {
 const GUARD = 'This agent is isolated in a worktree, but this command is in a form too complex to verify that it stays inside the worktree. Refusing to run it.'
 // Each progress command of the instruction goes through the shell, in order; the report carries their exit codes
 async function play(name, D, q, args = {}) {
-  const launched = [], unexpected = []
+  const launched = [], unexpected = [], calls = []
   const agent = async (prompt, opts = {}) => {
     const k = opts.label
+    calls.push({ label: k, prompt })
     if (!(k in q) || !q[k].length) { unexpected.push(k); throw new Error(`[${name}] unexpected call: ${k}`) }
     const v0 = q[k].shift(), cs = progressCommands(prompt)
     // null: an agent that did not answer (expired login, usage limit) ran nothing either (0.19.0)
     if (v0 === null) return null
-    // { before, answer }: what the agent does before its progress commands (the scribe writes the created tasks)
-    const v = v0 && typeof v0 === 'object' && 'before' in v0 ? (v0.before(), v0.answer) : v0
+    // { before, answer }: what the agent does before its progress commands (the scribe writes DISCOVERY.md)
+    // { tamper, answer } (0.20.0): the agent changes the command it runs, as a copy altered on the way
+    const v = v0 && typeof v0 === 'object' && 'before' in v0 ? (v0.before(), v0.answer) : v0 && typeof v0 === 'object' && 'tamper' in v0 ? v0.answer : v0
+    const tamper = v0 && typeof v0 === 'object' && 'tamper' in v0 ? v0.tamper : c => c
     // An agent isolated in a worktree is refused its progress commands by Claude Code's isolation guard (0.18.2): none is launched
     const codes = cs.map(c => {
       if (opts.isolation === 'worktree') { launched.push({ label: k, code: 1, out: '', err: GUARD }); return 1 }
-      const r = spawnSync('sh', ['-c', bashTool(c)], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.status
+      const r = spawnSync('sh', ['-c', bashTool(tamper(c))], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.status
     })
+    // The output of close, copied as printed (0.20.0), and the first line of the error of the last command
+    const lastRun = launched[launched.length - 1]
+    const closeOutput = cs.length && /progress\.mjs"? close /.test(cs[cs.length - 1]) && codes[codes.length - 1] === 0 ? JSON.parse(lastRun.out) : null
     const answer = sealed(k, typeof v === 'function' ? await v(prompt, opts) : v, prompt)
     // The clerk also runs the cleaning of the worktrees: its last line goes in "worktrees"
     const wt = [...prompt.matchAll(/`(node "?[^`"]*worktrees\.mjs"? clean [^`]*)`/g)].map(m => m[1])
     const cleaning = wt.map(c => { const r = spawnSync('sh', ['-c', c], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }); return r.stdout.trim() || r.stderr.trim() }).pop()
     if (!cs.length) return answer
-    return { ...answer, ...(cs[0].includes('progress.mjs" run-start') || cs[0].includes('progress.mjs run-start') ? { run_start_ok: codes[0] === 0 } : {}), progress_ok: codes[codes.length - 1] === 0, ...(cleaning ? { worktrees: cleaning } : {}) }
+    const failed = codes[codes.length - 1] !== 0 && opts.isolation !== 'worktree' ? { progress_error: lastRun.err.split('\n')[0] } : {}
+    const opens = cs[0].includes('progress.mjs" run-start') || cs[0].includes('progress.mjs run-start')
+    // apply (0.20.0), after a run-start that passed: its output copied as printed, or its error
+    let applied = {}
+    if (opens && codes[0] === 0 && applyCmdIn(prompt) && !('apply' in answer)) {
+      const r = spawnSync('sh', ['-c', applyCmdIn(prompt)], { cwd: D.root, encoding: 'utf8' }); launched.push({ label: k, code: r.status, out: r.stdout.trim(), err: r.stderr.trim() })
+      applied = r.status === 0 ? { apply_ok: true, apply: JSON.parse(r.stdout) } : { apply_ok: false, apply_error: r.stderr.trim().split('\n')[0] }
+    }
+    return { ...answer, ...(opens ? { run_start_ok: codes[0] === 0 } : {}), ...applied, progress_ok: codes[codes.length - 1] === 0, ...failed, ...(closeOutput && !('close' in answer) ? { close: closeOutput } : {}), ...(cleaning ? { worktrees: cleaning } : {}) }
   }
   last = null
   const res = await run({ ...ARGS, progress: PROGRESS_SCRIPT, ...args }, agent, () => {}, () => {})
   last = { res, launched }
   assert.deepEqual(unexpected, [], `[${name}] call without an answer`)
-  return { res, launched }
+  return { res, launched, calls }
 }
 const T0 = { ...T00, resources: [], file: 'plans/p/tasks/T00-x.md', verification: ['npm test'] }
 const T1 = { ...T01, model: 'sonnet', resources: [], file: 'plans/p/tasks/T01-x.md', verification: ['npm test'] }
@@ -942,7 +944,7 @@ await test('V11: real progress.mjs — T00 merged after a rejection, T01 blocked
       'T01 · worker': [{ status: 'blocked', summary: 'blocked', branch: 'task/T01', path: D.root, blocker: 'ambiguous schema' }], 'T01 · replanning': [NOTHING], 'T01 · progress': [SOK],
       'run end · progress': [{ commit: '', detail: '' }] })
     assert.deepEqual(launched.filter(l => l.code !== 0), [], 'all the progress commands pass')
-    assert.equal(launched.length, 15, '14 progress commands and the cleaning of the worktrees')
+    assert.equal(launched.length, 15, '13 progress commands, apply (0.20.0, without a ruling) and the cleaning of the worktrees: T01, without a finding, closes through the clerk, without a step')
     assert.equal(res.status, 'partial'); assert.deepEqual(res.progress_failures, [])
     const doc = D.doc(), t = id => doc.tasks.find(x => x.id === id)
     assert.deepEqual(doc.runs.map(r => [r.number, r.status, r.phase, r.mode, r.parallelism, r.end !== null]), [[1, 'partial', 1, 'phase', 4, true]])
@@ -950,9 +952,13 @@ await test('V11: real progress.mjs — T00 merged after a rejection, T01 blocked
     assert.deepEqual(t('T00').rejections, [{ attempt: 1, by: 'evaluation', gaps: [M] }])
     assert.deepEqual([t('T01').status, t('T01').attempts, t('T01').blocker, t('T01').step], ['blocked', 1, ['ambiguous schema'], null])
     assert.deepEqual(doc.log.filter(e => e.task === 'T00').map(e => e.text), ['T00 starts (main checkout)', 'T00: verification', 'T00: evaluation', 'T00: attempt 1 rejected (evaluation): 1 gap(s)', 'T00: fix (attempt 2)', 'T00: verification', 'T00: evaluation', 'T00: merge', 'T00: progress', 'T00: merged (2 attempts)'])
-    assert.deepEqual(doc.log.filter(e => e.task === 'T01').map(e => e.text), ['T01 starts (main checkout)', 'T01: progress', 'T01: replanning finished', 'T01: blocked (1 attempt) — ambiguous schema'])
+    assert.deepEqual(doc.log.filter(e => e.task === 'T01').map(e => e.text), ['T01 starts (main checkout)', 'T01: replanning finished', 'T01: blocked (1 attempt) — ambiguous schema'])
     assert.match(D.row('T00'), /\| merged  \| 2 +\| task\/T00 \| 1\.0M \/ see \/workflows \|$/)
     assert.match(D.row('T01'), /\| blocked +\| 1 +\| task\/T01 \|/)
+    // 0.20.0: close wrote HANDOFF.md and committed the plan, one commit per close; the scribe wrote DISCOVERY.md only
+    const handoff = fs.readFileSync(join(D.root, 'plans', 'p', 'HANDOFF.md'), 'utf8')
+    assert.ok(handoff.includes(`## T00\n\n- rejection · minor · attempt 1, evaluation: ${M}\n`) && handoff.includes('## T01\n\n- blocker · major · ambiguous schema\n'), handoff)
+    assert.deepEqual(D.git('log', '--format=%s', '-2').trim().split('\n'), ['progress(T01): blocked', 'progress(T00): merged'])
     assert.equal(launched.find(l => l.label === 'run end · progress').out, 'progress: run 1 partial', 'nothing to commit for the clerk')
     assert.equal(launched[launched.length - 1].out, 'worktrees plans/p: 0 removed, 0 kept')
     assert.equal(spawnSync(process.execPath, [PROGRESS_SCRIPT, 'validate', 'plans/p'], { cwd: D.root }).status, 0)
@@ -1000,48 +1006,77 @@ await test('V12: real progress.mjs — exception of a task: run-end closes it as
     assert.equal(D.git('status', '--porcelain'), ' M plans/p/PROGRESS.md\n', 'only PROGRESS.md, progress.json outside git')
   } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
 })
+// The real progress.mjs run directly in a toy repository, as the pilot does between two runs (0.20.0): rule records the user's
+// rulings; seed raises issues through a close of T00 in a run of its own, as a stopped run leaves them
+const script = (D, cmd, E) => { const r = spawnSync(process.execPath, [PROGRESS_SCRIPT, cmd, 'plans/p', ...(E ? ['--json', JSON.stringify(E)] : [])], { cwd: D.root, encoding: 'utf8' }); assert.equal(r.status, 0, `${cmd}: ${r.stderr}`); return r.stdout.trim() }
+const seed = (D, issues) => {
+  script(D, 'run-start', { phase: 1, mode: 'phase', parallelism: 4, max_fixes: 2, max_auto_decisions: 3 })
+  const out = JSON.parse(script(D, 'close', { task: 'T00', status: 'needs-human', attempts: 1, branch: 'task/T00', issues }))
+  script(D, 'run-end', { status: 'awaiting-ruling', tasks: [], open_issues: [] })
+  if (D.git('status', '--porcelain').trim()) D.git('commit', '-qam', 'progress: end of run 1')
+  return out.issues
+}
+const register = D => JSON.parse(fs.readFileSync(join(D.root, 'plans', 'p', 'ISSUES.json'), 'utf8'))
 await test('V14: real progress.mjs — full close in autonomous mode (auto-decision, added task, stop issue, review), then ruling at the next run', async () => {
   const D = toyRepo()
   try {
     const P2 = { title: 'Two recommended', context: "either one, the user's call", options: [{ id: 'A', description: 'a', recommended: true, entries: [{ type: 'debt', severity: 'minor', description: 'x' }] }, { id: 'B', description: 'b', recommended: true }] }
     const R = { type: 'review', description: '.env.example: add MR_MAX' }
+    // 0.20.0: the option's task carries a content plan-lint accepts (phase 0, brought back to 1); close writes it, the scribe no longer does
+    const [A, B] = RP_E.issues[0].options
+    const RP = { ...RP_E, issues: [{ ...RP_E.issues[0], options: [{ ...A, added_tasks: [{ id: 'T00C', title: 'Rule d test', phase: 0, content: taskText('T00C', ['T00'], 0) }] }, B] }, P2] }
     const run1 = await play('V14a', D, {
       'plan-reader': [plan(T0, T1)], 'T00 · worker': [report(0, { deviations: [...DEVIATION, R] })], 'T00 · verification': [ok(1)], 'T00 · evaluation': [{ verdict: 'pass' }], 'T00 · merge': [MOK],
-      'T00 · replanning': [{ ...RP_E, issues: [...RP_E.issues, P2] }],
-      'T00 · progress': [{ before: () => D.writeTask('T00C', ['T00']), answer: SOK }], 'run end · progress': [{ commit: '', detail: '' }] }, { mode: 'auto' })
+      'T00 · replanning': [RP], 'T00 · progress': [SOK], 'run end · progress': [{ commit: '', detail: '' }] }, { mode: 'auto' })
     assert.deepEqual(run1.launched.filter(l => l.code !== 0), [])
     assert.equal(run1.res.status, 'awaiting-ruling'); assert.deepEqual(run1.res.progress_failures, [])
     let doc = D.doc()
     assert.deepEqual(doc.tasks.map(x => [x.id, x.status, x.added_by]), [['T00', 'merged', null], ['T00C', 'added', 'T00'], ['T01', 'todo', null]])
     assert.deepEqual(doc.auto_decisions, [{ run: 1, task: 'T00', title: 'UpdateUserSchema contract', option: 'A', description: 'Keep optional and test rule (d)' }])
-    assert.deepEqual(doc.issues.map(p => [p.run, p.task, p.title, p.role, p.status, p.options.length]), [[1, 'T00', 'Two recommended', 'stop', 'open', 2]])
+    assert.deepEqual(doc.issues.map(p => [p.run, p.task, p.title, p.role, p.status, p.options.length]), [[1, 'T00', 'Two recommended', 'stop', 'open', 2], [1, 'T00', 'UpdateUserSchema contract', 'open', 'settled', 2]])
     assert.deepEqual(doc.reviews.map(r => [r.task, r.text, r.run]), [['T00', '.env.example: add MR_MAX', 1]])
     assert.deepEqual([doc.runs[0].status, doc.runs[0].added_tasks, doc.runs[0].not_started], ['awaiting-ruling', [{ id: 'T00C', phase: 1, title: 'Rule d test' }], ['T01']])
     assert.ok(doc.log.some(e => e.kind === 'amendment' && e.task === 'T01'))
     assert.ok(/\| T00C \| Rule d test /.test(D.row('T00C')), 'row added by the script, title from the replanner')
-    D.git('add', '-A'); D.git('commit', '-qm', 'progress(T00): merged')
-    // Run 2: the user settles "Two recommended"; the scribe opens the run and notes the ruling
-    const run2 = await play('V14b', D, {
-      'ruling T00 · progress': [SOK], 'plan-reader': [plan({ ...T0, status: 'merged' })], 'run end · progress': [{ commit: '', detail: '' }] },
-      { rulings: [{ task: 'T00', title: 'Two recommended', option: P2.options[0] }] })
+    // close applied the decided option and committed it: the task file, the amendment, HANDOFF.md and ISSUES.json, nothing left over
+    const P = join(D.root, 'plans', 'p')
+    assert.ok(fs.readFileSync(join(P, 'tasks', 'T00C-rule-d-test.md'), 'utf8').startsWith('---\nid: T00C\ntitle: Task T00C\nphase: 1\n'))
+    assert.ok(fs.readFileSync(join(P, 'tasks', 'T01-x.md'), 'utf8').includes('  - "pnpm test:rule-d"'))
+    assert.ok(fs.readFileSync(join(P, 'HANDOFF.md'), 'utf8').includes('- decision · major · UpdateUserSchema contract: option A taken automatically (autonomous mode) — Keep optional and test rule (d)\n- debt · minor · document the contract\n'))
+    const reg = JSON.parse(fs.readFileSync(join(P, 'ISSUES.json'), 'utf8'))
+    assert.deepEqual(reg.issues.map(p => [p.title, p.status, p.ruling ? p.ruling.author : null]), [['Two recommended', 'open', null], ['UpdateUserSchema contract', 'settled', 'auto']])
+    assert.equal(D.git('status', '--porcelain'), '', 'close committed the whole close')
+    // Run 2 (0.20.0): the user settles "Two recommended" with rule, between the runs; the plan reader opens the run and applies it
+    const id = reg.issues.find(p => p.title === 'Two recommended').id
+    script(D, 'rule', { issue: id, option: 'A' })
+    const run2 = await play('V14b', D, { 'plan-reader': [plan({ ...T0, status: 'merged' })], 'run end · progress': [{ commit: '', detail: '' }] })
     assert.deepEqual(run2.launched.filter(l => l.code !== 0), [])
-    assert.deepEqual(run2.launched.map(l => l.out.split(';')[0]), ['progress: run 2 opened (phase 1, mode phase)', 'progress: ruling T00 option A', 'progress: run 2 finished', 'worktrees plans/p: 0 removed, 0 kept'])
+    const out = JSON.parse(run2.launched[1].out)
+    assert.deepEqual([run2.launched[0].out.split(';')[0], out.applied, out.rejected, out.message.split(';')[0]], ['progress: run 2 opened (phase 1, mode phase)', [{ issue: id, task: 'T00', option: 'A', text: null }], [], `1 ruling applied (${id})`])
+    assert.deepEqual(run2.launched.slice(2).map(l => l.out.split(';')[0]), ['progress: run 2 finished', 'worktrees plans/p: 0 removed, 0 kept'])
+    assert.equal(run2.res.status, 'finished'); assert.deepEqual(run2.res.rulings_applied, [{ issue: id, task: 'T00', option: 'A', text: null }])
     doc = D.doc()
     assert.deepEqual([doc.issues[0].status, doc.issues[0].chosen_option], ['settled', 'A'])
     assert.deepEqual(doc.runs.map(r => [r.number, r.status]), [[1, 'awaiting-ruling'], [2, 'finished']])
-    assert.deepEqual(doc.runs[1].rulings_applied, [{ task: 'T00', title: 'Two recommended', option: 'A' }])
+    assert.deepEqual(doc.runs[1].rulings_applied, [{ task: 'T00', title: 'Two recommended', option: 'A' }], 'kept by run-end: the summary no longer carries rulings_applied')
+    assert.ok(fs.readFileSync(join(P, 'HANDOFF.md'), 'utf8').includes('- decision · major · Two recommended: option A settled by the user — a\n- debt · minor · x\n'))
+    assert.deepEqual(register(D).issues.find(p => p.id === id).ruling.author, 'user')
+    assert.equal(D.git('log', '--format=%s', '-1').trim(), `progress: rulings ${id}`)
     assert.equal(spawnSync(process.execPath, [PROGRESS_SCRIPT, 'validate', 'plans/p'], { cwd: D.root }).status, 0)
   } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
 })
-await test('V15: real progress.mjs — task added by a ruling kept in the run despite the run-end summary, which does not know it', async () => {
+await test('V15: real progress.mjs — task added by a ruling (apply) kept in the run despite the run-end summary, which does not know it', async () => {
   const D = toyRepo()
   try {
-    const A = { task: 'T00', title: 'Contract', option: { id: 'B', description: 'Test', added_tasks: [{ id: 'T00D', title: 'Contract test', phase: 1, content: '---\nid: T00D\n---' }] } }
-    const r = await play('V15', D, { 'ruling T00 · progress': [{ before: () => D.writeTask('T00D', ['T00']), answer: SOK }], 'plan-reader': [plan({ ...T0, status: 'merged' })], 'run end · progress': [{ commit: '', detail: '' }] }, { rulings: [A] })
+    const [id] = seed(D, [{ title: 'Contract', context: 'c', human: false, options: [{ id: 'B', description: 'Test', recommended: true, added_tasks: [{ id: 'T00D', title: 'Contract test', phase: 1, content: taskText('T00D', ['T00']) }] }, { id: 'C', description: 'Leave it' }] }])
+    script(D, 'rule', { issue: id, option: 'B' })
+    const r = await play('V15', D, { 'plan-reader': [plan({ ...T0, status: 'needs-human' })], 'run end · progress': [{ commit: '', detail: '' }] })
     assert.deepEqual(r.launched.filter(l => l.code !== 0), [])
+    assert.deepEqual(JSON.parse(r.launched[1].out).added_tasks, [{ id: 'T00D', title: 'Contract test', phase: 1 }])
     const doc = D.doc()
-    assert.deepEqual(doc.runs[0].added_tasks, [{ id: 'T00D', phase: 1, title: 'Contract test' }])
+    assert.deepEqual(doc.runs[1].added_tasks, [{ id: 'T00D', phase: 1, title: 'Contract test' }])
     assert.deepEqual(doc.tasks.find(x => x.id === 'T00D').added_by, 'T00')
+    assert.deepEqual(r.res.added_tasks, [], 'not an added task of the run: the plan read after apply already has it')
   } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
 })
 // ——— Batch A (0.8.0): environment of the working folders, branch taken back, cleaning of the worktrees ———
@@ -1204,7 +1239,7 @@ await test('M6: real progress.mjs — model used and change noted in progress.js
     assert.deepEqual(launched.filter(l => l.code !== 0), [], 'all the progress commands pass')
     assert.equal(res.status, 'finished'); assert.deepEqual(res.progress_failures, [])
     const doc = D.doc(), t = doc.tasks.find(x => x.id === 'T01')
-    assert.deepEqual([doc.format, t.model, t.model_used, t.status], ['orchestre-progress/3', 'sonnet', 'opus', 'merged'])
+    assert.deepEqual([doc.format, t.model, t.model_used, t.status], ['orchestre-progress/4', 'sonnet', 'opus', 'merged'])
     assert.deepEqual(doc.log.filter(e => e.task === 'T01').map(e => e.text).slice(3, 6), ['T01: attempt 1 rejected (evaluation): 1 gap(s)', "T01: sonnet → opus (gap in the module's architecture)", 'T01: fix (attempt 2)'])
     assert.equal(doc.log.filter(e => e.kind === 'model').length, 1)
     assert.match(D.row('T01'), /\| sonnet +\| merged \|/)
@@ -1229,13 +1264,13 @@ await test('W2: mode "devia" of 0.11 → error, no agent launched; mode "deviati
   drained('W2b', b.q)
 })
 await test('W3: language of the free text — "en" by default, given by args, in the prompts of the agents that write it, never in the others', async () => {
-  const WRITERS = ['T05 · worker', 'T05 · fix 1', 'T05 · evaluation', 'T05 · replanning', 'T05 · model choice 1', 'T05 · progress', 'ruling T02 · progress']
+  const WRITERS = ['T05 · worker', 'T05 · fix 1', 'T05 · evaluation', 'T05 · replanning', 'T05 · model choice 1', 'T05 · progress']
   const OTHERS = ['plan-reader', 'T05 · verification', 'T05 · merge', 'run end · progress']
-  const queue = () => ({ 'ruling T02 · progress': [{ ...withProgress(SOK), run_start_ok: true }], 'plan-reader': [plan(TM('sonnet'))], 'T05 · worker': [report5(0, { deviations: DEVIATION })], 'T05 · verification': [ok5(1), ok5(2)],
+  const queue = () => ({ 'plan-reader': [planOpened(TM('sonnet'))], 'T05 · worker': [report5(0, { deviations: DEVIATION })], 'T05 · verification': [ok5(1), ok5(2)],
     'T05 · evaluation': [fail5('M1'), withProgress({ verdict: 'pass' })], 'T05 · model choice 1': [{ model: 'sonnet', reason: 'r' }], 'T05 · fix 1': [report5(1)], 'T05 · replanning': [NOTHING], ...end5() })
   for (const [language, expected] of [[undefined, 'en'], ['fr', 'fr'], [42, 'en'], ['   ', 'en']]) {
     const name = 'W3 ' + JSON.stringify(language)
-    const { res, calls, q } = await scenario(name, queue(), { ...AP, rulings: RULING, ...(language === undefined ? {} : { language }) })
+    const { res, calls, q } = await scenario(name, queue(), { ...AP, ...(language === undefined ? {} : { language }) })
     assert.equal(res.status, 'finished')
     for (const l of WRITERS) { const cs = byLabel(calls, l); assert.ok(cs.length > 0, l); assert.ok(cs.every(c => c.prompt.includes(`in the language "${expected}"`)), `${name} · ${l}: language ${expected}`) }
     for (const l of OTHERS) { const cs = byLabel(calls, l); assert.ok(cs.length > 0, l); assert.ok(cs.every(c => !c.prompt.includes('Language:')), `${name} · ${l}: no language`) }
@@ -1255,9 +1290,9 @@ await test('W3: language of the free text — "en" by default, given by args, in
   drained('W3 quote', r.q)
 })
 await test('W4: branches task/<id> and task/<id>-r<n>, never tache/; merge message "task <id>: <title>"; scribe commits "progress(<id>): …"', async () => {
-  for (const [name, args] of [['W4', {}], ['W4 progress', { ...AP, rulings: RULING }]]) {
+  for (const [name, args] of [['W4', {}], ['W4 progress', AP]]) {
     const queue = args.progress
-      ? { 'ruling T02 · progress': [{ ...withProgress(SOK), run_start_ok: true }], 'plan-reader': [plan(T00)], ...s00(), 'run end · progress': [COK] }
+      ? { 'plan-reader': [planOpened(T00)], ...s00(), 'run end · progress': [COK] }
       : { 'plan-reader': [plan(T00)], ...t00(), 'T00 · progress': [SOK] }
     const { res, calls, q } = await scenario(name, queue, args)
     assert.equal(res.status, 'finished')
@@ -1266,10 +1301,9 @@ await test('W4: branches task/<id> and task/<id>-r<n>, never tache/; merge messa
     assert.ok(calls.every(c => !c.prompt.includes('tache/')), `${name}: no prompt names tache/`)
     assert.ok(byLabel(calls, 'T00 · merge')[0].prompt.includes('`git merge --no-ff task/T00 -m "task T00: Tooling"`'), `${name}: merge message`)
     assert.ok(byLabel(calls, 'T00 · progress')[0].prompt.includes('with the message "progress(T00): merged"'), `${name}: scribe commit`)
-    if (args.rulings) assert.ok(byLabel(calls, 'ruling T02 · progress')[0].prompt.includes('with the message "progress(T02): ruling B"'), `${name}: ruling commit`)
-    // HANDOFF entries copied word for word, whatever the language: progress.mjs matches the reviews with them
-    assert.ok(byLabel(calls, 'T00 · progress')[0].prompt.includes('add these entries, word for word: ['), `${name}: entries word for word`)
-    if (args.rulings) assert.ok(byLabel(calls, 'ruling T02 · progress')[0].prompt.includes('add these entries, word for word: ['), `${name}: ruling entries word for word`)
+    // HANDOFF entries copied word for word, whatever the language: progress.mjs matches the reviews with them. With progress
+    // (0.20.0), close writes them from its input: the scribe's instruction no longer carries them
+    assert.equal(byLabel(calls, 'T00 · progress')[0].prompt.includes('add these entries, word for word: ['), !args.progress, `${name}: entries word for word`)
     drained(name, q)
   }
 })
@@ -1424,7 +1458,7 @@ await test('R5: real plan-lint --reader read by a plan-reader that copies its ou
   try {
     let printed = null
     const reader = prompt => {
-      const cmd = prompt.match(/Run `([^`]*--reader[^`]*)`/)[1]
+      const cmd = prompt.match(/[Rr]un `([^`]*--reader[^`]*)`/)[1]
       const r = spawnSync('sh', ['-c', cmd], { cwd: D.root, encoding: 'utf8' })
       assert.equal(r.status, 0, r.stderr)
       assert.equal(r.stdout.trim().split('\n').length, 1, 'one line of JSON, no warning')
@@ -1907,5 +1941,385 @@ await test('SC7: scope — a blind spot of attempt 1 (scope unread twice) does n
   const sc = byLabel(calls, 'T00 · progress')[0].prompt
   assert.ok(!sc.includes('blind-spot') && !sc.includes('scope of T00 not checked'), 'no blind spot of the scope once attempt 2 read it')
   drained('SC7', q)
+})
+
+// ——— 0.20.0: close writes the plan; digests of the progress commands and of the output of close ———
+const AGAIN = 'Your first run of the progress command below was refused (payload altered in transit)'
+const ALTERED = cmd => ({ progress_ok: false, progress_error: `progress: ${cmd}: payload altered in transit (_digest "0", 1 computed): nothing is written` })
+await test('CL1: close — without a finding nor a flaky test, one single haiku call, the clerk: git switch first, then close; no step, no DISCOVERY.md, no scribe', async () => {
+  const { res, calls, q } = await scenario('CL1', { 'plan-reader': [planOpened(T00)], ...s00({ 'T00 · worker': [withProgress(report(0, { findings: [] }))] }), 'run end · progress': [COK] }, AP)
+  assert.equal(res.status, 'finished'); assert.deepEqual(res.progress_failures, [])
+  const cs = byLabel(calls, 'T00 · progress')
+  assert.equal(cs.length, 1, 'one single call')
+  assert.deepEqual([cs[0].opts.agentType, cs[0].opts.model, cs[0].opts.schema.required], ['orchestre:clerk', 'haiku', ['progress_ok']])
+  assert.ok(!calls.some(c => c.opts.agentType === 'orchestre:scribe'), 'no scribe')
+  assert.deepEqual(progressOf(calls, 'T00 · progress'), [{ cmd: 'close', plan: 'plans/p', E: { task: 'T00', status: 'merged', attempts: 1, branch: 'task/T00' } }])
+  const p = cs[0].prompt
+  assert.ok(p.startsWith('Close of the task T00 of the plan plans/p, in the main checkout, in this order:\n1. `git switch plan/p`. If it fails, run nothing else'), p.slice(0, 200))
+  assert.ok(p.indexOf('`git switch plan/p`') < p.indexOf('progress.mjs close'), 'the switch before close')
+  assert.ok(!p.includes('DISCOVERY.md:') && !p.includes('Language:') && !p.includes('test -e'), 'nothing to write, no free text, no auto-decision')
+  assert.ok(p.includes('Never write HANDOFF.md, PROGRESS.md, a task or an amendment yourself, and make no commit: the close command does.'))
+  assert.ok(p.includes('return it in "close" exactly as printed, every field and every value, `digest` included'))
+  drained('CL1', q)
+  // The close agent without an answer (a single one: no circuit breaker): the task stays merged, a human stop
+  for (const [name, w, who] of [['CL1 clerk silent', report(0, { findings: [] }), 'Clerk'], ['CL1 scribe silent', report(0), 'Scribe']]) {
+    const s = await scenario(name, { 'plan-reader': [planOpened(T00)], ...s00({ 'T00 · worker': [withProgress(w)], 'T00 · progress': [null] }), 'run end · progress': [COK] }, AP)
+    assert.deepEqual([s.res.status, s.res.tasks[0].status, s.res.stop_issue.title, s.res.stop_issue.context], ['awaiting-ruling', 'merged', 'Progress of T00 not committed', `${who} without an answer.`], name)
+    drained(name, s.q)
+  }
+})
+await test('CL2: close — a finding or a flaky test: one single call, the scribe, which switches, writes DISCOVERY.md, then runs close', async () => {
+  for (const [name, w, v] of [['CL2 findings', report(0), ok(1)], ['CL2 flaky', report(0, { findings: [] }), { ...ok(1), flaky: ['a.spec.ts:3'] }]]) {
+    const { res, calls, q } = await scenario(name, { 'plan-reader': [planOpened(T00)], ...s00({ 'T00 · worker': [withProgress(w)], 'T00 · verification': [withProgress(v)] }), 'run end · progress': [COK] }, AP)
+    assert.equal(res.status, 'finished')
+    const cs = byLabel(calls, 'T00 · progress')
+    assert.equal(cs.length, 1, `${name}: one single call`)
+    assert.deepEqual([cs[0].opts.agentType, cs[0].opts.model], ['orchestre:scribe', 'sonnet'], name)
+    const p = cs[0].prompt, sw = p.indexOf('\n1. `git switch plan/p`.'), disc = p.indexOf('\n2. plans/p/DISCOVERY.md: integrate these findings'), close = p.indexOf('progress.mjs close')
+    assert.ok(sw > 0 && sw < disc && disc < close, `${name}: switch, DISCOVERY.md, then close`)
+    assert.ok(p.includes('commits them with DISCOVERY.md, with the message "progress(T00): merged"') && p.includes('Never write HANDOFF.md, PROGRESS.md, a task or an amendment yourself'), name)
+    assert.deepEqual(progressOf(calls, 'T00 · progress').map(x => x.cmd), ['step', 'close'], name)
+    if (v.flaky) {
+      assert.ok(p.includes('Flaky tests (passed on the second run): add them to the section "Pitfalls and fixes": ["a.spec.ts:3"]'))
+      assert.deepEqual(progressOf(calls, 'T00 · progress')[1].E.flaky, ['a.spec.ts:3'], 'close writes the debt entry')
+    }
+    drained(name, q)
+  }
+})
+await test('CL3: real progress.mjs — a close altered on the way is refused, nothing written: run again once, faithful, it passes; altered twice, a human stop, as a failed scribe', async () => {
+  const alter = c => c.replace('"attempts":1', '"attempts":3')
+  for (const twice of [false, true]) {
+    const D = toyRepo(), name = twice ? 'CL3 twice' : 'CL3 once'
+    try {
+      const { res, launched } = await play(name, D, { 'plan-reader': [plan(T0)], 'T00 · worker': [report(0)], 'T00 · verification': [ok(1)], 'T00 · evaluation': [{ verdict: 'pass' }], 'T00 · merge': [MOK],
+        'T00 · progress': [{ tamper: alter, answer: SOK }, twice ? { tamper: alter, answer: SOK } : SOK], 'run end · progress': [{ commit: '', detail: '' }] })
+      // The scribe's step first (T0 has findings), then the close; the second call runs the close only
+      const closes = launched.filter(l => l.label === 'T00 · progress').slice(1)
+      assert.deepEqual(closes.map(l => l.code), [1, twice ? 1 : 0], name)
+      assert.match(closes[0].err, /^progress: close: payload altered in transit \(_digest "[0-9a-f]{8}", [0-9a-f]{8} computed\): nothing is written$/)
+      const commits = D.git('log', '--format=%s').split('\n').filter(s => s.startsWith('progress(T00)'))
+      const t = D.doc().tasks.find(x => x.id === 'T00')
+      if (!twice) {
+        assert.deepEqual([res.status, res.progress_failures, commits, t.status, t.attempts], ['finished', [], ['progress(T00): merged'], 'merged', 1])
+      } else {
+        assert.deepEqual([res.status, res.stop_issue.title, res.stop_issue.human, commits], ['awaiting-ruling', 'Progress of T00 not committed', true, []])
+        assert.ok(res.stop_issue.context.startsWith('close refused twice: progress: close: payload altered in transit'), res.stop_issue.context)
+        assert.ok(!fs.readFileSync(join(D.root, 'plans', 'p', 'HANDOFF.md'), 'utf8').includes('## T00'), 'nothing written')
+        assert.deepEqual([t.status, t.step], ['merged', null], 'the run end closes T00 from the summary')
+      }
+    } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+  }
+  // The second call says why, and runs the same command
+  const { calls, q } = await scenario('CL3 prompt', { 'plan-reader': [planOpened(T00)], ...s00({ 'T00 · progress': [ALTERED('close'), withProgress(SOK)] }), 'run end · progress': [COK] }, AP)
+  const [a, b] = byLabel(calls, 'T00 · progress')
+  assert.ok(!a.prompt.startsWith(AGAIN) && b.prompt.startsWith(AGAIN))
+  assert.deepEqual(progressOf(calls, 'T00 · progress', 1), progressOf(calls, 'T00 · progress', 0).filter(x => x.cmd === 'close'), 'the same close, without the step again')
+  drained('CL3 prompt', q)
+})
+await test('CL4: close — its output is read back through its digest: an altered copy, or the copy of another close, stops for a human; a faithful one gives rejected and discarded', async () => {
+  const out = (x = {}) => { const o = { task: 'T00', status: 'merged', commit: 'p1', rejected: [], discarded: [], issues: [], pending: [], message: 'T00 merged', ...x }; return { ...o, digest: payloadDigest(o, 'digest') } }
+  for (const [name, close] of [['CL4 altered', { ...out({ rejected: [{ id: 'T00C', reason: 'r' }] }), rejected: [] }], ['CL4 other task', out({ task: 'T01' })], ['CL4 other status', out({ status: 'blocked' })], ['CL4 none', undefined]]) {
+    const { res, q } = await scenario(name, { 'plan-reader': [planOpened(T00)], ...s00({ 'T00 · progress': [withProgress({ close })] }), 'run end · progress': [COK] }, AP)
+    assert.deepEqual([res.status, res.stop_issue.title, res.stop_issue.human], ['awaiting-ruling', 'Progress of T00: output of close not read', true], name)
+    assert.ok(res.stop_issue.context.includes('Read the commit "progress(T00): merged" on plan/p'), name)
+    drained(name, q)
+  }
+  const { res, q } = await scenario('CL4 faithful', { 'plan-reader': [planOpened(T00)], ...s00({ 'T00 · progress': [withProgress({ close: out({ rejected: [{ id: 'T00C', reason: 'plan-lint: x' }], discarded: [{ id: 'T09', reason: 'merged' }] }) })] }), 'run end · progress': [COK] }, AP)
+  assert.deepEqual([res.status, res.stop_issue.title, res.stop_issue.context], ['awaiting-ruling', 'Progress of T00: tasks, amendments or decisions rejected', '[{"id":"T00C","reason":"plan-lint: x"}]'])
+  assert.deepEqual(res.discarded_amendments, [{ task: 'T00', id: 'T09', reason: 'merged' }])
+  drained('CL4 faithful', q)
+})
+await test('CL5: close — a path cited by an auto-decision that neither exists nor belongs to a task created: a human stop (the check of the 0.19 scribe, kept)', async () => {
+  const { res, calls, q } = await scenario('CL5', { 'plan-reader': [planOpened(T00, T01)], ...s00({ 'T00 · worker': [withProgress(report(0, { deviations: DEVIATION }))], 'T00 · replanning': [RP_E], 'T00 · progress': [withProgress({ missing: ['src/rule-d.ts'] })] }), 'run end · progress': [COK] }, { ...AP, mode: 'auto' })
+  assert.deepEqual([res.status, res.stop_issue.title], ['awaiting-ruling', 'Progress of T00: tasks, amendments or decisions rejected'])
+  assert.deepEqual(JSON.parse(res.stop_issue.context), [{ id: 'src/rule-d.ts', reason: 'cited by an auto-decision: it does not exist and no task created by this close owns it' }])
+  assert.ok(byLabel(calls, 'T00 · progress')[0].prompt.includes('Return in "missing" each path that does neither'))
+  drained('CL5', q)
+})
+await test('CL6: digests — run start, start of a task in a worktree and run end refused for an altered payload run again once; the step of a working agent does not', async () => {
+  const T02 = { ...T00, id: 'T02', title: 'Other', file: 'plans/p/tasks/T02.md', resources: [] }
+  const tt = id => ({ [`${id} · worker`]: [report(id, { branch: `task/${id}`, path: `/wt/${id}` })], [`${id} · verification`]: [withProgress(ok(id))], [`${id} · evaluation`]: [withProgress({ verdict: 'pass' })], [`${id} · merge`]: [withProgress(MOK)], [`${id} · progress`]: [withProgress(SOK)] })
+  const { res, calls, q } = await scenario('CL6', {
+    'plan-reader': [{ ok: false, tasks: [], run_start_ok: false, ...ALTERED('run-start') }, planOpened(T02, { ...T00, id: 'T03', title: 'Again', file: 'plans/p/tasks/T03.md', resources: [] })],
+    'T02 · start': [ALTERED('step'), COK], 'T03 · start': [COK], ...tt('T02'), ...tt('T03'), 'run end · progress': [ALTERED('run-end'), COK] }, AP)
+  assert.equal(res.status, 'finished'); assert.deepEqual(res.progress_failures, [])
+  for (const [l, n] of [['plan-reader', 2], ['T02 · start', 2], ['T03 · start', 1], ['run end · progress', 2]]) assert.equal(byLabel(calls, l).length, n, l)
+  for (const l of ['plan-reader', 'T02 · start', 'run end · progress']) {
+    const [a, b] = byLabel(calls, l)
+    assert.ok(!a.prompt.startsWith(AGAIN) && b.prompt.startsWith(AGAIN), l)
+    assert.deepEqual(progressOf(calls, l, 1), progressOf(calls, l, 0), `${l}: the same command`)
+  }
+  drained('CL6', q)
+  // Altered twice: no third call; the failure goes where it went before (run not opened, progress_failures)
+  const r2 = await scenario('CL6 twice', { 'plan-reader': [{ ok: false, tasks: [], run_start_ok: false, ...ALTERED('run-start') }, { ok: false, tasks: [], run_start_ok: false, ...ALTERED('run-start') }] }, AP)
+  assert.equal(r2.res.status, 'error'); assert.ok(r2.res.detail.startsWith('progress: run not opened (run-start), no task started — progress: run-start: payload altered in transit'))
+  drained('CL6 twice', r2.q)
+  const r3 = await scenario('CL6 end', { 'plan-reader': [planOpened(T00)], ...s00(), 'run end · progress': [ALTERED('run-end'), ALTERED('run-end')] }, AP)
+  assert.deepEqual(r3.res.progress_failures, [{ task: null, step: 'run-end', error: ALTERED('run-end').progress_error }])
+  drained('CL6 end', r3.q)
+  // The step of a working agent: display only, never run again
+  const r4 = await scenario('CL6 step', { 'plan-reader': [planOpened(T00)], ...s00({ 'T00 · verification': [{ ...ok(1), ...ALTERED('step') }] }), 'run end · progress': [COK] }, AP)
+  assert.equal(r4.res.status, 'finished'); assert.equal(byLabel(r4.calls, 'T00 · verification').length, 1)
+  assert.deepEqual(r4.res.progress_failures, [{ task: 'T00', step: 'verification', error: ALTERED('step').progress_error }])
+  drained('CL6 step', r4.q)
+  // A command reported as passed is never run again, whatever its message: a second close would record its issues twice,
+  // a second run-start would open another run
+  const r5 = await scenario('CL6 passed', { 'plan-reader': [{ ...planOpened(T00), progress_error: ALTERED('run-start').progress_error }], ...s00({ 'T00 · progress': [withProgress({ ...SOK, progress_error: ALTERED('close').progress_error })] }), 'run end · progress': [COK] }, AP)
+  assert.equal(r5.res.status, 'finished'); assert.deepEqual([byLabel(r5.calls, 'plan-reader').length, byLabel(r5.calls, 'T00 · progress').length], [1, 1])
+  drained('CL6 passed', r5.q)
+})
+await test('CL7: close, autonomous — the amendments of the decided option on a task done or running stay out of the issue close applies, and go to it as amendments not applied (scenario M with progress)', async () => {
+  const rp = { major: true, entries: [], issues: [{ title: 'Z', options: [{ id: 'A', description: 'a', recommended: true, amendments: [{ id: 'T00', verification: ['x'], reason: 'r0' }, { id: 'T01', verification: ['y'], reason: 'r1' }] }] }] }
+  const { res, calls, q } = await scenario('CL7', { 'plan-reader': [planOpened({ ...T00, status: 'merged' }, T01)], 'T01 · worker': [withProgress(report(1, { branch: 'task/T01', deviations: DEVIATION }))], 'T01 · verification': [withProgress(ok(2))], 'T01 · evaluation': [withProgress({ verdict: 'pass' })], 'T01 · merge': [withProgress(MOK)], 'T01 · replanning': [rp], 'T01 · progress': [withProgress(SOK)], 'run end · progress': [COK] }, { ...AP, mode: 'auto' })
+  assert.equal(res.status, 'finished')
+  assert.deepEqual(res.discarded_amendments.map(a => [a.task, a.id]), [['T01', 'T00'], ['T01', 'T01']])
+  const E = progressOf(calls, 'T01 · progress')[1].E
+  assert.deepEqual([E.issues[0].auto, E.issues[0].options[0].amendments, E.discarded_amendments], ['A', [], [{ id: 'T00', reason: 'r0' }, { id: 'T01', reason: 'r1' }]])
+  drained('CL7', q)
+})
+// ——— 0.20.0: rulings by reference. The pilot records the user's answers with progress.mjs rule; the plan reader that opens the
+// run applies them (progress.mjs apply) before it reads the plan, in the same call; no option goes through args any more ———
+const APPLY_CMD = 'node /plug/scripts/progress.mjs apply plans/p'
+// The detail of a refused ruling says when an issue is open again, and when apply dropped the ruling: its output does not say which
+const REOPENED = 'An issue is open again only when apply reopened it, its option invalid with the reason (refused by plan-lint or by an action, or no entry in ISSUES.json); a ruling on an unknown or already settled issue, an absent option or an option already invalid is dropped, and nothing is reopened.'
+const L0 = ['plan-reader', 'T00 · worker', 'T00 · verification', 'T00 · evaluation', 'T00 · merge', 'T00 · progress', 'run end · progress']
+// Outside the ~~~ blocks of an instruction: what the agent reads as instructions, not the JSON it copies to a script
+const prose = prompt => prompt.replace(/~~~sh\n[\s\S]*?\n~~~/g, '')
+await test('RB1: without a ruling, no agent call more than in 0.19 — the plan reader opens the run, runs apply, then plan-lint; apply writes nothing', async () => {
+  const { res, calls, q } = await scenario('RB1', { 'plan-reader': [planOpened(T00)], ...s00(), 'run end · progress': [COK] }, AP)
+  assert.equal(res.status, 'finished'); assert.deepEqual(res.rulings_applied, [])
+  assert.deepEqual(calls.map(c => c.opts.label), L0, 'the calls of 0.19 without a ruling')
+  const lp = byLabel(calls, 'plan-reader')[0].prompt
+  const at = [lp.indexOf("progress.mjs run-start plans/p <<'ORCHESTRE_JSON'"), lp.indexOf(`~~~sh\n${APPLY_CMD}\n~~~`), lp.indexOf('Then run `node /plug/scripts/plan-lint.mjs plans/p --reader')]
+  assert.ok(at.every(i => i > 0) && at[0] < at[1] && at[1] < at[2], 'run-start, then apply, then plan-lint: ' + at)
+  assert.ok(lp.includes('return it in "apply" exactly as printed') && lp.includes('stop there without running plan-lint: apply_ok=false'))
+  assert.ok(!('rulings_applied' in progressOf(calls, 'run end · progress')[0].E), 'run-end keeps what apply noted in the run')
+  drained('RB1', q)
+  // Without progress, nothing to apply: no apply command
+  const r = await scenario('RB1 no progress', { 'plan-reader': [plan(T00)], ...t00(), 'T00 · progress': [SOK] })
+  assert.deepEqual(r.calls.map(c => c.opts.label), ['plan-reader', 'T00 · worker', 'T00 · verification', 'T00 · evaluation', 'T00 · merge', 'T00 · progress'])
+  assert.ok(r.calls.every(c => !c.prompt.includes(' apply ')))
+  drained('RB1 no progress', r.q)
+  // The real progress.mjs: apply without a ruling prints its output and commits nothing
+  const D = toyRepo()
+  try {
+    const head = D.git('rev-parse', 'HEAD').trim()
+    const p = await play('RB1 real', D, { 'plan-reader': [plan({ ...T0, status: 'merged' })], 'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(p.calls.map(c => c.label), ['plan-reader', 'run end · progress'])
+    assert.deepEqual(p.launched.slice(0, 2).map(l => [l.label, l.code]), [['plan-reader', 0], ['plan-reader', 0]])
+    assert.deepEqual(JSON.parse(p.launched[1].out), NO_RULING)
+    assert.equal(p.res.status, 'finished'); assert.deepEqual(p.res.progress_failures, [])
+    assert.equal(D.git('rev-parse', 'HEAD').trim(), head, 'no commit')
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('RB2: real progress.mjs — three rulings recorded by rule: one single agent call, the plan reader, applies them and reads the plan before the first task; one commit', async () => {
+  const D = toyRepo()
+  try {
+    const ids = seed(D, [
+      { title: 'Lint', context: 'c', human: false, options: [{ id: 'A', description: 'Lint the guard', recommended: true, amendments: [{ id: 'T01', verification: ['npm run lint'], reason: 'lint the guard' }] }, { id: 'B', description: 'Leave it' }] },
+      { title: 'Docs', context: 'c', human: false, options: [{ id: 'A', description: 'Document it', recommended: true, entries: [{ type: 'debt', severity: 'minor', description: 'document the guard' }] }, { id: 'B', description: 'Leave it' }] },
+      { title: 'Naming', context: 'c', human: false, options: [{ id: 'A', description: 'x' }, { id: 'B', description: 'y' }] },
+    ])
+    script(D, 'rule', { items: [{ issue: ids[0], option: 'A' }, { issue: ids[1], option: 'A' }, { issue: ids[2], text: 'Keep the current name' }] })
+    const head = D.git('rev-parse', 'HEAD').trim()
+    const { res, launched, calls } = await play('RB2', D, {
+      'plan-reader': [plan({ ...T0, status: 'merged' }, T1)], 'T01 · worker': [report(1, { branch: 'task/T01' })], 'T01 · verification': [ok(1)], 'T01 · evaluation': [{ verdict: 'pass' }], 'T01 · merge': [MOK], 'T01 · progress': [SOK],
+      'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    assert.deepEqual(calls.map(c => c.label).slice(0, 2), ['plan-reader', 'T01 · worker'], 'one single call before the first task')
+    const out = JSON.parse(launched[1].out)
+    assert.deepEqual([launched[1].label, out.applied.map(a => a.issue), out.rejected], ['plan-reader', ids, []])
+    assert.deepEqual(res.rulings_applied, [{ issue: ids[0], task: 'T00', option: 'A', text: null }, { issue: ids[1], task: 'T00', option: 'A', text: null }, { issue: ids[2], task: 'T00', option: null, text: 'Keep the current name' }])
+    assert.equal(res.status, 'finished')
+    assert.deepEqual(D.git('log', '--format=%s', `${head}..HEAD`).trim().split('\n').reverse(), [`progress: rulings ${ids.join(', ')}`, 'progress(T01): merged'])
+    assert.ok(fs.readFileSync(join(D.root, 'plans', 'p', 'tasks', 'T01-x.md'), 'utf8').includes('  - "npm run lint"'))
+    const w = calls.find(c => c.label === 'T01 · worker').prompt
+    for (const x of [`${ids[0]}: option A (settled by the user)`, `${ids[2]}: Keep the current name (settled by the user)`]) assert.ok(w.includes(x), 'worker decisions: ' + x)
+    assert.deepEqual(D.doc().runs[1].rulings_applied, [{ task: 'T00', title: 'Lint', option: 'A' }, { task: 'T00', title: 'Docs', option: 'A' }, { task: 'T00', title: 'Naming', option: 'free answer' }], 'kept by run-end')
+    assert.deepEqual(register(D).issues.map(p => [p.id, p.status]), ids.map(id => [id, 'settled']))
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('RB3: real progress.mjs — a ruling apply refuses stops the run before any task, in awaiting-ruling, its issue open again; the other two are applied', async () => {
+  const D = toyRepo()
+  try {
+    D.writeTask('T02', []); script(D, 'view'); D.git('add', 'plans'); D.git('commit', '-qm', 'T02')
+    // Each option alone is valid (dry run); the second, after the first, makes a cycle
+    const ids = seed(D, [
+      { title: 'Order', context: 'c', human: false, options: [{ id: 'A', description: 'T02 after T01', amendments: [{ id: 'T02', depends_on: ['T01'], reason: 'after T01' }] }, { id: 'B', description: 'Leave it' }] },
+      { title: 'Reverse', context: 'c', human: false, options: [{ id: 'A', description: 'T01 after T02', amendments: [{ id: 'T01', depends_on: ['T02'], reason: 'after T02' }] }, { id: 'B', description: 'Leave it' }] },
+      { title: 'Docs', context: 'c', human: false, options: [{ id: 'A', description: 'Document it', entries: [{ type: 'debt', severity: 'minor', description: 'document the order' }] }, { id: 'B', description: 'Leave it' }] },
+    ])
+    assert.deepEqual(D.doc().issues.map(p => p.options[0].valid), [true, true, true], 'each option valid alone')
+    script(D, 'rule', { items: [{ issue: ids[0], option: 'A' }, { issue: ids[1], option: 'A' }, { issue: ids[2], option: 'A' }] })
+    const T2 = { ...T1, id: 'T02', depends_on: [], file: 'plans/p/tasks/T02-x.md' }
+    const { res, launched, calls } = await play('RB3', D, { 'plan-reader': [plan(T1, T2)], 'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    assert.deepEqual(calls.map(c => c.label), ['plan-reader', 'run end · progress'], 'no task started')
+    assert.equal(res.status, 'awaiting-ruling'); assert.ok(!('stop_issue' in res), 'no new issue: the one ruled on is open again')
+    assert.deepEqual(res.rulings_applied.map(a => a.issue), [ids[0], ids[2]])
+    assert.deepEqual(res.rulings_refused.map(x => [x.issue, x.option]), [[ids[1], 'A']]); assert.match(res.rulings_refused[0].reason, /cycle/)
+    assert.ok(res.detail.startsWith(`rulings refused by apply: ${ids[1]} (option A: plan-lint:`) && res.detail.endsWith(`. ${REOPENED} No task started.`), res.detail)
+    const reg = register(D).issues
+    assert.deepEqual(reg.map(p => [p.id, p.status, p.options[0].valid]), [[ids[0], 'settled', true], [ids[1], 'open', false], [ids[2], 'settled', true]])
+    assert.match(reg[1].options[0].invalid_reason, /cycle/)
+    const doc = D.doc()
+    assert.deepEqual(doc.issues.map(p => [p.id, p.status]), [[ids[0], 'settled'], [ids[1], 'open'], [ids[2], 'settled']], 'run-end added no issue')
+    assert.deepEqual(doc.pending_rulings, [])
+    assert.deepEqual([doc.runs[1].status, doc.runs[1].rulings_applied.map(a => a.title)], ['awaiting-ruling', ['Order', 'Docs']])
+    assert.equal(spawnSync(process.execPath, [PROGRESS_SCRIPT, 'validate', 'plans/p'], { cwd: D.root }).status, 0)
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('RB4: apply failed, its copy unfaithful, or an amendment it discarded — the run stops before any task or goes on; the clerk closes the run', async () => {
+  const E1 = 'progress: apply: the main checkout is on main, not on the integration branch plan/p'
+  let { res, calls, q } = await scenario('RB4 failed', { 'plan-reader': [{ ...planOpened(T00), apply_ok: false, apply_error: E1 }], 'run end · progress': [COK] }, AP)
+  assert.deepEqual(calls.map(c => c.opts.label), ['plan-reader', 'run end · progress'])
+  assert.deepEqual([res.status, res.detail], ['error', `progress: rulings not applied (apply), no task started — ${E1}. The rulings stay recorded: the next run applies them.`])
+  drained('RB4 failed', q)
+  ;({ res, calls, q } = await scenario('RB4 not reported', { 'plan-reader': [{ ...planOpened(T00), apply: NO_RULING }], 'run end · progress': [COK] }, AP))
+  assert.ok(res.status === 'error' && res.detail.endsWith('result not reported. The rulings stay recorded: the next run applies them.'), res.detail)
+  drained('RB4 not reported', q)
+  const lie = { ...NO_RULING, rejected: [] , applied: [{ issue: 'T02-1', task: 'T02', option: 'B', text: null }] }
+  ;({ res, calls, q } = await scenario('RB4 unfaithful', { 'plan-reader': [{ ...planOpened(T00), apply_ok: true, apply: lie }], 'run end · progress': [COK] }, AP))
+  assert.deepEqual([res.status, calls.length, res.rulings_applied], ['error', 2, []])
+  assert.ok(res.detail.startsWith('progress: output of apply not read, no task started — the copy does not match its digest.'), res.detail)
+  drained('RB4 unfaithful', q)
+  // A copy without its lists, whatever its digest: not read either, and the workflow does not throw
+  ;({ res, calls, q } = await scenario('RB4 without lists', { 'plan-reader': [{ ...planOpened(T00), apply_ok: true, apply: sealApply({ commit: null, message: 'no ruling to apply' }) }], 'run end · progress': [COK] }, AP))
+  assert.deepEqual([res.status, calls.length], ['error', 2]); assert.ok(res.detail.startsWith('progress: output of apply not read'), res.detail)
+  drained('RB4 without lists', q)
+  // Faithful, with an amendment discarded: the run goes on; the pilot gets it in the return (task null: apply's output does not
+  // give it). run-end gets an empty list: apply already noted it in the run with its task, and run-end keeps what the run holds
+  const kept = sealApply({ applied: [{ issue: 'T02-1', task: 'T02', option: 'B', text: null }], rejected: [], discarded: [{ id: 'T09', reason: 'merged' }], amended: [], added_tasks: [], commit: 'a1', message: '1 ruling applied (T02-1); committed a1' })
+  ;({ res, calls, q } = await scenario('RB4 discarded', { 'plan-reader': [{ ...planOpened(T00), apply_ok: true, apply: kept }], ...s00(), 'run end · progress': [COK] }, AP))
+  assert.equal(res.status, 'finished'); assert.deepEqual(res.discarded_amendments, [{ task: null, id: 'T09', reason: 'merged' }])
+  assert.deepEqual(res.rulings_applied, [{ issue: 'T02-1', task: 'T02', option: 'B', text: null }])
+  const re = progressOf(calls, 'run end · progress')[0].E
+  assert.deepEqual([re.discarded_amendments, 'rulings_applied' in re], [[], false])
+  assert.ok(byLabel(calls, 'T00 · worker')[0].prompt.includes('"T02-1: option B (settled by the user)"'))
+  drained('RB4 discarded', q)
+  // Refused, in the copy: awaiting-ruling before any task
+  const refused = sealApply({ ...kept, discarded: [], rejected: [{ issue: 'T02-2', option: null, text: 'x', reason: 'issue already settled' }] })
+  ;({ res, calls, q } = await scenario('RB4 refused', { 'plan-reader': [{ ...planOpened(T00), apply_ok: true, apply: refused }], 'run end · progress': [COK] }, AP))
+  assert.deepEqual([res.status, res.detail, calls.length], ['awaiting-ruling', `rulings refused by apply: T02-2 (text: issue already settled). ${REOPENED} No task started.`, 2])
+  assert.equal(progressOf(calls, 'run end · progress')[0].E.status, 'awaiting-ruling')
+  drained('RB4 refused', q)
+})
+await test('RB5: real progress.mjs, autonomous — the automatic decision reaches the register through the close (auto: <option> on the issue); no action of an option goes through the instructions of an agent', async () => {
+  const D = toyRepo()
+  try {
+    const [A, B] = RP_E.issues[0].options
+    const RP = { ...RP_E, issues: [{ ...RP_E.issues[0], options: [{ ...A, added_tasks: [{ id: 'T00C', title: 'Rule d test', phase: 0, content: taskText('T00C', ['T00'], 0) }] }, B] }] }
+    const { res, launched, calls } = await play('RB5', D, {
+      'plan-reader': [{ ...plan(T0), all: [{ id: 'T00', phase: 1, status: 'todo' }, { id: 'T01', phase: 1, status: 'todo' }] }], 'T00 · worker': [report(0, { deviations: DEVIATION })], 'T00 · verification': [ok(1)], 'T00 · evaluation': [{ verdict: 'pass' }], 'T00 · merge': [MOK],
+      'T00 · replanning': [RP], 'T00 · progress': [SOK], 'run end · progress': [{ commit: '', detail: '' }] }, { mode: 'auto' })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    assert.equal(res.status, 'rerun', 'T00C added to the phase')
+    assert.deepEqual(res.auto_decisions.map(d => [d.title, d.option]), [['UpdateUserSchema contract', 'A']])
+    // The close carries the issue whole, auto naming the option; close applies it
+    const cl = calls.find(c => c.label === 'T00 · progress').prompt
+    const E = progressCommands(cl).map(parse).find(x => x.cmd === 'close').E
+    assert.deepEqual(E.issues.map(p => [p.title, p.auto]), [['UpdateUserSchema contract', 'A']])
+    assert.ok(!('entries' in E) || E.entries.every(e => !/taken automatically/.test(e.description)), 'the decision entry is not passed apart: close writes it from auto')
+    const reg = register(D).issues
+    assert.deepEqual(reg.map(p => [p.title, p.status, p.ruling.option, p.ruling.author]), [['UpdateUserSchema contract', 'settled', 'A', 'auto']])
+    assert.deepEqual(reg[0].options[0].amendments.map(a => a.id), ['T01'])
+    assert.ok(fs.readFileSync(join(D.root, 'plans', 'p', 'tasks', 'T01-x.md'), 'utf8').includes('  - "pnpm test:rule-d"'), 'amendment applied by close')
+    assert.equal(D.git('log', '-1', '--format=%s').trim(), 'progress(T00): merged')
+    const files = D.git('show', '--name-only', '--format=', 'HEAD').trim().split('\n')
+    for (const f of ['plans/p/ISSUES.json', 'plans/p/HANDOFF.md', 'plans/p/tasks/T01-x.md', 'plans/p/tasks/T00C-rule-d-test.md']) assert.ok(files.includes(f), `${f} in the commit of close: ${files}`)
+    // No agent reads an action of the option as an instruction: neither the scribe nor any other, and no ruling call
+    assert.ok(calls.every(c => !c.label.startsWith('ruling ')))
+    for (const c of calls) for (const x of ['pnpm test:rule-d', 'document the contract', 'T00C', 'New tasks: create them', 'Amendments, for tasks not yet started']) assert.ok(!prose(c.prompt).includes(x), `${c.label}: ${x}`)
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+// ——— 0.20.0, fixes before the release (T20D): the whole close, an auto-decision close rejects, a dependency close adds ———
+// The lines under "## <id>" of HANDOFF.md, without their "- "
+const section = (D, id) => {
+  const ls = fs.readFileSync(join(D.root, 'plans', 'p', 'HANDOFF.md'), 'utf8').split('\n'), h = ls.indexOf(`## ${id}`), out = []
+  for (let i = h + 1; h >= 0 && i < ls.length && !ls[i].startsWith('## '); i++) if (ls[i].startsWith('- ')) out.push(ls[i].slice(2))
+  return out
+}
+// T00 alone in the phase's tasks; T01, of the same phase, only in "all": amendable, never started in the run
+const onlyT0 = () => ({ ...plan(T0), all: [{ id: 'T00', phase: 1, status: 'todo' }, { id: 'T01', phase: 1, status: 'todo' }] })
+const closeOf = launched => JSON.parse(launched.filter(l => l.label === 'T00 · progress').pop().out)
+await test('CL8: real progress.mjs, autonomous — one close of T00 carries an added task, an amendment, a review, a rejected attempt, an unverifiable criterion, a flaky test and an automatic decision: one commit, each line of HANDOFF.md once', async () => {
+  const D = toyRepo()
+  try {
+    const GAP = 'the guard of rule (d) has no test', UV = 'rule (d) in a worktree: not provable from the main checkout', FLAKY = 'journal.spec.ts:53'
+    const R = { type: 'review', description: '.env.example: add MR_MAX' }
+    const AUTO = { title: 'UpdateUserSchema contract', context: 'isSuperAdmin optional', options: [
+      { id: 'A', description: 'Keep optional and test rule (d)', recommended: true, entries: [{ type: 'debt', severity: 'minor', description: 'document the contract' }], amendments: [{ id: 'T01', verification: ['pnpm test:rule-d'], reason: 'security rule without a test' }] },
+      { id: 'B', description: 'Make the field required', recommended: false }] }
+    const RP = { major: true, entries: [{ type: 'deviation', severity: 'major', description: 'contract widened' }], added_tasks: [{ id: 'T00C', title: 'Rule d test', phase: 1, content: taskText('T00C', ['T00']) }], issues: [AUTO] }
+    const P = join(D.root, 'plans', 'p'), head = D.git('rev-parse', 'HEAD').trim()
+    const { res, launched, calls } = await play('CL8', D, {
+      'plan-reader': [onlyT0()], 'T00 · worker': [report(0, { deviations: [...DEVIATION, R] })], 'T00 · verification': [ok(1), { ...ok(2), flaky: [FLAKY] }],
+      'T00 · evaluation': [{ verdict: 'fail', gaps: [GAP] }, { verdict: 'pass', unverifiable: [UV] }], 'T00 · fix 1': [report(1)], 'T00 · merge': [MOK], 'T00 · replanning': [RP],
+      // The scribe (findings, a flaky test) files a finding in DISCOVERY.md, then runs close
+      'T00 · progress': [{ before: () => fs.appendFileSync(join(P, 'DISCOVERY.md'), '- routes prewarmed 1\n'), answer: SOK }], 'run end · progress': [{ commit: '', detail: '' }] }, { mode: 'auto' })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    assert.deepEqual([res.status, res.progress_failures, 'stop_issue' in res], ['rerun', [], false], 'T00C added to the phase, nothing rejected')
+    assert.ok(!calls.some(c => c.label.startsWith('T00C ')), 'a task added during a run does not start in it')
+    // One close, by the scribe: every piece of it in the input
+    const E = progressCommands(calls.find(c => c.label === 'T00 · progress').prompt).map(parse).find(x => x.cmd === 'close').E
+    assert.deepEqual([E.rejections, E.unverifiable, E.flaky, E.reviews, E.added_tasks.map(x => x.id), E.issues.map(p => [p.title, p.auto])], [[{ attempt: 1, by: 'evaluation', gaps: [GAP] }], [UV], [FLAKY], [R.description], ['T00C'], [[AUTO.title, 'A']]])
+    assert.deepEqual(closeOf(launched).rejected, [])
+    // A single commit on the integration branch, with the added task, the amended task, HANDOFF.md and DISCOVERY.md
+    assert.deepEqual(D.git('log', '--format=%s', `${head}..HEAD`).trim().split('\n'), ['progress(T00): merged'])
+    const files = D.git('show', '--name-only', '--format=', 'HEAD').trim().split('\n')
+    for (const f of ['plans/p/tasks/T00C-rule-d-test.md', 'plans/p/tasks/T01-x.md', 'plans/p/HANDOFF.md', 'plans/p/DISCOVERY.md', 'plans/p/ISSUES.json']) assert.ok(files.includes(f), `${f} in the commit of close: ${files}`)
+    assert.ok(fs.readFileSync(join(P, 'tasks', 'T01-x.md'), 'utf8').includes('  - "pnpm test:rule-d"'))
+    // Each line of the close once, in the order of close, the decision line and the review line included
+    assert.deepEqual(section(D, 'T00'), [
+      'deviation · major · contract widened',
+      'review · major · .env.example: add MR_MAX',
+      `rejection · minor · attempt 1, evaluation: ${GAP}`,
+      `blind-spot · minor · criterion unverifiable in the context of the task: ${UV}`,
+      `debt · minor · flaky test, passed on the second run: ${FLAKY}`,
+      'decision · major · UpdateUserSchema contract: option A taken automatically (autonomous mode) — Keep optional and test rule (d)',
+      'debt · minor · document the contract',
+      'amendment · major · T01: security rule without a test',
+    ])
+    assert.deepEqual(register(D).issues.map(p => [p.title, p.status, p.ruling && p.ruling.author]), [[AUTO.title, 'settled', 'auto']])
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('CL9: real progress.mjs, autonomous — the decided option gives T01 an owned file that neither exists nor belongs to a task the close creates: close rejects the decision by itself, the issue stays open, a human stop', async () => {
+  const D = toyRepo()
+  try {
+    const MISSING = 'src/schema/user.ts'
+    const AUTO = { title: 'Schema owner', context: 'c', options: [
+      { id: 'A', description: 'T01 owns the schema', recommended: true, entries: [{ type: 'debt', severity: 'minor', description: 'document the schema' }], amendments: [{ id: 'T01', owned_files: [MISSING], verification: ['pnpm test:schema'], reason: 'owns the schema' }] },
+      { id: 'B', description: 'Leave it', recommended: false }] }
+    const P = join(D.root, 'plans', 'p'), t01 = fs.readFileSync(join(P, 'tasks', 'T01-x.md'), 'utf8'), head = D.git('rev-parse', 'HEAD').trim()
+    // The clerk (no finding) reports no "missing": the check of the agent was skipped, close's own check holds
+    const { res, launched } = await play('CL9', D, {
+      'plan-reader': [onlyT0()], 'T00 · worker': [report(0, { findings: [], deviations: DEVIATION })], 'T00 · verification': [ok(1)], 'T00 · evaluation': [{ verdict: 'pass' }], 'T00 · merge': [MOK],
+      'T00 · replanning': [{ major: true, entries: [], issues: [AUTO] }], 'T00 · progress': [SOK], 'run end · progress': [{ commit: '', detail: '' }] }, { mode: 'auto' })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    const reason = `inconsistent auto-decision on issue "${AUTO.title}", option A: ${MISSING} does not exist and no task creates it`
+    assert.deepEqual(closeOf(launched).rejected, [{ id: MISSING, reason }])
+    assert.deepEqual([res.status, res.stop_issue.title, res.stop_issue.human, JSON.parse(res.stop_issue.context)], ['awaiting-ruling', 'Progress of T00: tasks, amendments or decisions rejected', true, [{ id: MISSING, reason }]])
+    // Nothing of the option is written: T01 as it was, no decision nor entry of the option; the needs-human entry instead
+    assert.equal(fs.readFileSync(join(P, 'tasks', 'T01-x.md'), 'utf8'), t01)
+    assert.deepEqual(section(D, 'T00'), [`needs-human · major · inconsistent auto-decision: ${MISSING} does not exist and no task creates it`])
+    assert.deepEqual(register(D).issues.map(p => [p.title, p.status, p.ruling]), [[AUTO.title, 'open', null]])
+    assert.deepEqual(D.git('log', '--format=%s', `${head}..HEAD`).trim().split('\n'), ['progress(T00): merged'])
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('CL10: real progress.mjs — the replanner adds a task that shares files with a task of its phase, without a dependency: close gives it a depends_on and its HANDOFF line, rejects nothing; no stop, and the task does not start in this run', async () => {
+  const D = toyRepo()
+  try {
+    const content = taskText('T00D', ['T00']).replace('src/T00D/**', 'src/T01/**')
+    const RP = { major: false, entries: [], issues: [], added_tasks: [{ id: 'T00D', title: 'Shares T01', phase: 1, content }] }
+    const { res, launched, calls } = await play('CL10', D, {
+      'plan-reader': [onlyT0()], 'T00 · worker': [report(0, { findings: [], deviations: DEVIATION })], 'T00 · verification': [ok(1)], 'T00 · evaluation': [{ verdict: 'pass' }], 'T00 · merge': [MOK],
+      'T00 · replanning': [RP], 'T00 · progress': [SOK], 'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    assert.deepEqual(closeOf(launched).rejected, [], 'nothing rejected: the overlap is settled by a dependency')
+    assert.deepEqual([res.status, 'stop_issue' in res, res.added_tasks.map(x => x.id)], ['rerun', false, ['T00D']])
+    assert.ok(!calls.some(c => c.label.startsWith('T00D ')), 'the added task does not start in this run')
+    assert.match(fs.readFileSync(join(D.root, 'plans', 'p', 'tasks', 'T00D-shares-t01.md'), 'utf8'), /^depends_on: \[T00, T01\]$/m)
+    assert.deepEqual(section(D, 'T00'), ['amendment · minor · T00D: depends on T01, added automatically: the two tasks of phase 1 share src/T01/**'])
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
 })
 console.log(`scenarios: ALL GREEN (${n} cases)`)

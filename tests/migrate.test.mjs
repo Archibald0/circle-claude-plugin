@@ -161,7 +161,7 @@ try {
     assert.equal(l[4], '  HANDOFF.md: 4 entries, "Entries:" line, "## source plan"')
     assert.equal(l[5], '  DISCOVERY.md: 6 section titles')
     assert.equal(l[6], '  orchestre.config.json: 11 keys, default_mode "devia" → "deviation", evaluator "systematique" → "always", "language": "fr" added')
-    assert.equal(l[7], '  suivi.json → progress.json (outside git): orchestre-suivi/2 → orchestre-progress/3, run 1 still "en-cours"')
+    assert.equal(l[7], '  suivi.json → progress.json (outside git): orchestre-suivi/2 → orchestre-progress/4, run 1 still "en-cours"')
     assert.match(l[8], /Run again with --write to migrate and commit\.$/)
     assert.equal(R.snapshot(), before); assert.equal(R.clean(), '')
   })
@@ -282,18 +282,18 @@ review · major · .env.example : vérifier SESSION_SECRET avant la PR
     assert.deepEqual(Object.keys(JSON.parse(R.read('orchestre.config.json'))), ['max_parallelism', 'default_mode', 'integration_branch', 'base_branch', 'evaluator', 'max_fixes', 'escalation', 'fable', 'max_auto_decisions', 'pilot_context_cap', 'setup', 'shared_setup', 'language'])
   })
 
-  test('progress.json: orchestre-progress/3, valid, run history and model used kept, conversion noted', () => {
+  test('progress.json: orchestre-progress/4, valid, run history and model used kept, conversion noted', () => {
     const doc = JSON.parse(R.read('progress.json'))
-    assert.equal(doc.format, 'orchestre-progress/3')
+    assert.equal(doc.format, 'orchestre-progress/4')
     assert.deepEqual(doc.runs.map(r => [r.number, r.mode, r.status, r.not_started]), [[1, 'deviation', 'partial', ['T02']]])
     const t1 = doc.tasks.find(t => t.id === 'T01')
     assert.deepEqual([t1.status, t1.model_used, t1.attempts, t1.branch, t1.actual_tokens, t1.rejections], ['merged', 'opus', 2, 'tache/T01', 'see /workflows', [{ attempt: 1, by: 'evaluation', gaps: ['test manquant'] }]])
     assert.deepEqual(doc.reviews.map(r => r.text), ['.env.example : vérifier SESSION_SECRET avant la PR', 'docs/DEPLOY.md : relire'])
     assert.ok(doc.log.some(e => e.kind === 'model' && e.text === 'T01 : sonnet → opus (test e2e)'), 'French log text kept')
-    assert.equal(doc.log.at(-1).text, 'progress.json converted from orchestre-suivi/2 to orchestre-progress/3 by migrate.mjs')
+    assert.equal(doc.log.at(-1).text, 'progress.json converted from orchestre-suivi/2 to orchestre-progress/4 by migrate.mjs')
     assert.deepEqual(doc.handoff, { 'source plan': { decision: { minor: 0, major: 1 }, review: { minor: 0, major: 1 } }, T01: { deviation: { minor: 1, major: 0 }, 'blind-spot': { minor: 0, major: 1 } } }, 'HANDOFF counts of 0.11, types, severities and sections translated')
     const v = R.script('progress.mjs', 'validate', 'plans/boutique')
-    assert.equal(v.code, 0, v.err); assert.equal(v.out, 'progress: progress.json valid (orchestre-progress/3, 3 tasks, 1 run)')
+    assert.equal(v.code, 0, v.err); assert.equal(v.out, 'progress: progress.json valid (orchestre-progress/4, 3 tasks, 1 run)')
   })
 
   test('read by the 0.12 scripts: plan-lint valid (merge "tâche T01 : " of 0.11 counted), view identical, status in English, worktrees', () => {
@@ -430,7 +430,7 @@ Statuses: todo · in-progress · verification · fix · merge · merged · needs
     assert.equal(O.migrate('plans/boutique', '--write').code, 0)
     // The other clone: the migration commit pulled, its own suivi.json of 0.11 still there, and a SUIVI.md restored by hand
     const at = '2026-10-01T10:00:00+02:00'
-    writeFileSync(join(O.d, 'suivi.json'), JSON.stringify({ format: 'orchestre-suivi/1', plan: 'boutique', dossier: 'plans/boutique', integration: 'plan/boutique', base: null, maj: at, taches: [], runs: [{ numero: 4, run_id: null, phase: 1, mode: 'auto', parallelisme: 1, corrections_max: 2, decisions_office_max: 3, statut: 'terminé', debut: at, fin: at, detail: null, arbitrages_appliques: [], amendements_ecartes: [], taches_ajoutees: [], reportees: [], non_lancees: [], en_attente: [], en_attente_prerequis: [] }], points: [], decisions_office: [], relectures: [], prerequis: [], handoff: {}, lint: { ok: true, erreurs: [] }, journal: [], journal_omis: 0 }))
+    writeFileSync(join(O.d, 'suivi.json'), JSON.stringify({ format: 'orchestre-suivi/1', plan: 'boutique', dossier: 'plans/boutique', integration: 'plan/boutique', base: null, maj: at, taches: [], runs: [{ numero: 4, run_id: null, phase: 1, mode: 'auto', parallelisme: 1, corrections_max: 2, decisions_office_max: 3, statut: 'terminé', debut: at, fin: at, detail: null, arbitrages_appliques: [], amendements_ecartes: [], taches_ajoutees: [], reportees: [], non_lancees: [], en_attente: [], en_attente_prerequis: [] }], points: [{ run: 4, tache: 'T01', titre: 'Garde', contexte: '', humain: false, role: 'a-trancher', statut: 'ouvert', option_choisie: null, options: [{ id: 'A', description: 'Ajouter un test' }] }], decisions_office: [], relectures: [], prerequis: [], handoff: {}, lint: { ok: true, erreurs: [] }, journal: [], journal_omis: 0 }))
     O.git('rm', '-q', '--cached', '-r', 'plans/boutique/PROGRESS.md'); O.git('commit', '-qm', 'drop'); rmSync(join(O.d, 'PROGRESS.md'))
     writeFileSync(join(O.d, 'SUIVI.md'), FR['SUIVI.md']); O.git('add', 'plans/boutique/SUIVI.md'); O.git('commit', '-qm', 'old view')
     // A plan of 0.12 without "language" means English: converting leftovers does not add "fr"
@@ -442,11 +442,15 @@ Statuses: todo · in-progress · verification · fix · merge · merged · needs
     assert.equal(O.script('worktrees.mjs', 'clean', 'plans/boutique').code, 0, 'a finished run of suivi.json does not block the clean')
     let r = O.migrate('plans/boutique')
     assert.equal(r.code, 0, r.err)
-    assert.deepEqual(r.out.split('\n').slice(0, 3), ['migrate plans/boutique: files of the French format of 0.11 left next to tasks/ → 0.12 (preview, nothing written)', '  SUIVI.md → PROGRESS.md: 8 column titles, 3 statuses, 3 token cells, legend, title', '  suivi.json → progress.json (outside git): orchestre-suivi/1 → orchestre-progress/3'])
+    assert.deepEqual(r.out.split('\n').slice(0, 3), ['migrate plans/boutique: files of the French format of 0.11 left next to tasks/ → 0.12 (preview, nothing written)', '  SUIVI.md → PROGRESS.md: 8 column titles, 3 statuses, 3 token cells, legend, title', '  suivi.json → progress.json (outside git): orchestre-suivi/1 → orchestre-progress/4'])
     assert.ok(!existsSync(join(O.d, 'progress.json')))
     r = O.migrate('plans/boutique', '--write')
     assert.equal(r.code, 0, r.err)
     assert.equal(JSON.parse(O.read('progress.json')).runs[0].number, 4)
+    // An open issue of 0.11 has lost its actions, as one of /3: its id, marked, and said in the note of the conversion
+    const p4 = JSON.parse(O.read('progress.json'))
+    assert.deepEqual(p4.issues.map(p => [p.id, p.status, p.without_actions, p.options[0].valid]), [['T01-1', 'open', true, false]])
+    assert.equal(p4.log.at(-1).text, 'progress.json converted from orchestre-suivi/1 to orchestre-progress/4 by migrate.mjs: model used unknown until now; 1 open issue kept without its actions: settle it with a free answer')
     assert.equal(JSON.parse(O.read('orchestre.config.json')).language, undefined, 'no "language" added')
     assert.ok(!existsSync(join(O.d, 'SUIVI.md')) && !existsSync(join(O.d, 'suivi.json')))
     assert.equal(JSON.parse(O.script('plan-lint.mjs', 'plans/boutique', '--json').out).ok, true)

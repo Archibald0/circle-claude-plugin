@@ -10,6 +10,9 @@ import { join, resolve, basename, dirname, relative } from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
+// The formats of progress.json read here, those progress.mjs writes or converts without loss of these fields
+const READS = ['orchestre-progress/4', 'orchestre-progress/3']
+
 const ENV = { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
 const HERE = dirname(fileURLToPath(import.meta.url))
 const LINT = join(HERE, 'plan-lint.mjs')
@@ -149,10 +152,11 @@ function status() {
   const r = spawnSync(process.execPath, [LINT, relative(root, dir) || '.', '--json', '--integration', integ, ...(baseCfg ? ['--base', baseCfg] : [])], { cwd: root, env: ENV, encoding: 'utf8', maxBuffer: 1 << 26 })
   const L = attempt(() => JSON.parse(r.stdout))
   if (!L) return `orchestre:status: plan-lint returned no state (${String(r.stderr || r.stdout || 'no message').trim().split('\n')[0]})`
-  // progress.json (0.16.0): fresher than PROGRESS.md during a run; git stays the source of truth for "merged"
+  // progress.json (0.16.0): fresher than PROGRESS.md during a run; git stays the source of truth for "merged". Read in /4 (0.20.0)
+  // as in /3: the fields read here are the same in both; another format, or not JSON, is ignored
   const progress = attempt(() => JSON.parse(readFileSync(join(dir, 'progress.json'), 'utf8')))
-  const v3 = !!progress && progress.format === 'orchestre-progress/3'
-  const S = new Map((v3 && Array.isArray(progress.tasks) ? progress.tasks : []).filter(t => t && t.id).map(t => [t.id, t]))
+  const known = !!progress && READS.includes(progress.format)
+  const S = new Map((known && Array.isArray(progress.tasks) ? progress.tasks : []).filter(t => t && t.id).map(t => [t.id, t]))
   const all = (L.tasks || []).map(t => ({ ...t, status: t.status === 'merged' ? 'merged' : S.get(t.id)?.status ?? t.status }))
   const active = all.filter(t => t.status !== 'cancelled')
   if (!active.length) return `orchestre:status: no task in ${relative(root, dir)}`
@@ -186,21 +190,23 @@ function status() {
   // the reviews and auto-decisions moved to tickets
   const handoff = attempt(() => readFileSync(join(dir, 'HANDOFF.md'), 'utf8')) || ''
   const count = type => (handoff.match(new RegExp(`^\\s*(?:[-*]\\s*)?${type}\\s*·`, 'gim')) || []).length
-  const list = k => (v3 && Array.isArray(progress[k]) ? progress[k] : []).filter(x => x && typeof x === 'object')
+  const list = k => (known && Array.isArray(progress[k]) ? progress[k] : []).filter(x => x && typeof x === 'object')
   const closed = x => x.done || x.ticket
-  const moved = v3 ? [...list('reviews'), ...list('auto_decisions')].filter(x => x.ticket && !x.done).length : 0
+  const moved = known ? [...list('reviews'), ...list('auto_decisions')].filter(x => x.ticket && !x.done).length : 0
   const ms = x => { const t = typeof x === 'string' ? Date.parse(x) : NaN; return Number.isNaN(t) ? null : t }
-  const reviews = v3 && Array.isArray(progress.reviews)
+  const reviews = known && Array.isArray(progress.reviews)
     ? list('reviews').filter(r => !closed(r)).map(r => ({ task: r.task == null ? null : String(r.task), phase: Number.isInteger(r.phase) ? r.phase : null, text: typeof r.text === 'string' ? r.text : '' }))
     : handoffReviews(handoff)
   // A plan closed by the pilot ([ Close the plan ] of /progress, 0.16.1)
-  const closedOn = v3 && typeof progress.closed === 'string'
+  const closedOn = known && typeof progress.closed === 'string'
+  const ruled = new Set(known ? list('pending_rulings').map(r => r && r.issue) : [])
   const yourTurn = momentLines({
-    now: Date.now(), updated: v3 ? ms(progress.updated) : null,
+    now: Date.now(), updated: known ? ms(progress.updated) : null,
     tasks: all.map(t => { const s = S.get(t.id); return { id: t.id, phase: t.phase, status: t.status, step: typeof s?.step === 'string' ? s.step : null, start: ms(s?.start), end: ms(s?.end) } }),
     runs: list('runs').map(r => ({ status: String(r.status), phase: Number.isInteger(r.phase) ? r.phase : 0, start: ms(r.start), ruled: (Array.isArray(r.rulings_applied) ? r.rulings_applied : []).filter(a => a && typeof a === 'object').map(a => String(a.task)) })),
     prerequisites: (L.prerequisites || []).filter(x => x.status === 'open').map(p => ({ id: p.id, type: p.type, blocks: p.blocks || [] })),
-    issues: list('issues').filter(p => p.status !== 'settled').map(p => ({ task: String(p.task) })),
+    // An issue whose ruling is recorded (rule, 0.20.0) and not applied yet no longer waits for the user, as in progress.mjs status
+    issues: list('issues').filter(p => p.status !== 'settled' && !ruled.has(p.id)).map(p => ({ task: String(p.task) })),
     reviews, decisions: list('auto_decisions').filter(d => !closed(d)).map(d => ({ task: String(d.task) })),
     lint: { ok: !!L.ok, errors: (L.errors || []).length },
     tickets: count('ticket') + moved, note: null,
