@@ -176,6 +176,7 @@ The test failures already present before the plan go in "Verified commands": the
   "escalation": ["sonnet", "opus"],
   "fable": false,
   "max_auto_decisions": 3,
+  "ruling_wait_minutes": 15,
   "pilot_context_cap": 0.65,
   "language": "en",
   "setup": ["<install the dependencies from the lockfile>", "<code generation>"],
@@ -187,6 +188,7 @@ The test failures already present before the plan go in "Verified commands": the
 - `base_branch`: the branch the integration branch starts from; `main` by default, to set if the repository uses another one.
 - `evaluator` is indicative: the evaluation is always systematic.
 - `fable`: `true` if the user allows fable for this plan, `false` otherwise; asked by `/orchestre:prepare` (or `/orchestre:ready` for an older plan). With `false`, plan-lint refuses a remaining task on `fable` and an `escalation` that contains it.
+- `ruling_wait_minutes` (0.21.0): how long, in minutes, a task waits for the ruling of an open issue that its options would amend, and how long a run in `deviation` mode waits for the ruling of a major issue before stopping; an integer from 0 to 60, 15 when absent, 0 to never wait (plan-lint refuses anything else). A human issue is never waited for.
 - `pilot_context_cap`: share of the pilot session's context beyond which `/orchestre:run` offers to go on in a new session.
 - `language`: language of the free text (see "Language"), a short code such as `en` or `fr`; `"en"` when absent.
 - `setup`: commands of the project that bring a working folder up to date, without touching a shared service (dependencies, generated code). Each worker runs them once on its branch, the integrator after each merge, before the post-merge check. Without them, a worktree or a merge can keep stale dependencies or generated code.

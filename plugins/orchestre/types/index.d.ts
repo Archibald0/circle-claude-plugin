@@ -72,6 +72,12 @@ export type Snapshot = {
   // The rulings recorded by `progress.mjs rule` and not applied yet (/4 pending_rulings; empty from a /3 file). Absent in a
   // snapshot built by hand: none
   pendingRulings?: PendingRuling[]
+  // The ids of the issues settled (0.21.0): their copy in progress.json says settled, or their entry of ISSUES.json settled or
+  // dropped. Absent in a snapshot built by hand: none
+  settledIssues?: string[]
+  // The prerequisites noted done by `progress.mjs did` and not written into PREREQUISITES.md yet (0.21.0, /4 pending_done);
+  // day: the date of its `at`, YYYY-MM-DD. Absent in a snapshot built by hand: none
+  pendingDone?: { prerequisite: string; day: string }[]
   // Open only. text: the Prerequisite column; evidence: the Evidence column; how: the steps of "## <ID> · how" (0.17.0).
   // Absent in a snapshot built by hand: empty
   prerequisites: { id: string; type: string; text?: string; evidence?: string; how?: string[]; blocks: string[] }[]
@@ -83,12 +89,18 @@ export type Snapshot = {
 
 // An issue of progress.json /4 (issues[]). id: its `id`, <task>-<n>; withoutActions: its `without_actions`, inherited from /3,
 // its options carry no action (valid false), so only a free answer settles it; options: its `options`
-export type IssueView = { id?: string | null; task: string; title: string; human: boolean; role: string; withoutActions?: boolean; options?: IssueOptionView[] }
+// holds (0.21.0): its `holds`, the tasks not started yet that wait for its ruling, emptied by release ([ Decide later ]);
+// entry (0.21.0): it has an entry in ISSUES.json, absent when the register was not read (a snapshot built by hand, the demo).
+// false: its options cannot be applied (apply refuses them), only a free answer settles it
+// until, waiting, startedWithout, released (0.21.0): the deadline of the wait for its ruling (ms, from `until`), the tasks that
+// wait for it now (`waiting`), those that started without it (`started_without`), and whether [ Decide later ] released it
+export type IssueView = { id?: string | null; task: string; title: string; human: boolean; role: string; withoutActions?: boolean; holds?: string[]; until?: number | null; waiting?: string[]; startedWithout?: string[]; released?: boolean; entry?: boolean; options?: IssueOptionView[] }
 
 // An option of an issue (issues[].options[] of progress.json /4). valid: its `valid`, boolean | null, null until the dry run
 // decides it; invalidReason: its `invalid_reason`, string | null, why it is refused (only when valid is false); effect: its
-// `effect`, what applying it does; amends: its `amends`, the ids of the tasks it amends
-export type IssueOptionView = { id: string; description: string; valid: boolean | null; invalidReason: string | null; effect: string; amends: string[] }
+// `effect`, what applying it does; amends: its `amends`, the ids of the tasks it amends; recommended: its `recommended`
+// (0.21.0; absent in a snapshot built by hand: not recommended)
+export type IssueOptionView = { id: string; description: string; recommended?: boolean; valid: boolean | null; invalidReason: string | null; effect: string; amends: string[] }
 
 // A ruling recorded and not applied yet: an entry of `pending_rulings` of progress.json /4, { issue, option | null, text | null,
 // at }. issue: the id of the issue; option or text: the option chosen or a free text (one of the two, the other null); at: in the
@@ -110,16 +122,21 @@ export type Piece = { t: string; c?: string; b?: boolean; d?: boolean; f?: strin
 export type Line = Piece[]
 
 // An action of the pane: a text prepared in the prompt, never sent; its key (1 to 9 on the lines of "Your turn"), its help
-export type Action = { hotkey: string | null; prompt: string; help: string; key?: string; mode?: 'select'; op?: ActionOp; ref?: ItemRef; page?: number; bracket?: true }
+export type Action = { hotkey: string | null; prompt: string; help: string; key?: string; mode?: 'select'; op?: ActionOp; ref?: ItemRef; page?: number; bracket?: true; issue?: string; option?: string; rulings?: { issue: string; option: string }[]; prerequisite?: string }
 // key: the item of "Your turn" it comes from; mode select: a first press shows the detail card, a second one closes it
 // (0.16.0; it acted in 0.14.0). op (0.16.0): what the button does instead of preparing the prompt: done, ticket (progress.mjs
 // run by the mod; prompt: the /orchestre:done it falls back to), edit, save, cancel (the text field), undo, page (to page).
 // bracket: a Button drawn in brackets, its piece text "[ label ]"
 // closePlan, reopenPlan (0.16.1): progress.mjs close-plan, reopen-plan
-export type ActionOp = 'done' | 'ticket' | 'edit' | 'save' | 'cancel' | 'undo' | 'page' | 'closePlan' | 'reopenPlan'
+// 0.21.0, on an issue (issue: its id): rule (option: the one recorded, progress.mjs rule), other (the text field, whose save
+// records a free ruling), release ([ Decide later ], progress.mjs release); acceptAll (rulings: one rule of a list); on a
+// manual action or an environment, did (prerequisite: its id, progress.mjs did)
+export type ActionOp = 'done' | 'ticket' | 'edit' | 'save' | 'cancel' | 'undo' | 'page' | 'closePlan' | 'reopenPlan' | 'rule' | 'other' | 'release' | 'acceptAll' | 'did'
 
-// The last action of the pane, with its Undo button (0.16.0)
-export type LastAction = { text: string; kind: 'done' | 'ticket' | 'edit' }
+// The last action of the pane, with its Undo button (0.16.0). 0.21.0: kind rule, rulings the issues recorded (and the option
+// chosen, null for a free answer), bulk for [ Accept the N recommended ]; kind did, did the prerequisite and the day noted.
+// The line and its Undo then follow the state of the plan (view-model.mjs lastLine): recorded, applied, or gone
+export type LastAction = { text: string; kind: 'done' | 'ticket' | 'edit' | 'rule' | 'did'; rulings?: { issue: string; option: string | null }[]; bulk?: boolean; did?: { prerequisite: string; day: string } }
 
 // An item of "Your turn": its key stays the same while it is there, its group says where it comes from
 // ack, toTicket: the /orchestre:done that marks a review or an auto-decision done, or moves it to tickets, put in the prompt
@@ -129,7 +146,9 @@ export type LastAction = { text: string; kind: 'done' | 'ticket' | 'edit' }
 // plan; blocks, the tasks a prerequisite holds back; how and check, the steps and the evidence of a prerequisite;
 // moment and rank (0.19.0), the label drawn on the right of the line ("now", "at run stop", "after phase 1"…) and the rank
 // that sorts the list (0 for now, 0.2 at run stop, 99 before the PR)
-export type YourTurnItem = { key: string; group: 'settle' | 'review' | 'decision'; task: string; g: Piece; text: string; detail?: string; prompt: string; help: string; ack?: string; toTicket?: string; ref?: ItemRef; kind: string; what: string; when: string; moment: string; rank: number; where: string; blocks?: string[]; how?: string[]; check?: string }
+// issue (0.21.0): the issue the item stands for (an issue, or a waiting task that carries one), answered from its detail card;
+// did (0.21.0): a manual action or an environment, which [ ✓ I did it ] notes done
+export type YourTurnItem = { key: string; group: 'settle' | 'review' | 'decision'; task: string; g: Piece; text: string; detail?: string; prompt: string; help: string; ack?: string; toTicket?: string; ref?: ItemRef; kind: string; what: string; when: string; moment: string; rank: number; where: string; blocks?: string[]; how?: string[]; check?: string; issue?: IssueView; did?: boolean }
 
 // The cards of the pane, in order; the banner opens the pane at one of them
 // closed: the card of a plan closed by the pilot (0.16.1)

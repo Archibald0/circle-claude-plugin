@@ -35,6 +35,6 @@ Limits of these settings (managed settings, Bash sandbox, what a denial does not
 
 ## Plan settings: `orchestre.config.json`
 
-Each plan has its own `plans/<name>/orchestre.config.json`, written by `/orchestre:prepare`. It holds the integration and base branches, the default mode, the parallelism, the fixes and their model ladder, the fable setting, the cap on auto-decisions, the context cap of the pilot session, the language of the plan, and the environment setup (`setup`, `shared_setup`). `/orchestre:ready` proposes the setup when it is missing.
+Each plan has its own `plans/<name>/orchestre.config.json`, written by `/orchestre:prepare`. It holds the integration and base branches, the default mode, the parallelism, the fixes and their model ladder, the fable setting, the cap on auto-decisions, how long a run waits for a ruling (`ruling_wait_minutes`, 15 minutes by default, 0 to never wait), the context cap of the pilot session, the language of the plan, and the environment setup (`setup`, `shared_setup`). `/orchestre:ready` proposes the setup when it is missing.
 
 Every key, with an example and its default where there is one: [`format.md`, `orchestre.config.json`](../plugins/orchestre/skills/prepare/format.md#orchestreconfigjson). The same file describes the rest of a plan: tasks, `PROGRESS.md`, `PREREQUISITES.md`, `HANDOFF.md` and `DISCOVERY.md`.

@@ -406,6 +406,17 @@ Checked by /orchestre:ready on 2026-11-03: not ready.
     }
   })
 
+  test('ruling_wait_minutes (0.21.0): absent, 0, 15 and 60 accepted; anything but an integer from 0 to 60 is an error', () => {
+    const d = plan('wait', { T01: task('T01') })
+    const withWait = x => { writeFileSync(join(root, d, 'orchestre.config.json'), JSON.stringify(x === undefined ? {} : { ruling_wait_minutes: x })); return lint(d, '--json') }
+    for (const ok of [undefined, 0, 1, 15, 60]) { const r = withWait(ok); assert.equal(r.code, 0, JSON.stringify(ok)); assert.deepEqual(r.json.errors, []) }
+    for (const bad of [-1, 61, 1.5, '15', null, true, [15]]) {
+      const r = withWait(bad)
+      assert.equal(r.code, 1, JSON.stringify(bad))
+      assert.deepEqual(r.json.errors, [`orchestre.config.json: "ruling_wait_minutes" must be an integer from 0 to 60 (15 when absent, 0 to never wait), not ${JSON.stringify(bad)}`])
+    }
+  })
+
   test('token estimate: "1.0M", "0.5 M" and "1,2 M" of 0.11 read alike', () => {
     const d = plan('tok', { T01: task('T01'), T02: task('T02').replace('token_estimate: 1.0M', 'token_estimate: 0.5 M'), T03: task('T03').replace('token_estimate: 1.0M', 'token_estimate: "1,2 M"') })
     assert.deepEqual(lint(d, '--json').json.tasks.map(t => t.token_estimate), [1, 0.5, 1.2])

@@ -15,9 +15,16 @@ export const meta = {
 //   plan-reader opens the run, then runs progress.mjs apply, which applies them to the plan and commits them, then reads the
 //   plan: one call, ruling or not. The workflow reads the output of apply back through its digest (applyOut). A ruling apply
 //   refuses (its issue open again, or the ruling dropped) stops the run before any task, after the others are applied.
+// Answering during the run (0.21.0): no arg either. close gives each open issue that is not human a deadline and the tasks not
+//   started it holds (waits); a held task, once ready, waits for the ruling through the clerk (progress.mjs wait), then starts,
+//   after an apply when the issue was ruled, or without it (step "without") when released or past its deadline. A ruling
+//   recorded while tasks run (pending in the output of a close) is applied at once, under the lock of the main checkout.
+//   Mode deviation (0.21.0, D3): a major issue that is not human, given a deadline by close, no longer stops the run at once. No
+//   task starts any more; once the tasks in flight end, the clerk waits for its ruling (progress.mjs wait). Ruled in time, it is
+//   applied and the run goes on; released, past its deadline or a wait that fails, it stops the run as before.
 // rerun: ids of "needs-human" tasks the user restarts, after their decision
-// progress (0.8.0): path of scripts/progress.mjs, sole writer of progress.json and of the PROGRESS.md view (contract orchestre-progress/3
-//   since 0.12.0, which converts a file of orchestre-suivi/2 or /1).
+// progress (0.8.0): path of scripts/progress.mjs, sole writer of progress.json and of the PROGRESS.md view (contract orchestre-progress/4
+//   since 0.20.0, which converts a file of orchestre-progress/3, orchestre-suivi/2 or /1).
 //   The workflow launches nothing: it writes in its agents' instructions the command to run, and reads its result in progress_ok.
 //   A worker isolated in a worktree carries no progress command (0.18.2): Claude Code's isolation guard refuses it there. The clerk
 //   notes the start of its task from the main checkout, before the worker is launched (noteStart).
@@ -151,7 +158,8 @@ const APPLY_S = S({
   discarded: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) },
   amended: { type: 'array', items: S({ id: str, verification: strs, depends_on: strs }, ['id', 'verification', 'depends_on']) },
   added_tasks: { type: 'array', items: S({ id: str, title: str, phase: nullable('integer') }, ['id', 'title', 'phase']) },
-  commit: nullable('string'), message: str, digest: str,
+  // done (0.21.0): only when a did was pending, the prerequisites apply wrote into PREREQUISITES.md
+  commit: nullable('string'), done: strs, message: str, digest: str,
 }, ['applied', 'rejected', 'discarded', 'amended', 'added_tasks', 'commit', 'message', 'digest'])
 const PLAN_S = S({ ok: bool, errors: strs, tasks: { type: 'array', items: S({ id: str, title: str, file: str, phase: { type: 'integer' }, model: str, model_reason: str, effort: str, depends_on: strs, resources: strs, status: str, verification: strs, open_prerequisites: strs }, ['id', 'file', 'depends_on', 'status', 'verification', 'open_prerequisites']) }, all: { type: 'array', items: S({ id: str, phase: { type: 'integer' }, status: str }, ['id']) }, max_phase: { type: 'integer' }, digest: str, run_start_ok: bool, progress_error: str, apply: APPLY_S, apply_ok: bool, apply_error: str }, ['ok', 'tasks', 'digest'])
 const REPORT_S = S({
@@ -175,8 +183,17 @@ const CLERK_S = S({ progress_ok: bool, progress_error: str, commit: str, detail:
 // Close of a task with progress (0.20.0), by the clerk or the scribe: the output of progress.mjs close, copied as printed, and
 // the paths cited by an auto-decision that neither exist nor belong to a task the close creates
 const IDREASON_S = { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }
-const CLOSE_OUT_S = S({ task: str, status: str, commit: { type: ['string', 'null'] }, rejected: IDREASON_S, discarded: IDREASON_S, issues: strs, pending: strs, message: str, digest: str }, ['task', 'status', 'commit', 'rejected', 'discarded', 'issues', 'pending', 'message', 'digest'])
+// A rejected automatic decision names its issue (0.21.0): issue, its id, and title
+const REJECTED_S = { type: 'array', items: S({ id: str, issue: nullable('string'), title: str, reason: str }, ['id', 'reason']) }
+// waits (0.21.0): each open issue that is not human, its deadline and the tasks not started it holds
+const WAITS_S = { type: 'array', items: S({ issue: str, until: str, holds: strs }, ['issue', 'until', 'holds']) }
+const CLOSE_OUT_S = S({ task: str, status: str, commit: { type: ['string', 'null'] }, rejected: REJECTED_S, discarded: IDREASON_S, issues: strs, pending: strs, waits: WAITS_S, message: str, digest: str }, ['task', 'status', 'commit', 'rejected', 'discarded', 'issues', 'pending', 'message', 'digest'])
 const CLOSE_S = S({ progress_ok: bool, progress_error: str, close: CLOSE_OUT_S, missing: strs }, ['progress_ok'])
+// Wait of a held task (0.21.0), by the clerk: the last output of progress.mjs wait, copied as printed
+const WAIT_OUT_S = S({ task: str, settled: strs, released: strs, timeout: strs, again: bool, digest: str }, ['task', 'settled', 'released', 'timeout', 'again', 'digest'])
+const WAIT_S = S({ progress_ok: bool, progress_error: str, wait: WAIT_OUT_S }, ['progress_ok'])
+// apply during the run (0.21.0), by the clerk: its output, copied as printed
+const APPLY_RUN_S = S({ progress_ok: bool, progress_error: str, apply: APPLY_S }, ['progress_ok'])
 // Choice of a fix's model (0.11.0): haiku, sonnet or opus; fable only comes from a task the user put on it
 // (orchestre.config.json: fable: true, checked by plan-lint), as a floor
 const CHOICE_MODELS = ['haiku', 'sonnet', 'opus']
@@ -243,7 +260,9 @@ const pStep = (id, step, extra = {}, report = true) => (PROGRESS ? `Plan progres
 // Start of a task that works in a worktree (0.18.2): the worker step, run by the clerk in the main checkout. Claude Code's
 // isolation guard refuses the progress command to an agent isolated in a worktree (a heredoc that names a script outside it:
 // "too complex to verify that it stays inside the worktree"); the task then showed as not started for the whole of its worker.
-const pStart = (t, model, again = false) => `${again ? pAgain : ''}Start of the task ${t.id} of the plan ${PLAN}, which works in a worktree: note it in the plan's progress, from the main checkout. Your only command is the one below; ${runBlock}.${block(progressCmd('step', { task: t.id, step: 'worker', isolated: true, model }))}${reportProgress} Run nothing else and change no file.`
+// without (0.21.0): the issues a held task starts without (released, past their deadline), so that progress logs it
+const withoutOf = ids => (ids && ids.length ? { without: ids } : {})
+const pStart = (t, model, again = false, wo = []) => `${again ? pAgain : ''}Start of the task ${t.id} of the plan ${PLAN}, which works in a worktree: note it in the plan's progress, from the main checkout. Your only command is the one below; ${runBlock}.${block(progressCmd('step', { task: t.id, step: 'worker', isolated: true, model, ...withoutOf(wo) }))}${reportProgress} Run nothing else and change no file.`
 const pRunStart = stop => `Plan progress: your first command, before any other, opens the run; ${runBlock}.${block(progressCmd('run-start', { phase: integer(PHASE, 1), mode: MODE, parallelism: PAR, max_fixes: integer(MAXFIX, 0), max_auto_decisions: integer(MAX_AUTO, 0) }))}If it exits with code 0, return run_start_ok=true and go on. Otherwise, stop there without doing anything else: ${stop}, run_start_ok=false, and the first line of its error in progress_error.
 `
 // A task's branch: new, or taken back from the most recent one (a branch held by another worktree is not taken back, we start from it).
@@ -254,7 +273,7 @@ const pBranch = t => `Branch: if no branch \`task/${t.id}\` exists, create it wi
 const pSetup = (t, when, onFailure) => { const c = setupOf(t); return c.length ? `
 Environment setup, ${when}: run one by one, as they are, these project commands: ${c.map(x => '`' + x + '`').join(', ')}. ${onFailure}` : '' }
 // The isolated worker has no step command: the clerk ran it before (pStart)
-const pWorker = (t, isolated, model) => `${isolated ? '' : pStep(t.id, 'worker', { isolated: false, model })}Task ${t.id} of the plan ${PLAN}. First read ${PLAN}/DISCOVERY.md and the decisions of ${PLAN}/HANDOFF.md, then ${t.file}, and follow its "Launch prompt".
+const pWorker = (t, isolated, model, wo = []) => `${isolated ? '' : pStep(t.id, 'worker', { isolated: false, model, ...withoutOf(wo) })}Task ${t.id} of the plan ${PLAN}. First read ${PLAN}/DISCOVERY.md and the decisions of ${PLAN}/HANDOFF.md, then ${t.file}, and follow its "Launch prompt".
 ${isolated ? "You are in an isolated worktree: Claude Code's isolation guard only accepts simple commands there (see your rules)." : `You are in the main checkout, on ${INTEG}.`} ${pBranch(t)}${pSetup(t, 'once on your branch, before any other work', 'If one fails, go on, and describe the failure (command and excerpt of its output) in a deviation. If they change tracked files you do not own, do not commit them and describe it in a deviation.')}
 Decisions taken: ${JSON.stringify(runDecisions())}.
 A file your permissions forbid you to read or change (organization or project settings): never get around the ban, by any command or script; describe the expected change in a deviation of type "review", the human will make it before the PR.
@@ -342,6 +361,19 @@ const APPLY_CMD = PROGRESS && `${PROGRESS_CMD} apply ${PLANARG}`
 const pApply = () => `Then the user's rulings recorded since the last run: the command below applies them to the plan and commits them itself (HANDOFF.md, tasks, ISSUES.json, PROGRESS.md); it is the script that writes, not you, and without a ruling recorded it writes nothing. Run it as is, once, in a single call, from the folder you start in (the main checkout).${block(APPLY_CMD)}If it exits with code 0, it prints one line of JSON: return it in "apply" exactly as printed, every field and every value, \`digest\` included, character for character, and apply_ok=true; the workflow checks the copy against the digest. Otherwise, stop there without running plan-lint: apply_ok=false, the first line of its error in apply_error, empty tasks.
 `
 const pReader = (opens, again, retry = false) => `${retry ? pAgain : ''}${opens ? pRunStart('return ok=false and empty tasks') + pApply() : ''}${again ? 'Your first copy of this output did not match its digest. ' : ''}${opens ? 'Then run' : 'Run'} \`${LINTCMD} ${PLANARG} --reader --phase ${PHASE} --integration ${INTEG}${BASE}\` and return its JSON exactly as printed${opens ? ', with run_start_ok, apply and apply_ok' : ''}: every field and every value, \`digest\` included, character for character. Leave nothing out, add nothing, rephrase nothing: the workflow checks the copy against the digest.`
+// Answering during the run (0.21.0). A task ready to start that the valid options of an open issue amend waits for the ruling:
+// the clerk runs progress.mjs wait, which blocks until each issue is settled, released or past its deadline (set by close, kept
+// in progress.json: the workflow keeps no clock), 100 seconds at most per run, then answers again=true. The clerk runs it again
+// in the same call, outside the exclusive queue: the wait takes no lock, the rest of the phase goes on. t.stopping (mode
+// deviation): the run waits, on behalf of the task whose close raised the issues
+const pWait = (t, ids, again = false) => `${again ? pAgain : ''}${t.stopping ? `Wait of the run of the plan ${PLAN} (mode deviation): the issues ${ids.join(', ')}, raised at the close of ${t.id}, stop it unless the user rules on them first.` : `Wait of the task ${t.id} of the plan ${PLAN}: it is ready to start, but the user's ruling on ${ids.join(', ')} may amend it.`} From the main checkout, run the command below, as is, in a single call each time: the JSON stays on its own line, between the two ${HEREDOC} lines.${block(progressCmd('wait', { task: t.id, issues: ids }))}It blocks until each issue is settled, released or past its deadline, 100 seconds at most per run, then prints one line of JSON. While that line says "again":true, run the same command again, unchanged, without a timeout of your own. Once it says "again":false, return that last line in "wait" exactly as printed, every field and every value, \`digest\` included, character for character, and progress_ok=true; the workflow checks the copy against the digest. If a run exits with a code other than 0, stop there: progress_ok=false, the first line of its error in progress_error, and no "wait". Run nothing else and change no file.`
+// The rulings recorded during the run (pending in the output of a close, settled in the output of a wait): the clerk runs apply in
+// the main checkout, which holds the lock of the main checkout meanwhile, as a worker of the main checkout does, and in the
+// exclusive queue
+const pApplyRun = () => `The user's rulings recorded during the run of the plan ${PLAN}, in the main checkout, in this order:
+1. \`git switch ${INTEG}\`. If it fails, run nothing else: return progress_ok=false and the first line of its error in progress_error.
+2. The command below applies them to the plan and commits them itself (HANDOFF.md, tasks, ISSUES.json, PROGRESS.md); it is the script that writes, not you. Run it as is, once, in a single call.${block(APPLY_CMD)}If it exits with code 0, it prints one line of JSON: return it in "apply" exactly as printed, every field and every value, \`digest\` included, character for character, and progress_ok=true; the workflow checks the copy against the digest. Otherwise, progress_ok=false, the first line of its error in progress_error, and no "apply".
+Never write HANDOFF.md, PROGRESS.md, a task or an amendment yourself, and make no commit: the command does. Run nothing else.`
 // End of run: the clerk runs run-end with the summary, then commits PROGRESS.md if it changed (task closed without a scribe, exception E:316)
 const withoutActions = p => ({
   task: p.task, title: short(p.title), context: short(p.context), human: !!p.human, ...(p.circuit_breaker ? { circuit_breaker: true } : {}), ...(p.inconsistency ? { inconsistency: short(p.inconsistency) } : {}),
@@ -409,6 +441,23 @@ const parents = new Map()
 const noteProgress = (task, step, x) => { if (PROGRESS && x && x.progress_ok !== true) progressFailures.push({ task, step, error: x.progress_error || (x.progress_ok === false ? 'failure without a message' : 'result not reported') }) }
 // Amended tasks whose progress is not yet committed (counter per task): they only start afterwards
 const amended = new Map()
+// Answering during the run (0.21.0). heldBy: task → the open issues it waits for, from the waits of each close (the tasks of this
+// run not started that a valid option amends); waitJobs: the waits in flight; startsWithout: task → the issues it starts without
+// (released, past their deadline), for its start step; late: task → the amendments an apply during the run made after it
+// started, which its work did not take in. A task whose wait ended on a ruling starts after the apply it asks for: the loop
+// starts that apply before any task, and no task starts while it holds the lock of the main checkout
+const heldBy = new Map(), waitJobs = new Map(), startsWithout = new Map(), late = new Map()
+let applyWanted = false, applyBy = null, applying = null
+// Mode deviation (0.21.0, D3): the issues that wait for their ruling instead of stopping the run ({ p, id, waits }), until an
+// apply settles them or they stop it; deadlines: the issues close gave a deadline; stopJobs: their waits in flight, by task
+const stopWaits = [], deadlines = new Set(), stopJobs = new Map()
+// Only the tasks of this run still to start wait; the others are past it, or of another phase
+const holdFrom = out => { for (const w of arr(out.waits)) for (const id of arr(w.holds)) if (pending.has(id)) { if (!heldBy.has(id)) heldBy.set(id, new Set()); heldBy.get(id).add(w.issue) } }
+const wantApply = by => { if (!applyWanted) applyBy = by; applyWanted = true }
+const appliedHere = id => rulingsApplied.some(a => a.issue === id)
+// The id close gave each issue of this run (its output lists them in the order of its input), so that an issue settled by an
+// apply during the run leaves open_issues
+const issueIds = new Map()
 // The first issue stops the run; the next ones go to open_issues. bucket: the issues of the current close, for progress
 const stopOn = (p, bucket) => { if (bucket) bucket.push(p); if (!stop) stop = p; else issues.push(p) }
 // An added task never runs in a phase already past
@@ -422,6 +471,29 @@ const wholeIssue = (p, auto = null, amendments = null) => ({
   ...(auto != null ? { auto } : {}),
 })
 const humanIssue = (id, title, context, options = []) => ({ task: id, title, context, human: true, options })
+// Automatic decisions of a close that did not take them (0.21.0): close rejected them, or the close was refused. They leave
+// autoDecisions (the cap, the decisions given to the agents, the return and run-end), and their issues, options included,
+// go back to open_issues. decisions and decided are pushed in pairs by applyRecommended
+const notTaken = (updates, which) => updates.decisions.forEach((d, i) => {
+  if (!which(d)) return
+  const k = autoDecisions.indexOf(d)
+  if (k >= 0) autoDecisions.splice(k, 1)
+  issues.push(updates.decided[i])
+})
+// The HANDOFF lines of a close (0.21.0), in the formats of progress.mjs close: what a refused close leaves unwritten
+const handoffLine = (type, severity, text) => `${type} · ${severity} · ${oneLine(text)}`
+const closeLines = (E, entries) => [
+  ...entries.map(e => handoffLine(e.type, e.severity, e.description)),
+  ...arr(E.blocker).map(g => handoffLine('blocker', 'major', g)),
+  ...arr(E.rejections).map(x => handoffLine('rejection', 'minor', `attempt ${x.attempt}, ${x.by}: ${arr(x.gaps).map(oneLine).join('; ')}`)),
+  ...arr(E.unverifiable).map(c => handoffLine('blind-spot', 'minor', `criterion unverifiable in the context of the task: ${c}`)),
+  ...arr(E.flaky).map(x => handoffLine('debt', 'minor', `flaky test, passed on the second run: ${x}`)),
+]
+// The decision line of each automatic decision, then the entries and amendments of its option
+const autoLines = autoIssues => autoIssues.flatMap(p => {
+  const o = (p.options || []).find(x => String(x.id) === String(p.auto)) || {}
+  return [handoffLine('decision', 'major', `${p.title}: option ${o.id} taken automatically (autonomous mode) — ${o.description ?? ''}`), ...arr(o.entries).map(e => handoffLine(e.type, e.severity, e.description)), ...arr(o.amendments).map(a => handoffLine('amendment', 'major', `${a.id}: ${a.reason}`))]
+})
 // The rulings apply applied at the run start: their decision entries are in HANDOFF.md, which the workers read
 const runDecisions = () => [...DECISIONS, ...rulingsApplied.map(a => `${a.issue}: ${a.text != null ? a.text : `option ${a.option}`} (settled by the user)`), ...autoDecisions.map(o => `${o.title}: ${o.description} (taken automatically)`)]
 
@@ -454,6 +526,15 @@ const notOpened = x => {
 
 // Output of apply copied by the plan-reader (0.20.0): kept only if it matches its digest, its lists present
 const applyOut = x => (x && typeof x === 'object' && ['applied', 'rejected', 'discarded'].every(k => Array.isArray(x[k])) && typeof x.digest === 'string' && x.digest === payloadDigest(x, 'digest') ? x : null)
+// The rulings an apply refused, at the run start or during the run: what happened to each issue
+const refusedBy = rejected => `rulings refused by apply: ${rejected.map(x => `${x.issue} (${x.option != null ? `option ${x.option}` : 'text'}: ${x.reason})`).join('; ')}. An issue is open again only when apply reopened it, its option invalid with the reason (refused by plan-lint or by an action, or no entry in ISSUES.json); a ruling on an unknown or already settled issue, an absent option or an option already invalid is dropped, and nothing is reopened.`
+// What an apply applied, at the run start or during the run: the decisions given to the agents that follow, and the amendments it
+// could not make (task merged or cancelled), whose issue its output does not give
+const noteApplied = ap => {
+  rulingsApplied.push(...ap.applied)
+  discardedRun.push(...ap.discarded.map(a => ({ task: null, id: a.id, reason: a.reason })))
+  if (ap.applied.length) log(`rulings applied: ${ap.applied.map(a => a.issue).join(', ')}${ap.commit ? ` (${short(ap.commit, 12)})` : ''}`)
+}
 
 phase('Plan reading')
 // With progress, the plan reader opens the run, then applies the user's rulings (apply), then reads the plan: one call (0.20.0)
@@ -471,15 +552,12 @@ if (readerOpens && plan) {
   if (plan.apply_ok !== true) return await stopBefore('error', `progress: rulings not applied (apply), no task started — ${plan.apply_error || (plan.apply_ok === false ? 'failure without a message' : 'result not reported')}. The rulings stay recorded: the next run applies them.`)
   const ap = applyOut(plan.apply)
   if (!ap) return await stopBefore('error', `progress: output of apply not read, no task started — the copy does not match its digest. apply ran: read the last commit "progress: rulings …" on ${INTEG} and the issues of progress.json before a new run.`)
-  rulingsApplied.push(...ap.applied)
-  // Amendments apply could not make (task merged or cancelled): its output does not say which issue they came from
-  discardedRun.push(...ap.discarded.map(a => ({ task: null, id: a.id, reason: a.reason })))
-  if (ap.applied.length) log(`rulings applied: ${ap.applied.map(a => a.issue).join(', ')}${ap.commit ? ` (${short(ap.commit, 12)})` : ''}`)
+  noteApplied(ap)
   // A refused ruling still stops the run, before any task, once the others are applied. No stop issue: the issue is the one
   // the user ruled on. apply reopened it (open again, the option invalid with the reason) when plan-lint or an action refused
   // the option, or when the issue has no entry in ISSUES.json; it dropped the ruling, marking nothing, on an unknown or
   // already settled issue, an absent option or an option already invalid. Its output does not say which: the detail says both
-  if (ap.rejected.length) return await stopBefore('awaiting-ruling', `rulings refused by apply: ${ap.rejected.map(x => `${x.issue} (${x.option != null ? `option ${x.option}` : 'text'}: ${x.reason})`).join('; ')}. An issue is open again only when apply reopened it, its option invalid with the reason (refused by plan-lint or by an action, or no entry in ISSUES.json); a ruling on an unknown or already settled issue, an absent option or an option already invalid is dropped, and nothing is reopened. No task started.`, { rulings_refused: ap.rejected })
+  if (ap.rejected.length) return await stopBefore('awaiting-ruling', `${refusedBy(ap.rejected)} No task started.`, { rulings_refused: ap.rejected })
 }
 // Copy checked (0.18.1): everything that follows (statuses, dependencies, verifications, prerequisites) comes from this copy
 const faithful = p => typeof p.digest === 'string' && p.digest === planDigest(p)
@@ -590,15 +668,25 @@ async function closeWithProgress(t, final, attempts, r, gaps, updates, { flaky, 
   noteProgress(t.id, 'close', s)
   if (!s) return stopOn(humanIssue(t.id, `Progress of ${t.id} not committed`, `${scribe ? 'Scribe' : 'Clerk'} without an answer.`))
   if (s.progress_ok !== true) {
-    const lost = entries.map(e => `${e.type} · ${e.severity} · ${oneLine(e.description)}`)
-    return stopOn(humanIssue(t.id, `Progress of ${t.id} not committed`, `close refused${altered(s) ? ' twice' : ''}: ${s.progress_error || 'result not reported'}. Nothing of the close is written (HANDOFF.md, tasks, amendments, ISSUES.json); the run end closes ${t.id} in progress.json from the summary.${lost.length ? ` HANDOFF entries not written: ${JSON.stringify(lost)}` : ''}`))
+    const lost = closeLines(E, entries), undecided = autoLines(updates.autoIssues)
+    stopOn(humanIssue(t.id, `Progress of ${t.id} not committed`, `close refused${altered(s) ? ' twice' : ''}: ${s.progress_error || 'result not reported'}. Nothing of the close is written (HANDOFF.md, tasks, amendments, ISSUES.json); the run end closes ${t.id} in progress.json from the summary.${lost.length ? ` HANDOFF entries not written: ${JSON.stringify(lost)}` : ''}${undecided.length ? ` Automatic decisions not taken, their issues back in open_issues: ${JSON.stringify(undecided)}` : ''}`))
+    return notTaken(updates, () => true)
   }
   const out = closeOut(s.close, t, final)
   if (!out) return stopOn(humanIssue(t.id, `Progress of ${t.id}: output of close not read`, `the copy of the output of progress.mjs close does not match its digest: the close ran, but what it rejected or discarded is unknown. Read the commit "progress(${t.id}): ${final}" on ${INTEG} and HANDOFF.md under "## ${t.id}" before the next run.`))
+  // Answering during the run (0.21.0), only from a copy checked against its digest: the tasks each open issue holds wait for its
+  // ruling once ready, and a ruling recorded meanwhile (pending) is applied at once
+  updates.issues.forEach((p, i) => { if (typeof arr(out.issues)[i] === 'string') issueIds.set(p, out.issues[i]) })
+  holdFrom(out)
+  for (const w of arr(out.waits)) if (w && typeof w.issue === 'string' && typeof w.until === 'string') deadlines.add(w.issue)
+  if (arr(out.pending).length) wantApply(t.id)
   discardedRun.push(...arr(out.discarded).map(e => ({ task: t.id, ...e })))
   // Rejected by close (plan-lint), or a path cited by an auto-decision that neither exists nor belongs to a task created here
   const rejected = [...arr(out.rejected), ...arr(s.missing).map(p => ({ id: p, reason: 'cited by an auto-decision: it does not exist and no task created by this close owns it' }))]
   if (rejected.length) stopOn(humanIssue(t.id, `Progress of ${t.id}: tasks, amendments or decisions rejected`, JSON.stringify(rejected)))
+  // An automatic decision close rejected (an item naming its issue, 0.21.0): not taken, its issue open in ISSUES.json
+  const refused = new Set(arr(out.rejected).filter(x => x && x.issue != null).map(x => x.title))
+  notTaken(updates, d => refused.has(d.title))
 }
 
 async function closeTask(t, status, attempts, r, gaps = [], trace = {}) {
@@ -606,7 +694,10 @@ async function closeTask(t, status, attempts, r, gaps = [], trace = {}) {
   // issues and decisions: those of this close, passed to progress (close); tasks running in parallel have their own
   // Scope of the branch not checked (0.19.0): two copies of plan-lint --scope that did not match their digest
   const scopeBlind = trace.scopeUnread ? [{ type: 'blind-spot', severity: 'minor', description: trace.scopeUnread }] : []
-  const updates = { entries: [...(trace.entries || []), ...scopeBlind], tasks: [], amendments: [], discarded: [], auto: [], issues: [...(trace.issues || [])], decisions: [], decided: [], discardedHere: [], viaAuto: new Set(), autoIssues: [] }
+  const updates = { entries: [...(trace.entries || []), ...scopeBlind], tasks: [], amendments: [], discarded: [], auto: [], issues: [...(trace.issues || [])], decisions: [], decided: [], discardedHere: [], viaAuto: new Set(), autoIssues: [], untilRuled: [] }
+  // Amended by an apply during the run after it started (0.21.0): its work did not take them in. Merged, they are amendments not
+  // applied (a blind-spot under its close); otherwise its file keeps them, and the next run starts it with them
+  if (status === 'merged') for (const a of late.get(t.id) || []) { const d = { task: t.id, ...a }; updates.discarded.push(a); updates.discardedHere.push(d); discardedRun.push(d) }
   // Files and commands the agents may not read, write or run: review by the human before the PR, without an issue or a stop
   const reviews = reviewsOf(r, trace)
   const deviations = deviationsOf(r)
@@ -634,7 +725,8 @@ async function closeTask(t, status, attempts, r, gaps = [], trace = {}) {
       for (const pt of rp.issues || []) {
         if (pt.human) { humanSeen = true; stopOn(issueOf(t, pt), updates.issues) }
         else if (MODE === 'auto') applyRecommended(t, pt, updates)
-        else if (MODE === 'deviation') stopOn(issueOf(t, pt), updates.issues)
+        // Mode deviation with progress (0.21.0): the issue stops the run after its close, unless close gave it a deadline
+        else if (MODE === 'deviation') { if (PROGRESS) { const p = issueOf(t, pt); updates.issues.push(p); updates.untilRuled.push(p) } else stopOn(issueOf(t, pt), updates.issues) }
         else { const p = issueOf(t, pt); updates.issues.push(p); issues.push(p) }
       }
       // A sensitive deviation without any decision issue: a human settles
@@ -673,6 +765,9 @@ async function closeTask(t, status, attempts, r, gaps = [], trace = {}) {
     if (!s || !s.ok) stopOn(humanIssue(t.id, `Progress of ${t.id} not committed`, s ? 'The scribe could not commit.' : 'Scribe without an answer.'))
     else if ((s.rejected || []).length) stopOn(humanIssue(t.id, `Progress of ${t.id}: tasks, amendments or decisions rejected`, JSON.stringify(s.rejected)))
   }
+  // Mode deviation (0.21.0): an issue close gave a deadline waits for its ruling (with the run already stopped, the end of the
+  // run stops on it); without one (ruling_wait_minutes 0, a close not read), it stops the run as before
+  for (const p of updates.untilRuled) { const id = issueIds.get(p); if (deadlines.has(id)) stopWaits.push({ p, id, waits: 0 }); else stopOn(p) }
   for (const am of updates.amendments) { const n = (amended.get(am.id) || 1) - 1; if (n > 0) amended.set(am.id, n); else amended.delete(am.id) }
   log(`${t.id}: ${final}`)
   return { id: t.id, status: final, attempts, branch: r ? r.branch : null, summary: r ? r.summary : '', ...(final !== 'merged' ? { blocker: gaps } : {}), ...(flaky.length ? { flaky } : {}), ...(rejections.length ? { rejections } : {}), ...(unverifiable.length ? { unverifiable } : {}), ...(allReviews.length ? { reviews: allReviews } : {}) }
@@ -704,13 +799,102 @@ async function noteStart(t, model) {
   if (!PROGRESS) return
   let g = null
   // The circuit breaker is not a failure of the clerk: the task stops there
-  const start = again => ask(pStart(t, model, again), { label: `${t.id} · start`, agentType: AG('clerk'), model: 'haiku', schema: CLERK_S })
+  const start = again => ask(pStart(t, model, again, startsWithout.get(t.id)), { label: `${t.id} · start`, agentType: AG('clerk'), model: 'haiku', schema: CLERK_S })
   try {
     g = await start(false)
     // The step refused, its JSON altered on the way (0.20.0): nothing was written, the clerk runs again once
     if (altered(g)) { log(`${t.id}: start refused, payload altered in transit; run again`); g = await start(true) }
   } catch (err) { if (err === INTERRUPT) throw err; g = { progress_ok: false, progress_error: `clerk failed: ${String(err)}` } }
   noteProgress(t.id, 'worker', g || { progress_ok: false, progress_error: 'clerk without an answer' })
+}
+
+// Wait of a held task for the rulings of its issues (0.21.0), by the clerk, outside the exclusive queue (pWait). An issue
+// settled by a ruling not applied yet sends the task after the next apply; released or past its deadline, the task starts
+// without it. A wait without an answer runs again once: a second one in a row trips the circuit breaker, and the task does not
+// start. A wait that fails, or whose copy does not match its digest, leaves the task to start without its rulings, as in 0.20
+const waitOut = (x, t) => (x && typeof x === 'object' && x.task === t.id && ['settled', 'released', 'timeout'].every(k => Array.isArray(x[k])) && typeof x.again === 'boolean' && typeof x.digest === 'string' && x.digest === payloadDigest(x, 'digest') ? x : null)
+// The calls of a wait: { out } once it is over, { why } when it failed, null on the circuit breaker
+async function waitRuns(t, ids) {
+  const call = again => ask(pWait(t, ids, again), { label: `${t.id} · wait`, agentType: AG('clerk'), model: 'haiku', schema: WAIT_S })
+  let out = null, why = null
+  try {
+    for (;;) {
+      let w = await call(false)
+      if (altered(w)) { log(`${t.id}: wait refused, payload altered in transit; run again`); w = await call(true) }
+      if (w == null) { log(`${t.id}: wait without an answer; run again`); w = await call(false) }
+      noteProgress(t.id, 'wait', w || { progress_ok: false, progress_error: 'clerk without an answer' })
+      out = w && w.progress_ok === true ? waitOut(w.wait, t) : null
+      if (!out) { why = !w ? 'clerk without an answer' : w.progress_ok === true ? 'output of wait not read, the copy does not match its digest' : w.progress_error || 'result not reported'; break }
+      // again: the clerk stopped before the end of the wait; the wait goes on in a new call
+      if (!out.again) break
+    }
+  } catch (err) { if (err === INTERRUPT) return null; out = null; why = `clerk failed: ${String(err)}` }
+  return { out, why }
+}
+async function waitFor(t) {
+  // heldBy keeps only the issues no apply of this run has settled (runApply takes them out)
+  const ids = [...heldBy.get(t.id)]
+  heldBy.delete(t.id)
+  const w = await waitRuns(t, ids)
+  if (!w) return
+  const { out, why } = w
+  if (!out) { startsWithout.set(t.id, ids); log(`${t.id}: wait failed (${short(why, 200)}); it starts without the rulings on ${ids.join(', ')}`); return }
+  const settled = ids.filter(id => out.settled.includes(id)), rest = ids.filter(id => !settled.includes(id))
+  if (rest.length) startsWithout.set(t.id, rest)
+  log(`${t.id}: wait over${settled.length ? `, ruled: ${settled.join(', ')}` : ''}${rest.length ? `, starts without: ${rest.join(', ')}` : ''}`)
+  if (settled.some(id => !appliedHere(id))) wantApply(t.id)
+}
+// Mode deviation (0.21.0, D3): the run waits for the rulings of the issues a close raised, on behalf of the task closed (pWait,
+// t.stopping). A ruling not applied yet asks for an apply, which takes its issue out of stopWaits; released, past its deadline or
+// a wait that fails, the issue stops the run, as before. On the circuit breaker, the end of the run stops on them
+async function waitForStop(task, ids) {
+  const w = await waitRuns({ id: task, stopping: true }, ids)
+  if (!w) return
+  const settled = w.out ? ids.filter(id => w.out.settled.includes(id)) : []
+  const stops = stopWaits.filter(x => ids.includes(x.id) && !settled.includes(x.id))
+  for (const x of stops) { stopWaits.splice(stopWaits.indexOf(x), 1); stopOn(x.p) }
+  log(`${task}: ${w.out ? 'wait over' : `wait failed (${short(w.why, 200)})`}${settled.length ? `, ruled: ${settled.join(', ')}` : ''}${stops.length ? `; the run stops on ${stops.map(x => x.id).join(', ')}` : ''}`)
+  if (settled.some(id => !appliedHere(id))) wantApply(task)
+}
+
+// apply during the run (0.21.0), by the clerk, in the exclusive queue and under the lock of the main checkout (the loop takes
+// it). What it applied reaches the tasks not started yet before their worker: their verifications and dependencies added; a
+// dependency on a task created in this run sends the task to the next run, as for an automatic decision. An amendment of a
+// task already started is late: its close notes it as not applied. A refused ruling, a failed apply or an output not read stop
+// the run for a human, as at the run start
+async function runApply() {
+  const by = applyBy
+  applyWanted = false
+  let a
+  try { a = await exclusive(() => ask(pApplyRun(), { label: 'rulings · apply', agentType: AG('clerk'), model: 'haiku', schema: APPLY_RUN_S })) } catch (err) { a = err === INTERRUPT ? INTERRUPT : { progress_ok: false, progress_error: `clerk failed: ${String(err)}` } }
+  if (a === INTERRUPT) return
+  noteProgress(null, 'apply', a || { progress_ok: false, progress_error: 'clerk without an answer' })
+  if (!a || a.progress_ok !== true) return stopOn(humanIssue(by, 'Rulings not applied during the run', `progress.mjs apply ${a ? `failed: ${a.progress_error || 'result not reported'}` : 'without an answer (clerk)'}. Nothing of it is written; the rulings stay recorded: the next run applies them.`))
+  const ap = applyOut(a.apply)
+  if (!ap) return stopOn(humanIssue(by, 'Rulings applied during the run: output of apply not read', `the copy of the output of progress.mjs apply does not match its digest: apply ran, but what it applied or refused is unknown. Read the last commit "progress: rulings …" on ${INTEG} and the issues of progress.json before the next run.`))
+  noteApplied(ap)
+  added.push(...arr(ap.added_tasks).map(x => ({ id: x.id, title: x.title, phase: x.phase ?? PHASE })))
+  const fresh = new Set(added.map(x => x.id)), ruled = new Set(ap.applied.map(x => x.issue))
+  for (const [id, s] of heldBy) { for (const i of ruled) s.delete(i); if (!s.size) heldBy.delete(id) }
+  // Settled now: no longer an open issue of the return, which the pilot would have the user settle again
+  issues.splice(0, issues.length, ...issues.filter(p => !ruled.has(issueIds.get(p))))
+  // Mode deviation: ruled in time, the issue no longer stops the run
+  const goesOn = stopWaits.filter(x => ruled.has(x.id))
+  if (goesOn.length) { stopWaits.splice(0, stopWaits.length, ...stopWaits.filter(x => !ruled.has(x.id))); log(`${goesOn.map(x => x.id).join(', ')}: ruled in time, the run goes on`) }
+  for (const x of arr(ap.amended)) {
+    const c = T.get(x.id)
+    if (!c || done.has(x.id)) continue
+    if (running.has(x.id)) {
+      const what = [...arr(x.verification), ...arr(x.depends_on).map(d => `depends on ${d}`)].join('; ')
+      late.set(x.id, [...(late.get(x.id) || []), { id: x.id, reason: `ruled during the run after ${x.id} started (${[...ruled].join(', ')}): ${what}` }])
+      log(`${x.id}: amended by a ruling after its start (${what}): not applied to its work`)
+      continue
+    }
+    c.verification = [...(c.verification || []), ...arr(x.verification)]
+    c.depends_on = [...(c.depends_on || []), ...arr(x.depends_on)]
+    if (arr(x.depends_on).some(d => fresh.has(d)) && pending.delete(x.id)) { deferred.push(x.id); heldBy.delete(x.id); startsWithout.delete(x.id) }
+  }
+  if (ap.rejected.length) stopOn(humanIssue(by, 'Rulings refused by apply during the run', refusedBy(ap.rejected)))
 }
 
 async function runTask(t, isolated) {
@@ -720,7 +904,7 @@ async function runTask(t, isolated) {
     const workerModel = t.model || 'sonnet'
     // In a worktree, the clerk notes the start first: the worker itself would be refused the command (noteStart)
     if (isolated) await noteStart(t, workerModel)
-    let r = await ask(pWorker(t, isolated, workerModel), { label: `${t.id} · worker`, agentType: AG(isolated ? 'isolated-worker' : 'worker'), model: workerModel, schema: isolated ? REPORT_ISOLATED_S : REPORT_S, ...(isolated ? { isolation: 'worktree' } : {}), ...effort(t) })
+    let r = await ask(pWorker(t, isolated, workerModel, startsWithout.get(t.id)), { label: `${t.id} · worker`, agentType: AG(isolated ? 'isolated-worker' : 'worker'), model: workerModel, schema: isolated ? REPORT_ISOLATED_S : REPORT_S, ...(isolated ? { isolation: 'worktree' } : {}), ...effort(t) })
     if (!isolated) noteProgress(t.id, 'worker', r)
     // Model of each attempt, in order: the worker, then each fix
     const models = [workerModel]
@@ -833,12 +1017,36 @@ const waiting = plan.tasks.filter(t => t.status === 'needs-human' && !RERUN.has(
 const pending = new Map(plan.tasks.filter(t => !DONE(t.status) && !waiting.includes(t.id) && !waitsOnPrerequisite(t.id)).map(t => [t.id, t]))
 const running = new Map()
 const locks = new Set()
-const ready = t => deps(t).every(d => done.has(d)) && !amended.has(t.id) && !(t.resources || []).some(r => locks.has(r)) && !locks.has('checkout')
-while (pending.size || running.size) {
+const depsDone = t => deps(t).every(d => done.has(d)) && !amended.has(t.id)
+const ready = t => depsDone(t) && !(t.resources || []).some(r => locks.has(r)) && !locks.has('checkout')
+// Answering during the run (0.21.0): apply takes the lock of the main checkout, so no task starts while it runs and it waits for a
+// task of the main checkout to end. A held task waits once its dependencies are done and no apply runs (it may settle its issue:
+// the task then starts without a wait), without a lock nor a place among the tasks in parallel; a task whose wait ended on a
+// ruling starts after the apply. A stopped run starts no wait nor apply, but lets those in flight end: a wait left behind would
+// note its task waiting again after the run end
+const startApply = () => { locks.add('checkout'); applying = runApply().finally(() => { locks.delete('checkout'); applying = null }) }
+const startWait = t => waitJobs.set(t.id, waitFor(t).finally(() => waitJobs.delete(t.id)))
+// Mode deviation (0.21.0, D3): while an issue waits for its ruling, no task nor wait of a held task starts; once no task runs and
+// no apply either, one wait per task that raised such issues. An issue waits twice at most (again after an apply that did not
+// settle it), then stops the run
+const startStopWaits = () => {
+  for (const x of stopWaits.filter(x => x.waits >= 2)) { stopWaits.splice(stopWaits.indexOf(x), 1); stopOn(x.p) }
+  if (stop) return
+  for (const task of new Set(stopWaits.map(x => x.p.task))) {
+    if (stopJobs.has(task)) continue
+    const mine = stopWaits.filter(x => x.p.task === task)
+    mine.forEach(x => { x.waits++ })
+    stopJobs.set(task, waitForStop(task, mine.map(x => x.id)).finally(() => stopJobs.delete(task)))
+  }
+}
+while (pending.size || running.size || applying || stopJobs.size || ((applyWanted || stopWaits.length) && !stop && !breaker)) {
   if (!stop && !breaker) {
-    for (const t of [...pending.values()]) {
-      if (running.size >= PAR) break
-      if (!ready(t)) continue
+    if (applyWanted && !applying && !locks.has('checkout')) startApply()
+    if (stopWaits.length) { if (!running.size && !applying) startStopWaits() }
+    else for (const t of [...pending.values()]) {
+      if (waitJobs.has(t.id) || !depsDone(t)) continue
+      if (heldBy.has(t.id)) { if (!applying) startWait(t); continue }
+      if (running.size >= PAR || !ready(t)) continue
       const others = [...pending.values(), ...[...running.keys()].map(id => T.get(id))].filter(o => o.id !== t.id)
       // Worktree only if another task can run at the same time: never with a parallelism of 1
       const isolated = PAR > 1 && (running.size > 0 || others.some(o => canOverlap(o, t)))
@@ -854,9 +1062,12 @@ while (pending.size || running.size) {
       }))
     }
   }
-  if (!running.size) break
-  await Promise.race(running.values())
+  const live = [...running.values(), ...waitJobs.values(), ...stopJobs.values(), ...(applying ? [applying] : [])]
+  if (!live.length) break
+  await Promise.race(live)
 }
+// Mode deviation: an issue still without its ruling when the run ends (stopped meanwhile, circuit breaker) stops it, as before
+for (const x of stopWaits.splice(0)) stopOn(x.p)
 
 phase('Wrap-up')
 const failed = results.filter(r => r.status !== 'merged')

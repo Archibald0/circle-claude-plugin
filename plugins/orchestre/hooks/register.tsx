@@ -7,10 +7,14 @@
 //     error; with /progress sound, a sound too;
 //   - on returning after 15 min without a prompt, what changed; a status line when the end banner is hidden;
 //   - the pane opened by itself at the first run started during the session (0.13.0);
-//   - in the detail card of a review or an auto-decision, the buttons Done, Ticket and Edit text, and Undo (0.16.0).
+//   - in the detail card of a review or an auto-decision, the buttons Done, Ticket and Edit text, and Undo (0.16.0);
+//   - in the detail card of an issue, its options, Other…, Ask Claude and Decide later; under the list, Accept the N
+//     recommended; in the card of a manual action, I did it (0.21.0).
 // In the repository, it writes only through scripts/progress.mjs, the sole writer of progress.json: the buttons Done,
-// Ticket, Edit text and Undo run it ($.process.run), with the lock it takes. Its other writes are in $.state (display),
-// $.store (the sound) and the prompt (the other actions prepare a text there, never sent).
+// Ticket, Edit text, the options of an issue (rule), Other… (rule with a text), Decide later (release), Accept the N
+// recommended (rule of a list), I did it (did) and Undo (reopen, relabel, unrule, undid) run it ($.process.run), with the
+// lock it takes. Its other writes are in $.state (display), $.store (the sound) and the prompt (the other actions prepare a
+// text there, never sent). It reads ISSUES.json next to progress.json, never writes it.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
@@ -177,7 +181,12 @@ async function refresh($: EngineInterface, force: boolean): Promise<void> {
       : `orchestre: ${plan}/progress.json ${format ? `is in the format ${format}` : 'gives no format'}; this mod reads ${FORMATS.join(' and ')}. Update the orchestre plugin.`)
     return
   }
-  const after = normalize(doc)
+  // ISSUES.json (0.21.0): which issues have an entry, whose options apply can apply. An absent file is an empty register, as
+  // progress.mjs reads it; an unreadable one (or a file being renamed) says nothing, and rule says what it refuses
+  const issuesFile = `${base}/${plan}/ISSUES.json`
+  const registered = await $.fs.exists(issuesFile).catch(() => null)
+  const register = registered === false ? { issues: [] } : registered ? await readJson($, issuesFile) : null
+  const after = normalize(doc, register)
   if (!after) return
   const before = await read($, snapshot)
   await update($, snapshot, () => after)
@@ -524,6 +533,12 @@ async function press($: EngineInterface, action: Action): Promise<void> {
   switch (action.op) {
     case 'done': case 'ticket': return closeItem($, action)
     case 'edit': draft = action.ref?.shown ?? null; await update($, editing, () => true); return
+    // An issue (0.21.0): an option, all the recommended ones, the text field of Other…, Decide later; a manual action done
+    case 'rule': return action.issue && action.option ? recordRulings($, [{ issue: action.issue, option: action.option }], false) : undefined
+    case 'acceptAll': return recordRulings($, action.rulings ?? [], true)
+    case 'other': draft = ''; await update($, editing, () => true); return
+    case 'release': return releaseIssue($, action)
+    case 'did': return noteDone($, action)
     case 'save': return saveEdit($, draft ?? action.ref?.shown ?? '')
     case 'cancel': draft = null; await update($, editing, () => false); return
     case 'undo': return undoLast($)
@@ -558,7 +573,7 @@ async function findNode($: EngineInterface): Promise<string | null> {
 
 // One write of progress.mjs on the plan followed, its object on standard input, from the root of the repository. null:
 // no node found; otherwise whether it was done, and its line (its refusal when it refuses)
-async function runProgress($: EngineInterface, verb: 'ack' | 'ticket' | 'reopen' | 'relabel' | 'close-plan' | 'reopen-plan', payload: object): Promise<{ ok: boolean; out: string } | null> {
+async function runProgress($: EngineInterface, verb: 'ack' | 'ticket' | 'reopen' | 'relabel' | 'close-plan' | 'reopen-plan' | 'rule' | 'unrule' | 'release' | 'did' | 'undid', payload: object): Promise<{ ok: boolean; out: string } | null> {
   const inst = await read($, snapshot), base = await repoRoot($)
   if (!inst || !base) return { ok: false, out: 'no plan followed in this repository' }
   const bin = await findNode($)
@@ -569,8 +584,9 @@ async function runProgress($: EngineInterface, verb: 'ack' | 'ticket' | 'reopen'
   return { ok: r.exitCode === 0, out }
 }
 
-// What Undo cancels, the last first: kept here, so that /clear does not lose it; the plan it was done on
-type Done = { plan: string; op: 'done' | 'ticket' | 'edit'; ref: ItemRef; prev: string | null; text: string; texts: string[] }
+// What Undo cancels, the last first: kept here, so that /clear does not lose it; the plan it was done on. 0.21.0: a ruling
+// (rulings, bulk) or a prerequisite noted done (did), whose line and Undo follow the plan (view-model.mjs lastLine)
+type Done = { plan: string; op: 'done' | 'ticket' | 'edit' | 'rule' | 'did'; ref?: ItemRef; prev: string | null; text: string; texts: string[]; rulings?: { issue: string; option: string | null }[]; bulk?: boolean; did?: { prerequisite: string; day: string } }
 let undoStack: Done[] = []
 // The text typed in the field of the detail card, so far
 let draft: string | null = null
@@ -579,7 +595,7 @@ const whoOf = (ref: ItemRef) => `${ref.task ?? 'source plan'} · ${ref.kind === 
 
 async function showLast($: EngineInterface): Promise<void> {
   const u = undoStack[undoStack.length - 1]
-  const value: LastAction | null = u ? { text: u.text, kind: u.op } : null
+  const value: LastAction | null = u ? { text: u.text, kind: u.op, ...(u.rulings ? { rulings: u.rulings } : {}), ...(u.bulk ? { bulk: true } : {}), ...(u.did ? { did: u.did } : {}) } : null
   await update($, last, () => value)
 }
 
@@ -627,6 +643,8 @@ async function saveEdit($: EngineInterface, value: string): Promise<void> {
   draft = null
   await update($, editing, () => false)
   const ref = it?.ref, label = value.replace(/\s+/g, ' ').trim()
+  // The field of [ Other… ] on an issue (0.21.0): the text is a free ruling, recorded by progress.mjs rule
+  if (it?.issue && !ref) return label && it.issue.id ? recordRulings($, [{ issue: it.issue.id, text: label }], false) : undefined
   if (!inst || !ref || !label || label === ref.shown) return
   if (inst.demo) { $.ui.toast('Demo: nothing is written. In a real plan, the new text would replace this one in the pane and the PR draft.', { timeoutMs: IMPORTANT_TOAST_MS }); return }
   const r = await runProgress($, 'relabel', { kind: ref.kind, task: ref.task, text: ref.text, label })
@@ -634,6 +652,55 @@ async function saveEdit($: EngineInterface, value: string): Promise<void> {
   if (!r.ok) { $.ui.toast(`orchestre: ${r.out.replace(/^progress: /, '')}`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
   const text = `${whoOf(ref)}: text changed`
   return written($, { plan: inst.plan, op: 'edit', ref, prev: ref.edited ? ref.shown : null, text, texts: [ref.text] }, text)
+}
+
+// ─── Answering an issue, a manual action done (0.21.0) ─────────────────────────────────────────────────────────────
+const demoToast = ($: EngineInterface, what: string) => $.ui.toast(`Demo: nothing is written. In a real plan, this button ${what}.`, { timeoutMs: IMPORTANT_TOAST_MS })
+const refused = ($: EngineInterface, out: string) => $.ui.toast(`orchestre: ${out.replace(/^progress: /, '')}`, { timeoutMs: IMPORTANT_TOAST_MS })
+
+// An option, a free text (Other…) or every recommended option (Accept the N recommended): progress.mjs rule, one write. The
+// issues leave "Your turn" (pendingRulings), the detail card closes, the last line says it recorded, with Undo (unrule)
+type Answer = { issue: string; option?: string; text?: string }
+async function recordRulings($: EngineInterface, answers: Answer[], bulk: boolean): Promise<void> {
+  const inst = await read($, snapshot), first = answers[0]
+  if (!inst || !first) return
+  if (inst.demo) return demoToast($, 'records your answer; apply reports it into the plan before the next task starts')
+  const r = await runProgress($, 'rule', bulk ? { items: answers } : first)
+  if (!r) { $.ui.toast(`${NODE_MISSING} Nothing is recorded.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  if (!r.ok) return refused($, r.out)
+  await update($, selected, () => null)
+  await update($, editing, () => false)
+  const rulings = answers.map(a => ({ issue: a.issue, option: a.option ?? null }))
+  const text = bulk ? `${answers.length} recommended options recorded` : `${first.issue} · ${first.option ? `option ${first.option}` : 'free answer'} recorded`
+  return written($, { plan: inst.plan, op: 'rule', prev: null, text, texts: [], rulings, ...(bulk ? { bulk: true } : {}) }, r.out.replace(/^progress: /, ''))
+}
+
+// [ Decide later ]: progress.mjs release; the tasks the issue holds start without its ruling, the issue stays open
+async function releaseIssue($: EngineInterface, action: Action): Promise<void> {
+  const inst = await read($, snapshot)
+  if (!inst || !action.issue) return
+  if (inst.demo) return demoToast($, 'lets the tasks it holds start without its ruling; the issue stays open')
+  const r = await runProgress($, 'release', { issue: action.issue })
+  if (!r) { $.ui.toast(`${NODE_MISSING} The tasks still wait.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  if (!r.ok) return refused($, r.out)
+  await update($, selected, () => null)
+  return written($, null, r.out.replace(/^progress: /, ''))
+}
+
+// [ ✓ I did it ]: progress.mjs did; apply writes it into PREREQUISITES.md. The last line gives the day it was noted, with
+// Undo (undid) until apply has written it
+async function noteDone($: EngineInterface, action: Action): Promise<void> {
+  const inst = await read($, snapshot), id = action.prerequisite
+  if (!inst || !id) return
+  if (inst.demo) return demoToast($, 'notes it done; PREREQUISITES.md follows at the run stop')
+  const r = await runProgress($, 'did', { prerequisite: id })
+  if (!r) { $.ui.toast(`${NODE_MISSING} Nothing is noted.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+  if (!r.ok) return refused($, r.out)
+  await update($, selected, () => null)
+  await refresh($, true).catch(() => undefined)
+  const day = (await read($, snapshot))?.pendingDone?.find(x => x.prerequisite === id)?.day ?? new Date(await $.clock.now()).toISOString().slice(0, 10)
+  const text = `${id} noted done on ${day}`
+  return written($, { plan: inst.plan, op: 'did', prev: null, text, texts: [], did: { prerequisite: id, day } }, text)
 }
 
 // [ Close the plan ] (0.16.1): progress.mjs close-plan. The banner and the status line go at once; the pane shows the card of
@@ -686,7 +753,20 @@ async function undoLast($: EngineInterface): Promise<void> {
   if (!inst || !u) return
   // Another plan is followed now: what was done on the first one is no longer offered
   if (u.plan !== inst.plan) { undoStack = []; await showLast($); return }
-  const payload = { kind: u.ref.kind, task: u.ref.task, text: u.ref.text }
+  // A ruling (0.21.0): progress.mjs unrule of those still recorded; once applied, there is nothing to undo
+  if (u.op === 'rule' || u.op === 'did') {
+    const ids = (u.rulings ?? []).map(x => x.issue).filter(id => (inst.pendingRulings ?? []).some(p => p.issue === id))
+    const noted = u.did && (inst.pendingDone ?? []).some(x => x.prerequisite === u.did?.prerequisite) ? u.did.prerequisite : null
+    if (u.op === 'rule' ? !ids.length : !noted) { $.ui.toast('orchestre: already applied, or withdrawn: nothing to undo.'); return }
+    const r = u.op === 'rule' ? await runProgress($, 'unrule', u.bulk ? { items: ids.map(issue => ({ issue })) } : { issue: ids[0] }) : await runProgress($, 'undid', { prerequisite: noted })
+    if (!r) { $.ui.toast(`${NODE_MISSING} Nothing is undone.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
+    if (!r.ok) return refused($, r.out)
+    undoStack.pop()
+    return written($, null, u.op === 'rule' ? `Undone: ${ids.join(', ')} back in "Your turn".` : `Undone: ${noted} is no longer noted done.`)
+  }
+  const ref = u.ref
+  if (!ref) return
+  const payload = { kind: ref.kind, task: ref.task, text: ref.text }
   // A press that closed several merged reviews brings every one of them back
   let r: { ok: boolean; out: string } | null = null
   const left = [...u.texts]
@@ -700,7 +780,7 @@ async function undoLast($: EngineInterface): Promise<void> {
   if (!r) { $.ui.toast(`${NODE_MISSING} Nothing is undone.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
   if (!r.ok) { $.ui.toast(`orchestre: ${r.out.replace(/^progress: /, '')}`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
   undoStack.pop()
-  return written($, null, `Undone: ${whoOf(u.ref)} ${u.op === 'edit' ? (u.prev ? 'has its previous text back' : 'has its original text back') : 'is back in "Your turn"'}.`)
+  return written($, null, `Undone: ${whoOf(ref)} ${u.op === 'edit' ? (u.prev ? 'has its previous text back' : 'has its original text back') : 'is back in "Your turn"'}.`)
 }
 
 // An action of the pane: its text goes into the prompt, after what is already typed there, and nothing is sent. During
@@ -716,7 +796,7 @@ async function act($: EngineInterface, action: Action): Promise<void> {
 }
 
 // The keys of the buttons that are not in the detail card
-const OP_KEYS: Partial<Record<NonNullable<Action['op']>, string>> = { undo: 'undo', page: 'page', closePlan: 'close-plan', reopenPlan: 'reopen-plan' }
+const OP_KEYS: Partial<Record<NonNullable<Action['op']>, string>> = { undo: 'undo', page: 'page', closePlan: 'close-plan', reopenPlan: 'reopen-plan', acceptAll: 'accept-all' }
 
 // A line of pieces: one Text per piece, in a row
 function draw($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], line: Line, itemKey: string) {
@@ -734,7 +814,7 @@ function draw($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']
         if (action) {
           // A button in brackets (0.16.0), its label without them; the lines of "Your turn" stay plain, with their key
           const label = action.bracket ? m.t.replace(/^\[ (.*) \]$/, '$1') : m.t
-          const key = action.op ? (OP_KEYS[action.op] ?? `detail-${action.op}`) : action.mode === 'select' ? `action-${action.hotkey ?? `${itemKey}-${i}`}` : action.key ? 'detail-act' : `action-next${itemKey.startsWith('card-closed') ? '-closed' : ''}`
+          const key = action.op === 'rule' ? `detail-rule-${action.option}` : action.op ? (OP_KEYS[action.op] ?? `detail-${action.op}`) : action.mode === 'select' ? `action-${action.hotkey ?? `${itemKey}-${i}`}` : action.key ? 'detail-act' : `action-next${itemKey.startsWith('card-closed') ? '-closed' : ''}`
           return <Button key={key} label={label} {...(action.bracket ? {} : { plain: true })} {...(action.hotkey ? { hotkey: action.hotkey } : {})} onPress={() => press($, action)} />
         }
         return <Text key={`${itemKey}-${i}`} color={m.c} backgroundColor={m.f} bold={m.b} dimColor={m.d} wrap="truncate">{m.t}</Text>
