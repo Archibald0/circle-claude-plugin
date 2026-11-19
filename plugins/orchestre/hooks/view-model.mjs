@@ -379,8 +379,10 @@ const NOTABLE_KINDS = ['status', 'run', 'error', 'ruling', 'issue', 'wait', 'rej
 function challenged(inst, id, attempt, by) {
   if (by !== 'challenge') return null
   const gap = inst.tasks.find(t => t.id === id)?.rejections.find(r => r.by === 'challenge' && r.attempt === Number(attempt))?.gaps[0]
-  return gap ? `${id}: attempt ${attempt} rejected by the challenge: ${gap}` : null
+  return gap ? `${id}: attempt ${attempt} rejected by the challenge: ${gap.startsWith(MUTATION_PREFIX) ? gap.slice(MUTATION_PREFIX.length) : gap}` : null
 }
+/** The prefix run-phase.js puts on each gap of the challenger; the pane shows the mutation alone. */
+const MUTATION_PREFIX = 'mutation not detected by any verification command: '
 /** The news in a few words, from the text progress.mjs writes in the log. @param {{ kind: string, text: string, task?: string | null }} j @param {Snapshot} inst */
 function brief(j, inst) {
   const t = j.text
@@ -1193,7 +1195,7 @@ export function detailCard(inst, now, columns, selected, { page = 0, editing = f
       const did = it.did && !(inst.pendingDone ?? []).some(x => x.prerequisite === it.task)
       if (did) buttons.push({ t: bracketed(DID_LABEL), c: 'success', x: { hotkey: null, prompt: '', help: 'note it done', key: it.key, op: 'did', prerequisite: it.task, bracket: true } })
       lines.push(...buttonLines(buttons, inner))
-      lines.push(...note(ref ? 'First button: fills the prompt, sends nothing. Others: apply at once.' : did ? 'First button: fills the prompt, sends nothing. I did it: recorded at once, PREREQUISITES.md at the run stop.' : 'The button fills the prompt; nothing is sent.'))
+      lines.push(...note(ref ? 'First button: fills the prompt, sends nothing. Others: apply at once.' : did ? 'First button: fills the prompt, sends nothing. I did it: recorded at once, PREREQUISITES.md at the next apply.' : 'The button fills the prompt; nothing is sent.'))
     }
   }
   return {

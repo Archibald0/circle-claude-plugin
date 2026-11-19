@@ -54,7 +54,7 @@ function world(on: On, commandLine: 'ok' | 'taken' = 'ok') {
 // The head of the banner during a run: a spinning wheel
 const WHEEL = /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] $/
 
-const BAND = { component: 'AbovePrompt' as const, props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 140, scroll: { offset: 0, bodyRows: 9 }, view: {} } }
+const BAND = { component: 'AbovePrompt' as const, props: { hasSurvey: false, isCollapsed: false, isWorking: true, maxRows: 10, bodyColumns: 140, scroll: { offset: 0, bodyRows: 9 }, view: {} } }
 const PANE = { component: 'Pane' as const, requestId: 'orchestre', props: { title: 'Orchestre', isFocused: true, bodyColumns: 100, placement: 'dock' as const, scroll: { offset: 0, bodyRows: 30 }, view: {} } }
 const CMD = (args: string, columns = 120) => ({ command: 'progress', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns } }) as never
 

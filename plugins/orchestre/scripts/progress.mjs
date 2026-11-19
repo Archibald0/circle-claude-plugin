@@ -59,6 +59,10 @@
 //              added_tasks, commit, message, digest }. The prerequisites noted done by did (0.21.0) are written in the same
 //              commit: their row of PREREQUISITES.md gets the status done and the evidence "confirmed by the user on <date>";
 //              the output then also carries done: [ids] (absent when no did was pending, so that the output of 0.20.0 stays)
+//              Option --run-stopped (0.22.1, pre-flight of /orchestre:run): the user confirmed that the run marked "in-progress" is
+//              stopped; it is first marked "interrupted" (log line of run-start), then the rulings are applied as outside a run: they
+//              go to applied_outside, which the next run-start records in its rulings_applied and applied_before, never to the
+//              rulings_applied of the dead run. Without the option, a run in progress receives them (the workflow's apply during a run)
 //   wait       { task, issues: [ids] } (0.21.0): blocks until each issue has a ruling (recorded or applied), is released, or
 //              its deadline "until" (set by close) passes, 100 seconds at most per call; read without the lock. The first call
 //              for a task notes it in each issue's "waiting" and logs "<id> waits for <n> rulings (<m> min at most)". Prints
@@ -905,10 +909,16 @@ function writeLocked(ctx, change, { runStart = false } = {}, L, handoff) {
 }
 
 // ─── Write commands ─────────────────────────────────────────────────────────────────────────────────────────
+// A run left "in-progress" (session closed without a run end) turned into "interrupted": by run-start, and by apply --run-stopped (0.22.1)
+function interruptRuns(doc, J) {
+  const left = doc.runs.filter(r => r.status === 'in-progress')
+  for (const r of left) { r.status = 'interrupted'; J('run', null, `run ${r.number} interrupted: left in progress, without a run end`) }
+  return left.length
+}
 function runStart(doc, E, { L, handoff, J, at, ctx }) {
   // A plan closed by the pilot (0.16.1) is open again as soon as a run starts on it
   if (doc.closed) { delete doc.closed; J('run', null, 'plan open again: a run starts') }
-  for (const r of doc.runs.filter(r => r.status === 'in-progress')) { r.status = 'interrupted'; J('run', null, `run ${r.number} interrupted: left in progress, without a run end`) }
+  interruptRuns(doc, J)
   for (const t of doc.tasks.filter(t => t.step)) { J('step', t.id, `${t.id}: step "${t.step}" interrupted with its run`); t.step = null }
   waitsEnd(doc)
   sync(doc, L, ctx, J, { statuses: true })
@@ -2112,10 +2122,10 @@ const registerOf = copy => ({
 // then apply runs again on what is recorded now: the withdrawn one is left out, with a log line, and the rest is applied
 class Withdrawn extends Error { constructor(rulings, dids) { super('withdrawn while apply ran'); Object.assign(this, { rulings, dids }) } }
 const APPLY_TRIES = 5
-function applyRulings(ctx) {
+function applyRulings(ctx, runStopped = false) {
   const left = { rulings: [], dids: [] }
   for (let i = 1; ; i++) {
-    try { return applyOnce(ctx, left) } catch (e) {
+    try { return applyOnce(ctx, left, runStopped) } catch (e) {
       if (!(e instanceof Withdrawn)) throw e
       if (i >= APPLY_TRIES) refuse(`apply: rulings or dids withdrawn or changed ${APPLY_TRIES} times while apply ran (unrule, undid, rule): nothing is written; run apply again`)
       left.rulings.push(...e.rulings); left.dids.push(...e.dids)
@@ -2127,15 +2137,18 @@ const leftOutLines = (left, J) => {
   for (const d of left.dids) J('pilot', null, `${d.prerequisite}: "done" withdrawn while apply ran: left out`)
 }
 const leftOutSaid = left => { const ids = [...left.rulings.map(r => r.issue), ...left.dids.map(d => d.prerequisite)]; return ids.length ? `; left out, withdrawn while apply ran: ${ids.join(', ')}` : '' }
-function applyOnce(ctx, left) {
+function applyOnce(ctx, left, runStopped) {
   onIntegration(ctx, 'apply')
   const doc0 = load(ctx), pending = doc0 ? doc0.pending_rulings : [], dids = (doc0 && doc0.pending_done) || []
   const result = { applied: [], rejected: [], discarded: [], amended: [], added_tasks: [], commit: null }
   const answerOf = (o, message) => { const x = { ...o, message }; return { ...x, digest: payloadDigest(x, 'digest') } }
   // before_run (0.22.0): the rulings applied outside a run that the run in progress took in at its run-start
-  const before = (doc0 && currentRun(doc0)?.applied_before) || []
+  // --run-stopped (0.22.1): the user confirmed that the run "in-progress" is dead; it is marked interrupted first, so the rulings
+  // go to applied_outside, as between two runs, and not to the rulings_applied of a run that will never read them
+  const stale = runStopped && doc0 && currentRun(doc0)
+  const before = (!stale && doc0 && currentRun(doc0)?.applied_before) || []
   if (!pending.length && !dids.length) {
-    if (left.rulings.length || left.dids.length) write(ctx, (doc, { J }) => { leftOutLines(left, J) })
+    if (stale || left.rulings.length || left.dids.length) write(ctx, (doc, { J }) => { if (runStopped) interruptRuns(doc, J); leftOutLines(left, J) })
     return answerOf({ ...result, ...(before.length ? { before_run: before.map(({ issue, task, option, text }) => ({ issue, task, option, text })) } : {}) }, `no ruling to apply${leftOutSaid(left)}`)
   }
   // done: only when a did was pending (0.21.0), so that the output of 0.20.0 stays the same without one
@@ -2247,6 +2260,7 @@ function applyOnce(ctx, left) {
           const undone = dids.filter(d => !(doc.pending_done || []).some(y => sameDid(d, y)))
           const taskOf = r => (doc.issues.find(p => p.id === r.issue) || doc0.issues.find(p => p.id === r.issue) || {}).task ?? null
           if (moved.length || undone.length) throw new Withdrawn(moved.map(r => ({ ...r, task: taskOf(r) })), undone)
+          if (runStopped) interruptRuns(doc, tools.J)
           leftOutLines(left, tools.J)
           if (dids.length) {
             doc.pending_done = doc.pending_done.filter(y => !dids.some(d => sameDid(d, y)))
@@ -2311,7 +2325,7 @@ function input(json) {
 }
 
 const WRITES = { 'run-start': runStart, step, close, ruling, rule, unrule, 'run-end': runEnd, pilot, ack, ticket, reopen, relabel, 'close-plan': closePlan, 'reopen-plan': reopenPlan, release, did, undid }
-const USAGE = 'usage: progress.mjs <run-start|step|close|ruling|rule|unrule|apply|run-end|wait|release|did|undid|pilot|ack|ticket|reopen|relabel|close-plan|reopen-plan|view|status|triage|validate> [<plan-dir>] [--stdout] [--file <progress.json>] [--json <object>]; for writes, JSON in --json or on standard input'
+const USAGE = 'usage: progress.mjs <run-start|step|close|ruling|rule|unrule|apply|run-end|wait|release|did|undid|pilot|ack|ticket|reopen|relabel|close-plan|reopen-plan|view|status|triage|validate> [<plan-dir>] [--stdout] [--file <progress.json>] [--json <object>] [--run-stopped (apply only)]; for writes, JSON in --json or on standard input'
 
 function main() {
   const argv = process.argv.slice(2), cmd = argv[0]
@@ -2332,7 +2346,7 @@ function main() {
   }
   // apply reads no input: the rulings are those of progress.json (0.20.0)
   if (cmd === 'apply') {
-    console.log(JSON.stringify(applyRulings(locate(arg))))
+    console.log(JSON.stringify(applyRulings(locate(arg), argv.includes('--run-stopped'))))
     return 0
   }
   if (cmd === 'validate') {

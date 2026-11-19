@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/orchestre-0.22.0-E8743B" alt="orchestre 0.22.0">
+  <img src="https://img.shields.io/badge/orchestre-0.22.1-E8743B" alt="orchestre 0.22.1">
   <img src="https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.287-1F2340" alt="Claude Code 2.1.287 or later">
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A5%2018-1F2340" alt="Node.js 18 or later">
 </p>
@@ -56,7 +56,9 @@ The path of each task during a run:
 flowchart LR
     work["work<br/>on the task's model"] --> verif["verification<br/>commands replayed"]
     verif -- pass --> evaluation{"evaluation<br/>on opus"}
-    evaluation -- pass --> merge["merge<br/>into the integration branch"]
+    evaluation -- pass --> challenge{"challenge<br/>only if challenge: true"}
+    challenge -- pass --> merge["merge<br/>into the integration branch"]
+    challenge -- mutation not detected --> fix
     merge --> pr(["ready for a pull request"])
     verif -- fail --> fix["fix<br/>never below the task's model"]
     evaluation -- gaps --> fix
@@ -155,7 +157,8 @@ The actions are buttons, in brackets, without a key:
 | :- | :- | :- |
 | `[ Review with Claude ]`, `[ Go over with Claude ]`, `[ Ask Claude ]`… | Detail card | Prepares the item's request in the prompt; nothing is sent without you. |
 | `[ ✓ Done ]`, `[ → Ticket ]`, `[ ✎ Edit text ]` | Detail card of a review or an auto-decision | Marks it done, moves it to the tickets to open after the PR, or changes its text. At once, without a turn of Claude. |
-| `[ Undo ]` | Under "Your turn" | Cancels the last of these actions. |
+| `[ A · recommended ]`, `[ B ]`…, `[ Other… ]`, `[ Ask Claude ]`, `[ Decide later ]`, `[ Accept the N recommended ]`, `[ ✓ I did it ]` | Detail card of an issue (also during a run) | Records a ruling on an option or as a free answer, fills the prompt, releases the task the issue holds, rules the recommended options of several issues at once, or notes a manual action done. Recorded in `progress.json`, applied by `apply`. |
+| `[ Undo ]` | Under "Your turn" | Cancels the last of these actions, and withdraws a ruling or a `did` until `apply` writes it. |
 | `[ Next 3 › ]` | Under "Your turn" | Shows the items beyond the 9th. |
 | `[ Resume command in the prompt ]`, `[ PR draft in the prompt ]` | Run card | Prepares what comes next after a run. |
 | `[ Close the plan ]` | Run card, once every task is merged | Closes the plan: the banner and the status line go at once, the pane closes at your next prompt, and nothing shows for the plan in the next sessions. What is left open stays in the PR draft. A run that starts on the plan opens it again. |
@@ -169,7 +172,7 @@ More:
 
 - [`docs/reference.md`](docs/reference.md): installation, each command in detail, the progress display, what a run does, known limits, development.
 - [`docs/configuration.md`](docs/configuration.md): the settings orchestre writes into a repository, sharing with a team, `orchestre.config.json`.
-- [`docs/upgrading.md`](docs/upgrading.md): from 0.12 and from 0.11.
+- [`docs/upgrading.md`](docs/upgrading.md): from each version to the next, 0.11 to 0.22.1.
 - [Plan format, `format.md`](plugins/orchestre/skills/prepare/format.md): tasks, `PROGRESS.md`, `PREREQUISITES.md`, `HANDOFF.md`, `DISCOVERY.md`, `orchestre.config.json`.
 - [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -177,6 +180,7 @@ More:
 
 Update between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins`.
 
+- **From 0.19 to 0.20.** Settle the open issues of your plans before updating: a `progress.json` of the `/3` format is converted at the first write of 0.20, and an issue left open in it can then only be settled by a free answer. Going back from 0.20, 0.21 or 0.22 is not supported.
 - **From 0.17.** The next `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run` offers to replace four settings rules and to add the new denials of `git push`, in one agreement.
 - **From 0.12.** The next `/orchestre:prepare`, `/orchestre:ready` or `/orchestre:run` offers to replace the settings rules of 0.12, in one agreement.
 - **From 0.11.** The commands move to English (`/orchestre:lancer` becomes `/orchestre:run`, `/suivi` becomes `/progress`…). `/orchestre:ready` or `/orchestre:run` migrates each plan to the new format, after your agreement.

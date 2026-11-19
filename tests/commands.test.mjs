@@ -242,13 +242,19 @@ try {
     // integrator call only, and the skill looks for the commit "task <id>:" before the new run
     const marker = entry[1].match(/\.\.\.\(unknown \? \{ merge: '([a-z]+)' \} : \{\}\)/)
     assert.ok(marker, 'workflow: marker of a merge unknown in merged_unclosed')
-    assert.match(WF, /label: `\$\{t\.id\} · merge`[^\n]*\n\s*\.catch\(err => \{ if \(err === INTERRUPT && launched\) unclosedOf\([^\n]*, true\); throw err \}\)/, 'workflow: the integrator call marks its task merge unknown')
+    // Whatever the integrator's failure (an error, the breaker) and its silence: the marker is set once, at the call
+    assert.match(WF, /label: `\$\{t\.id\} · merge`[^\n]*\n\s*\.catch\(err => \{ if \(launched\) unclosedOf\([^\n]*, true\); throw err \}\)/, 'workflow: the integrator call marks its task merge unknown')
+    assert.match(WF, /if \(!i\) \{ unclosedOf\([^\n]*, true\); return await closeTask\(t, 'blocked', attempts, r, \['integrator without an answer'\], trace\) \}/, 'workflow: an integrator without an answer marks its task merge unknown')
+    assert.match(WF, /\.\.\.\(mergedUnclosed\.length \? \{ merged_unclosed: mergedUnclosed \} : \{\}\)/, 'workflow: merged_unclosed outside the breaker when not empty')
     const cited = `\`merge: "${marker[1]}"\``
     assert.ok(breaker.includes(`the tasks in \`interrupted\` are taken up by the next run, from their branch, except a task that is also in \`merged_unclosed\` with ${cited}`), 'run: the exception to the tasks in interrupted')
     const at = mu.indexOf(`An entry with ${cited}`)
     assert.ok(at > 0, 'run: an entry with a merge unknown')
     const unk = mu.slice(at)
     for (const w of ['Before the new run, check whether a commit `task <id>:` is on the integration branch', 'If it is, the task is merged: handle the entry as above', 'run the task\'s verifications on the integration branch before the new run, as for `repair`', 'If it is not, the merge did not run: say that the next run takes the task up from its branch']) assert.ok(unk.includes(w), `run: merge unknown without "${w}"`)
+    // T40: merged_unclosed outside the breaker, and the pre-flight when another session runs
+    const runN = text.run.replace(/\s+/g, ' ')
+    for (const w of ['When `merged_unclosed` is not empty, whatever the `status` of the return (`finished`, `rerun`, `partial`, `awaiting-ruling`, `error`), handle it first', 'before any rerun of the phase is offered. Then, by `status`:', 'on any return and not only on the breaker\'s', 'The exception is a `blocked` or `needs-human` task with `merge: "unknown"`, which the workflow did close', 'was closed by the workflow: its deviations, reviews and issues are already written under `## <id>`', 'do not write them into HANDOFF.md again', 'An `interrupted` or `failed` task (no close) is handled as the paragraph above says', 'If it is not stopped, another session runs the plan: stop the pre-flight here, say so, and run neither `apply` nor the checks that follow. Otherwise, `node', 'If `clean` refuses and the user says that run is not stopped, another session runs the plan: stop the pre-flight here and say so']) assert.ok(runN.includes(w), `run: T40 without "${w}"`)
     // check_skipped: a log line, nothing to ask
     assert.ok(text.run.includes('`check_skipped`') && text.run.includes('it asks nothing of the user'))
     // space: run and ready launch it, not blocking; the script has it, with its option
@@ -544,7 +550,7 @@ try {
     assert.ok(prep('A folder `plans/<name>/` already written for orchestre is not a plan to convert') < prep('scripts/settings.mjs check`'))
     // /run: the stopped run confirmed at the migration also holds for worktrees.mjs; /ready: the confirmation at the start holds
     assert.ok(text.run.includes('run it again with `--write --run-stopped`, and that answer also holds for `worktrees.mjs clean` at point 6'))
-    assert.ok(text.run.includes('If the user said at the migration (point 4) that the run is stopped, run it with `--run-stopped` straight away.'))
+    assert.ok(text.run.includes('If the user said at the migration or at the rulings (point 4) that the run is stopped, run it with `--run-stopped` straight away.'))
     assert.ok(text.ready.includes('the user confirmed at the start that no run is active, so run it again with `--write --run-stopped`'))
     assert.ok(text.ready.includes('Never during a run of the orchestrator: first have the user confirm that no run is active'))
     // /ready migrates on the integration branch only
@@ -762,7 +768,10 @@ try {
     const REF = read(join(ROOT, 'docs', 'reference.md'))
     const req = WF.match(/const CLOSE_OUT_S = S\(\{[^\n]*\}, \[([^\]]+)\]\)/)[1].split(/,\s*/).map(x => x.replace(/'/g, ''))
     const from = REF.indexOf('- `progress.mjs close <plan>`'), closeDoc = REF.slice(from, REF.indexOf('\n', from))
+    // `waits` is required since 0.22.1 (it is always printed): the doc line lists it with the other fields
+    assert.ok(req.includes('waits'), 'CLOSE_OUT_S requires waits')
     assert.ok(from > 0 && closeDoc.includes(`\`{ ${req.join(', ')} }\``), `docs/reference.md: the output of close, ${req.join(', ')}`)
+    assert.ok(!/Optional fields of the outputs: `waits`/.test(REF), 'reference.md: waits is no longer an optional field')
     for (const w of ['`entries`', '`discarded_amendments`', '`added_tasks`, `{ id, title, phase, content }`, a task file being written only when `content` is given', '`issues`, whole', '`auto: <option id>`', 'and commits them', 'in one commit `progress(<id>): <status>`']) assert.ok(closeDoc.includes(w), `docs/reference.md: close without ${w}`)
     assert.ok(REF.includes('`ruling.commit` stays null in ISSUES.json, for a user ruling and for `auto`') && REF.includes('The commit is in the `commit` field of the output of `apply` (of `close` for `auto`)'), 'docs/reference.md: ruling.commit')
     assert.ok(REF.includes('`amendment · minor · <id>: depends on <other>, added automatically: …`') && SRC.progress.includes('depends on ${d.on}, added automatically: '), 'docs/reference.md: the dependency added on an overlap')
@@ -770,7 +779,7 @@ try {
     const prefixes = [...REF.matchAll(/`detail` that starts with "([^"]+)"/g)].map(m => m[1])
     for (const x of ['progress: rulings not applied (apply)', 'progress: output of apply not read']) assert.ok(prefixes.includes(x), `docs/reference.md: the detail "${x}"`)
     for (const x of prefixes) assert.ok(WF.includes(x), `docs/reference.md cites a detail the workflow does not write: ${x}`)
-    assert.ok(REF.includes('then records the answer with `rule`; `apply` writes it into the plan at the pre-flight of the next run, or during a run') && REF.includes('those of `merged_unclosed` (a circuit breaker return) reached neither `progress.json` nor ISSUES.json, so `rule` refuses them') && REF.includes('runs plan-lint until "valid plan", then commits on the integration branch'), 'docs/reference.md: the two paths')
+    assert.ok(REF.includes('then records the answer with `rule`; `apply` writes it into the plan at the pre-flight of the next run, or during a run') && REF.includes('those of `merged_unclosed` (a return with a task merged and not closed, with or without the circuit breaker) reached neither `progress.json` nor ISSUES.json, so `rule` refuses them') && REF.includes('runs plan-lint until "valid plan", then commits on the integration branch'), 'docs/reference.md: the two paths')
   })
 
   test('fixes after EV2 (0.21.0): upgrading.md says which run applies a ruling of 0.19.0; the skill run settles the issues of a task whose progress was not committed by a free answer; docs/reference.md names the issue of a rejected automatic decision', () => {
@@ -866,7 +875,7 @@ try {
     both('the same procedure as')
     assert.ok(REF.includes('with the log line `<id>: wait failed (...)`') && WF.includes(': wait failed ('), 'reference.md: a failed wait')
     assert.ok(REF.includes('its close writes the amendment as a blind-spot') && text.run.includes('its close writes the amendment as a blind-spot'), 'an amendment after the start')
-    assert.ok(REF.includes('`waits` in the output of `close`') && REF.includes('`done` in the output of `apply`'), 'reference.md: the optional fields')
+    assert.ok(REF.includes('`waits`, always present since 0.22.1') && REF.includes('`done` in the output of `apply`'), 'reference.md: the optional fields')
     both('A held task waits once its dependencies are done and no apply runs; when that apply settled its issue, it starts without a wait.')
     assert.ok(REF.includes('it shows in `rulings_applied`, and the pilot does not have it settled again') && text.run.includes('it shows in `rulings_applied`, and you do not have it settled again'), 'open_issues and rulings_applied')
     // T24-1, T24-3: mode deviation
@@ -895,7 +904,7 @@ try {
     assert.ok(REF.includes('`its amendments would all be discarded: <ids> merged or cancelled since the issue was raised; answer with a text`') && SRC.progress.includes('its amendments would all be discarded: ${ids.join'), 'reference.md: the reason of a wasted option')
   })
 
-  test('outputs of close and apply (0.22.0): every field the real progress.mjs prints, with an issue that holds a task and without one, a did pending and without one, is declared in CLOSE_OUT_S and APPLY_S; waits is an array of { issue, until, holds }', () => {
+  test('outputs of close, wait and apply (0.22.1): every field the real progress.mjs prints, with an issue that holds a task and without one, a did pending and without one, is declared in CLOSE_OUT_S, WAIT_OUT_S and APPLY_S; every field printed every time, empty or not, is required; waits is an array of { issue, until, holds }', () => {
     // The top-level keys of a schema S({ … }, [ … ]) of run-phase.js, nested schemas left out
     const keysOf = name => {
       const i = WF.indexOf(`const ${name} = S({`), j = WF.indexOf('\nconst ', i + 1)
@@ -904,7 +913,16 @@ try {
       for (let k = 0; k < 6; k++) t = t.replace(/\([^()]*\)/g, '').replace(/\{[^{}]*\}/g, '').replace(/\[[^[\]]*\]/g, '')
       return new Set([...t.matchAll(/(?:^|[\s,])([a-z_]+):/g)].map(m => m[1]))
     }
-    const CLOSE = keysOf('CLOSE_OUT_S'), APPLY = keysOf('APPLY_S')
+    // The required list of a schema: its last [ … ]. A field the script prints every time must be in it, or an agent that drops it
+    // (run 14: the clerk dropped waits: []) makes its copy's digest differ and stops the run on 'output of close not read'
+    const requiredOf = name => {
+      const i = WF.indexOf(`const ${name} = S({`), j = WF.indexOf('\nconst ', i + 1)
+      const m = WF.slice(i, j).trim().match(/\}, \[([^\]]*)\]\)$/)
+      assert.ok(m, `run-phase.js: the required list of ${name}`)
+      return new Set([...m[1].matchAll(/'([a-z_]+)'/g)].map(x => x[1]))
+    }
+    const CLOSE = keysOf('CLOSE_OUT_S'), APPLY = keysOf('APPLY_S'), WAIT = keysOf('WAIT_OUT_S')
+    const always = (out, name, label) => { const req = requiredOf(name); for (const k of Object.keys(out)) assert.ok(req.has(k), `${label}: ${k} is printed but not required by ${name}`) }
     assert.ok(CLOSE.has('waits') && CLOSE.has('digest') && !CLOSE.has('issue'), [...CLOSE].join())
     assert.ok(APPLY.has('done') && APPLY.has('before_run') && APPLY.has('amended') && !APPLY.has('verification'), [...APPLY].join())
     assert.ok(WF.includes("const WAITS_S = { type: 'array', items: S({ issue: str, until: str, holds: strs }, ['issue', 'until', 'holds']) }"), 'WAITS_S')
@@ -917,25 +935,30 @@ try {
     writeFileSync(join(plan, 'tasks', 'T02-other.md'), read(join(plan, 'tasks', 'T01-hello.md')).replace('id: T01', 'id: T02').replace('title: Hello script', 'title: Other script').replace(/src\/hello\.sh/g, 'src/other.sh'))
     writeFileSync(join(plan, 'PREREQUISITES.md'), '# PREREQUISITES — demo\n\n| ID | Type | Prerequisite | Status | Evidence |\n|----|------|--------------|--------|----------|\n| M1 | manual | A token | open | |\n\nTypes: decision · manual · environment.\n')
     git('add', '.'); git('commit', '-qm', 'plan')
-    const run = (cmd, E) => { const r = spawnSync('node', [join(SCRIPTS, 'progress.mjs'), cmd, 'plans/demo', ...(E ? ['--json', JSON.stringify(E)] : [])], { cwd: R, encoding: 'utf8' }); assert.equal(r.status, 0, `${cmd}: ${r.stderr}`); return r.stdout.trim() }
+    const run = (cmd, E, env = {}) => { const r = spawnSync('node', [join(SCRIPTS, 'progress.mjs'), cmd, 'plans/demo', ...(E ? ['--json', JSON.stringify(E)] : [])], { cwd: R, encoding: 'utf8', env: { ...process.env, ...env } }); assert.equal(r.status, 0, `${cmd}: ${r.stderr}`); return r.stdout.trim() }
     const within = (out, keys, label) => { for (const k of Object.keys(out)) assert.ok(keys.has(k), `${label}: field ${k} not declared`) }
     run('view')
     git('add', '.'); git('commit', '-qm', 'view', '--allow-empty')
     run('run-start', { phase: 1, mode: 'phase', parallelism: 1, max_fixes: 2, max_auto_decisions: 3 })
     const held = JSON.parse(run('close', { task: 'T01', status: 'merged', attempts: 1, branch: 'task/T01', issues: [{ title: 'Lint', context: 'c', human: false, options: [{ id: 'A', description: 'Lint T02', amendments: [{ id: 'T02', reason: 'r', verification: ['sh src/other.sh'] }] }] }] }))
     assert.deepEqual(held.waits.map(w => [Object.keys(w).sort(), w.holds]), [[['holds', 'issue', 'until'], ['T02']]])
-    within(held, CLOSE, 'close with an issue that holds a task')
+    within(held, CLOSE, 'close with an issue that holds a task'); always(held, 'CLOSE_OUT_S', 'close with an issue that holds a task')
+    // wait: the issue is open and has a deadline, so the call answers again after the shortened wait
+    const waited = JSON.parse(run('wait', { task: 'T02', issues: ['T01-1'] }, { ORCHESTRE_WAIT_SECONDS: '1' }))
+    assert.equal(waited.again, true)
+    within(waited, WAIT, 'wait'); always(waited, 'WAIT_OUT_S', 'wait')
     run('rule', { issue: 'T01-1', option: 'A' })
     const applied = JSON.parse(run('apply'))
     assert.ok(!('done' in applied) && applied.applied.length === 1)
-    within(applied, APPLY, 'apply without a did')
+    within(applied, APPLY, 'apply without a did'); always(applied, 'APPLY_S', 'apply without a did')
     run('did', { prerequisite: 'M1' })
     const done = JSON.parse(run('apply'))
     assert.deepEqual(done.done, ['M1'])
     within(done, APPLY, 'apply with a did')
+    assert.ok(!requiredOf('APPLY_S').has('done') && !requiredOf('APPLY_S').has('before_run'), 'done and before_run are printed only sometimes: not required')
     const plain = JSON.parse(run('close', { task: 'T02', status: 'blocked', attempts: 1, branch: 'task/T02', blocker: ['x'] }))
     assert.deepEqual(plain.waits, [])
-    within(plain, CLOSE, 'close without an issue')
+    within(plain, CLOSE, 'close without an issue'); always(plain, 'CLOSE_OUT_S', 'close without an issue')
   })
 
   test('challenger (0.22.0): the rules of challenger.md match the instructions and the schema of the workflow; isolated, it runs simple commands and no progress command', () => {
@@ -961,8 +984,20 @@ try {
     // The fields it returns: those of CHALLENGE_S and MUTATION_S, each cited in its rules, as the workflow names them
     const keys = name => [...def(name).replace(/\[[^\]]*\]\)$/m, '').matchAll(/(\w+): (?:str|bool|\{)/g)].map(m => m[1])
     const fields = [...keys('MUTATION_S'), ...keys('CHALLENGE_S').filter(k => k !== 'type' && k !== 'items')]
-    assert.deepEqual(sorted(fields), sorted(['file', 'line', 'change', 'detected', 'by', 'ok', 'path', 'mutations', 'detail']))
+    assert.deepEqual(sorted(fields), sorted(['file', 'line', 'change', 'detected', 'by', 'equivalent', 'reason', 'ok', 'path', 'mutations', 'detail']))
     for (const k of fields) { assert.ok(ch.includes(`\`${k}\``), `challenger.md: ${k}`); assert.ok(def('pChallenge').includes(`"${k}"`) || def('pChallenge').includes(` ${k}=`), `run-phase.js, pChallenge: ${k}`) }
+    // Equivalent mutants (0.22.1, #17): `equivalent` and `reason` in the schema, the rules and the instructions; only a reason makes a
+    // mutation equivalent; the mutations of the earlier passes are given to the next one; the fix answers a survivor by a
+    // deviation and the evaluator weighs it
+    assert.ok(def('MUTATION_S').includes('equivalent: bool, reason: str') && def('MUTATION_S').includes("['file', 'change', 'detected'])"), 'MUTATION_S declares equivalent and reason, both optional')
+    for (const k of ['equivalent', 'reason']) assert.ok(ch.includes(`\`${k}\``) && def('pChallenge').includes(`"${k}"`), `${k}: in challenger.md and in pChallenge`)
+    assert.ok(ch.includes('`equivalent` without a `reason` counts as not detected') && def('pChallenge').includes('"equivalent" without a "reason" counts as not detected'), 'an equivalent mutation without a reason counts as not detected')
+    assert.ok(ch.includes('do not try them again, pick other lines of the diff') && def('pChallenge').includes('do not try them again, pick other lines of the diff') && WF.slice(WF.indexOf('async function challenge')).includes('pChallenge(t, r, cmds, trace.tried)'), 'the mutations already tried')
+    assert.ok(WF.includes('const equivalentOf = m => m.detected === false && m.equivalent === true && typeof m.reason === \'string\' && oneLine(m.reason) !== \'\''), 'run-phase.js: equivalentOf')
+    assert.ok(def('pFix').includes('answer it with a deviation of your report that names the mutation (file:line) and says why no test could observe it') && def('pEval').includes('weigh its reason against the diff, and accept it only if it holds'), 'pFix and pEval: the deviation of an equivalent survivor')
+    assert.ok(WF.includes('pEval(t, r, facts, scope, null, challenged)') && WF.includes('pEval(t, r, facts, scope, refusal, challenged)'), 'run-phase.js: both evaluations get the survivors')
+    // The gap of a survivor keeps its text: the pane strips the prefix (T38)
+    assert.ok(WF.includes('`mutation not detected by any verification command: ${where(m)}, ${oneLine(m.change)}`'), 'run-phase.js: the gap text of a survivor')
     // Isolated: no progress command (the clerk notes its step), and the guard rules of the isolated worker, word for word
     assert.ok(ch.includes('you run no progress command (`progress.mjs`)') && !/ORCHESTRE_JSON|progress_ok|heredoc/.test(ch), 'challenger.md: no progress command')
     assert.ok(!/progressCmd\(|pStep\(/.test(def('pChallenge')) && /progressCmd\('step', \{ task: t\.id, step: 'challenge' \}\)/.test(def('pChallengeStep')), 'run-phase.js: the step of the challenge by the clerk only')
@@ -993,6 +1028,54 @@ try {
     assert.ok(version >= '0.22.0', 'version 0.22.0 or later')
     assert.ok(/^## 0\.22\.0 — \d{4}-\d{2}-\d{2}: .+$/m.test(read(join(ROOT, 'CHANGELOG.md'))), 'CHANGELOG.md: ## 0.22.0 — <date>: <title>')
     assert.ok(UPG.includes('## From 0.21.0 to 0.22.0'), 'upgrading.md: the 0.22.0 section')
+  })
+
+  test('skills, docs and version (0.22.1): rulings after the last run, a dead run, the texts of 0.22.0 corrected, the prefix of the challenger gaps', () => {
+    const REF = read(join(ROOT, 'docs', 'reference.md')), CONF = read(join(ROOT, 'docs', 'configuration.md')), UPG = read(join(ROOT, 'docs', 'upgrading.md')), CL = read(join(ROOT, 'CHANGELOG.md')), README = read(join(ROOT, 'README.md'))
+    const APPLY = 'node ${CLAUDE_PLUGIN_ROOT}/scripts/progress.mjs apply <plan>'
+    const at4 = text.run.indexOf('Rulings recorded outside a run'), point4 = text.run.slice(at4, text.run.indexOf('\n5. Read `orchestre.config.json`'))
+    const end = text.run.slice(text.run.indexOf('## 4. End'), text.run.indexOf('## During a run'))
+    // #18: section 4 applies the rulings recorded after the last run, with the command of point 4
+    assert.ok(at4 > 0 && point4.includes(`\`${APPLY}\``), 'run: apply at point 4')
+    assert.ok(end.includes(`\`${APPLY}\``), 'run: section 4 cites the same apply command as point 4')
+    for (const w of ['Rulings recorded after the last run', 'no run is `in-progress`', '`pending_rulings`', '`pending_done`', '`progress.mjs unrule`', '`progress.mjs undid`', 'from the main checkout, on the integration branch', 'copy its output', 'say in one line what it applied']) assert.ok(end.includes(w), `run, section 4: ${w}`)
+    assert.ok(REF.includes('Rulings recorded after the last run of a plan are applied the same way at the end of `/orchestre:run` (0.22.1)'), 'reference.md: the rulings applied at the end')
+    // #19: a run still in-progress at point 4 is asked about, as at point 6, and apply --run-stopped marks it
+    for (const w of ['If `progress.json` marks a run `in-progress`, ask the user, as at point 6, whether that run is stopped', '`' + APPLY + ' --run-stopped`', 'it first marks that run `interrupted`', '`applied_outside`', 'that answer also holds for `worktrees.mjs clean` at point 6']) assert.ok(point4.includes(w), `run, point 4: ${w}`)
+    assert.ok(text.run.includes('If the user said at the migration or at the rulings (point 4) that the run is stopped'), 'run: point 6 follows the answer of point 4')
+    assert.ok(SRC.progress.includes("'--run-stopped'") && optionsOf(SRC.progress).has('--run-stopped'), 'progress.mjs knows --run-stopped')
+    assert.ok(REF.includes('runs `apply <plan> --run-stopped` (0.22.1)') && REF.includes('never into that run'), 'reference.md: where the rulings go for a dead run')
+    // T40: reference.md
+    for (const w of ['`/orchestre:run` handles it first, whatever the `status`, before any rerun of the phase', 'A `blocked` or `needs-human` task with that entry was closed by the workflow', 'the pilot does not write them again', 'an `interrupted` or `failed` task (no close) is handled as `merged_unclosed` above']) assert.ok(REF.replace(/\s+/g, ' ').includes(w), `reference.md: T40 without "${w}"`)
+    // #20, #12, #17: merge unknown without the breaker, no mutation tried, an equivalent mutation
+    for (const w of ['gave no verdict (no answer, an error or the circuit breaker)', 'with or without the breaker', '`challenge of <id>: no mutation tried`', 'an equivalent mutation the challenger reports with a reason is logged and not counted', 'answers a survivor it judges equivalent with a deviation that says why']) assert.ok(text.run.replace(/\s+/g, ' ').includes(w), `run: ${w}`)
+    for (const w of ['`merge: "unknown"`, with or without the breaker', 'no mutation tried', '`equivalent: true`', 'neither rejects nor uses up `max_fixes`', 'the evaluator weighs']) assert.ok(REF.replace(/\s+/g, ' ').includes(w), `reference.md: ${w}`)
+    // #13: the texts of 0.22.0 corrected against the code
+    assert.ok(REF.includes('for the steps that go through the clerk or the plan reader') && REF.includes('are not retried'), 'reference.md: the steps whose refused write is retried')
+    assert.ok(CL.includes('for the steps that go through the clerk or the plan reader only'), 'CHANGELOG.md: the retry of 0.20.0')
+    for (const [f, t] of [['upgrading.md', UPG], ['configuration.md', CONF]]) assert.ok(t.includes('counted from the close of the task that raised the issue'), `${f}: ruling_wait_minutes is a deadline`)
+    assert.ok(REF.includes('`? <task>: N issues to settle now`') && REF.includes('`▶ <task> starts without your ruling`'), 'reference.md: the notifications of 0.21.0')
+    assert.ok(REF.includes('an issue with an option is `now`, 0.21.0') && !REF.includes('(during a run, an issue, a decision to take'), 'reference.md: the moment of an issue')
+    assert.ok(!CL.includes('the pane and `status` show it invalid') && CL.includes('`progress.mjs status` show it invalid with the same reason'), 'CHANGELOG.md: status of the invalid option')
+    const VMS = read(join(PLUGIN, 'hooks', 'view-model.mjs')), prefix = VMS.match(/const MUTATION_PREFIX = '([^']+)'/)
+    assert.ok(prefix && WF.includes('`' + prefix[1] + '${where(m)}'), 'view-model.mjs strips the prefix run-phase.js writes on each challenger gap')
+    // #14: README
+    for (const w of ['`[ Other… ]`', '`[ Accept the N recommended ]`', '`[ ✓ I did it ]`', 'withdraws a ruling or a `did`', 'challenge{"challenge<br/>', 'Going back from 0.20, 0.21 or 0.22 is not supported', 'to 0.22.1.']) assert.ok(README.includes(w), `README.md: ${w}`)
+    assert.ok(!README.includes('from 0.12 and from 0.11'), 'README.md: no stale upgrading line')
+    // #15: the pre-flight and the challenger's worktrees; the downgrade text of 0.22.0 is pinned as that of 0.21.0 is
+    assert.ok(REF.includes("the challenger's detached worktrees go with them when the run has no progress, and one that has changes or commits of its own is kept and reported"), 'reference.md: the challenger worktrees at the pre-flight')
+    assert.ok(/The step `challenge`|step `challenge`/.test(REF) && SRC.worktrees.includes('one with commits of its own is reported, never removed'), 'worktrees.mjs: the header says what reference.md says')
+    for (const [f, t] of [['upgrading.md', UPG], ['CHANGELOG.md', CL]]) assert.ok(/0\.21\.0 refuses a `progress\.json` that holds one of (these|the 0\.22\.0) additions \(`is not allowed` for the step (or the rejection )?`challenge`, `field unknown` for `applied_outside` and `applied_before`\)/.test(t) && t.includes('going back to 0.21.0 is not supported'), `${f}: the downgrade text of 0.22.0`)
+    // The version: 0.22.1, the badge, the section and ten lines, the upgrade note, and the commands cited exist
+    const version = JSON.parse(read(join(PLUGIN, '.claude-plugin', 'plugin.json'))).version
+    assert.ok(version >= '0.22.1', 'version 0.22.1 or later')
+    const top = CL.slice(CL.indexOf('\n## ') + 1), first = top.slice(0, top.indexOf('\n## ', 4))
+    assert.ok(/^## 0\.22\.1 — \d{4}-\d{2}-\d{2}: .+$/m.test(first.split('\n')[0]), 'CHANGELOG.md starts with ## 0.22.1 — <date>: <title>')
+    assert.deepEqual(first.split('\n').filter(l => /^Fixes #\d+\.$/.test(l)), Array.from({ length: 10 }, (_, i) => `Fixes #${11 + i}.`), 'CHANGELOG.md: Fixes #11. to Fixes #20.')
+    assert.ok(UPG.includes('## From 0.22.0 to 0.22.1') && UPG.includes('Going back to 0.22.0 is supported'), 'upgrading.md: the 0.22.1 section')
+    const sec = UPG.slice(UPG.indexOf('## From 0.22.0 to 0.22.1'), UPG.indexOf('## From 0.21.0 to 0.22.0'))
+    for (const m of [...sec.matchAll(/\/orchestre:([a-z]+)/g), ...first.matchAll(/\/orchestre:([a-z]+)/g)]) assert.ok(SKILLS.includes(m[1]), `/orchestre:${m[1]} exists`)
+    for (const m of [...sec.matchAll(/progress\.mjs ([a-z-]+)/g), ...first.matchAll(/progress\.mjs ([a-z-]+)/g)]) assert.ok(SRC.progress.match(/usage: progress\.mjs <([a-z|-]+)>/)[1].split('|').includes(m[1]), `progress.mjs ${m[1]}`)
   })
 
   console.log(`commands: ALL GREEN (${n} tests)`)

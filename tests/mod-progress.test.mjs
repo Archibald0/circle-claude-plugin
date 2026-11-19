@@ -1290,7 +1290,7 @@ try {
     assert.deepEqual(buttonsOf(H), [['[ Settle the prerequisites ]', null, null, null], ['[ ✓ I did it ]', 'did', null, null]])
     assert.equal(H.lines.flat().find(m => m.x?.op === 'did').x.prerequisite, 'H1')
     assert.ok(HL.includes('[ Settle the prerequisites ]  [ ✓ I did it ]'), HL.join('\n'))
-    assert.equal(HL.slice(-2).join(' '), 'First button: fills the prompt, sends nothing. I did it: recorded at once, PREREQUISITES.md at the run stop.')
+    assert.equal(HL.slice(-2).join(' '), 'First button: fills the prompt, sends nothing. I did it: recorded at once, PREREQUISITES.md at the next apply.')
     assert.ok(buttonsOf(card('E1')).some(b => b[1] === 'did'), 'an environment too')
     assert.deepEqual(buttonsOf(card('D5')), [['[ Settle the prerequisites ]', null, null, null]], 'a decision: did refuses it')
     // Noted done: pendingDone; no second button; the last line, with Undo (undid)
@@ -1573,6 +1573,13 @@ try {
       run('step', { task: 'T01', step: 'fix', isolated: false, rejection: { attempt: 2, by: 'challenge', gaps: ['other mutation'] } })
       const C = read(), atC = C.log.findLast(j => j.kind === 'rejection').at
       assert.equal(M.news(C, atC + 1000)?.text, 'T01: attempt 2 rejected by the challenge: other mutation')
+      // The gap as the workflow writes it, prefix included: the news and the log line show the mutation alone
+      const WF = 'src/a.ts:12, if (ok) → if (!ok)'
+      run('step', { task: 'T01', step: 'fix', isolated: false, rejection: { attempt: 4, by: 'challenge', gaps: [`mutation not detected by any verification command: ${WF}`] } })
+      const P = read(), atP = P.log.findLast(j => j.kind === 'rejection').at
+      assert.equal(M.news(P, atP + 1000)?.text, `T01: attempt 4 rejected by the challenge: ${WF}`)
+      const logP = M.plainText(M.logCard(P, atP + 1000, 160, false).lines.find(l => /attempt 4 rejected/.test(M.plainText(l))))
+      assert.ok(logP.includes(`rejected by the challenge: ${WF}`) && !logP.includes('mutation not detected'), logP)
       run('step', { task: 'T01', step: 'fix', isolated: false, rejection: { attempt: 3, by: 'evaluation', gaps: ['x'] } })
       const E = read(), at2 = E.log.findLast(j => j.kind === 'rejection').at
       assert.equal(M.news(E, at2 + 1000)?.text, 'T01: attempt 3 rejected (evaluation)')
