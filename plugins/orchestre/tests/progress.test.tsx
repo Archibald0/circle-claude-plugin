@@ -93,6 +93,18 @@ test('banner, /progress and notifications during a run, on the terminal and the 
   expect(w.toasts).toEqual(['⚑ T02 waits for a human (15000 ms)'])
 })
 
+// The step `challenge` (0.22.0): the banner names it in its color, the pane shows it on the line of the task
+test('step challenge (0.22.0): the banner and the tasks card say it, in the color of the step', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  const w = world(on)
+  w.file.text = doc([task('T01', 1, { step: 'challenge', isolated: true, start: '2026-10-08T11:31:00+02:00' }), task('T02', 1), task('T03', 2)])
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'orchestre', surface: 'terminal', ...BAND })
+  expect(await ui.find({ text: /◐ T01 / })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: 'challenge' }))?.props.color).toBe('claude')
+  await ui.unmount()
+})
+
 // Run 1 stopped on an issue for a human on T02, a review and an auto-decision of T01
 const STOPPED = doc([task('T01', 1, { status: 'merged', attempts: 2 }), task('T02', 1, { status: 'needs-human', blocker: ['secret missing'] })], {
   runs: [run({ mode: 'phase', status: 'awaiting-ruling', end: '2026-10-08T11:50:00+02:00', waiting: ['T02'] })],

@@ -41,5 +41,35 @@ for (const [, inFolder, sub] of gitCommands) {
   const allowed = inFolder ? allow.some(r => r.startsWith(`Bash(git -C * ${sub} `)) : allow.some(r => r.startsWith(`Bash(git ${sub} `) || r === `Bash(git ${sub})`)
   assert.ok(allowed, `git ${inFolder ? '-C <folder> ' : ''}${sub}, run by the agents of the workflow: no rule in the template`)
 }
+// The whole command, not only its subcommand (0.22.0): `git checkout -- <file>` has the subcommand of `git checkout HEAD -- *` and is still not allowed.
+// Each backticked git command of the workflow and of agents/challenger.md (the other agent files are not read), cut at its first placeholder
+// (<...> or ${...}), starts with the literal part (before its first "*") of an allow rule; a command with no placeholder may also equal that
+// literal part without its trailing space. `git -C <folder> ` (folder quoted or not, placeholder or not) is stripped first, and the rest is
+// compared with the literal part of a `Bash(git -C * <sub> *)` rule after `git -C * `.
+const gitRules = allow.filter(r => r.startsWith('Bash(git ') && r.endsWith(')')).map(r => r.slice(5, -1))
+const ruleAllows = (rule, cmd) => {
+  const literal = rule.split('*')[0]
+  return cmd.startsWith(literal) || (rule.includes('*') && cmd === literal.trimEnd())
+}
+const cutAtPlaceholder = s => s.split(/<|\$\{/)[0]
+const folderForm = /^git -C (?:"[^"]*"|<[^>\s]*>|\S+) /
+const commandAllowed = (cmd, rules) => {
+  const folder = cmd.match(folderForm)
+  if (!folder) return rules.some(rule => ruleAllows(rule, cutAtPlaceholder(cmd)))
+  const rest = cutAtPlaceholder(cmd.slice(folder[0].length))
+  return rules.some(rule => rule.startsWith('git -C * ') && ruleAllows(`git ${rule.slice('git -C * '.length)}`, `git ${rest}`))
+}
+const gitCommandsOf = text => [...text.matchAll(/`(git [^`]*)`/g)].map(m => m[1].replace(/\\$/, ''))
+// The -C form with a placeholder folder keeps its rule, and is refused without it
+assert.ok(commandAllowed('git -C "${r.path}" diff --quiet', ['git -C * diff *']))
+assert.ok(commandAllowed('git -C <folder> diff', ['git -C * diff *']))
+assert.ok(commandAllowed('git -C "a folder" diff --quiet', ['git -C * diff *']))
+assert.ok(!commandAllowed('git -C "${r.path}" diff --quiet', ['git -C * log *']))
+assert.ok(!commandAllowed('git -C <folder> diff', ['git diff *']))
+for (const file of ['../plugins/orchestre/workflows/run-phase.js', '../plugins/orchestre/agents/challenger.md']) {
+  const found = gitCommandsOf(read(file))
+  assert.ok(found.length > 3, `git commands of ${file} not found`)
+  for (const cmd of found) assert.ok(commandAllowed(cmd, gitRules), `${file}: \`${cmd}\` starts with no rule of the template`)
+}
 for (const [cmd, rule] of [['`test -e ', 'Bash(test -e *)']]) if (workflowSource.includes(cmd)) assert.ok(allow.includes(rule), `missing permission: ${rule}`)
 console.log('settings template: ALL GREEN')

@@ -22,6 +22,13 @@ export const meta = {
 //   Mode deviation (0.21.0, D3): a major issue that is not human, given a deadline by close, no longer stops the run at once. No
 //   task starts any more; once the tasks in flight end, the clerk waits for its ruling (progress.mjs wait). Ruled in time, it is
 //   applied and the run goes on; released, past its deadline or a wait that fails, it stops the run as before.
+// Challenger (0.22.0, D9): a task marked challenge: true in the plan (plan-lint only passes true) is challenged after each
+//   successful evaluation, by the agent challenger (sonnet), isolated in a worktree of its own, on a detached checkout of the
+//   head of the task's branch. It tries 3 mutations at most of the code of the diff, never of the tests, runs the task's
+//   verification commands after each and restores the file. A mutation that nothing detected rejects the attempt (by:
+//   challenge): the fix adds the missing test, then verification, evaluation and challenge run again, within max_fixes. A
+//   challenger without an answer, or that could not run its pass, is no rejection: a blind spot under the task's close. Its
+//   worktree, detached, is removed at the end of the run by worktrees.mjs clean.
 // rerun: ids of "needs-human" tasks the user restarts, after their decision
 // progress (0.8.0): path of scripts/progress.mjs, sole writer of progress.json and of the PROGRESS.md view (contract orchestre-progress/4
 //   since 0.20.0, which converts a file of orchestre-progress/3, orchestre-suivi/2 or /1).
@@ -111,7 +118,7 @@ function planDigest(p) {
   const s = x => (typeof x === 'string' ? x : ''), ss = x => (Array.isArray(x) ? x.map(s) : []), n = x => (Number.isInteger(x) ? x : null)
   const list = x => (Array.isArray(x) ? x : []).map(y => (y && typeof y === 'object' ? y : {}))
   const c = JSON.stringify([p.ok === true, ss(p.errors),
-    list(p.tasks).map(t => [s(t.id), s(t.title), s(t.file), n(t.phase), s(t.model), s(t.model_reason), s(t.effort), ss(t.depends_on), ss(t.resources), s(t.status), ss(t.verification), ss(t.open_prerequisites)]),
+    list(p.tasks).map(t => [s(t.id), s(t.title), s(t.file), n(t.phase), s(t.model), s(t.model_reason), s(t.effort), ss(t.depends_on), ss(t.resources), s(t.status), ss(t.verification), ss(t.open_prerequisites), ...(t.challenge === true ? [true] : [])]),
     list(p.all).map(x => [s(x.id), n(x.phase), s(x.status)]), n(p.max_phase)])
   let h = 0x811c9dc5
   for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193)
@@ -159,9 +166,12 @@ const APPLY_S = S({
   amended: { type: 'array', items: S({ id: str, verification: strs, depends_on: strs }, ['id', 'verification', 'depends_on']) },
   added_tasks: { type: 'array', items: S({ id: str, title: str, phase: nullable('integer') }, ['id', 'title', 'phase']) },
   // done (0.21.0): only when a did was pending, the prerequisites apply wrote into PREREQUISITES.md
-  commit: nullable('string'), done: strs, message: str, digest: str,
+  commit: nullable('string'), done: strs,
+  // before_run (0.22.0): only in a run whose run-start took in rulings applied outside a run (pre-flight of /orchestre:run)
+  before_run: { type: 'array', items: S({ issue: str, task: str, option: nullable('string'), text: nullable('string') }, ['issue', 'task', 'option', 'text']) },
+  message: str, digest: str,
 }, ['applied', 'rejected', 'discarded', 'amended', 'added_tasks', 'commit', 'message', 'digest'])
-const PLAN_S = S({ ok: bool, errors: strs, tasks: { type: 'array', items: S({ id: str, title: str, file: str, phase: { type: 'integer' }, model: str, model_reason: str, effort: str, depends_on: strs, resources: strs, status: str, verification: strs, open_prerequisites: strs }, ['id', 'file', 'depends_on', 'status', 'verification', 'open_prerequisites']) }, all: { type: 'array', items: S({ id: str, phase: { type: 'integer' }, status: str }, ['id']) }, max_phase: { type: 'integer' }, digest: str, run_start_ok: bool, progress_error: str, apply: APPLY_S, apply_ok: bool, apply_error: str }, ['ok', 'tasks', 'digest'])
+const PLAN_S = S({ ok: bool, errors: strs, tasks: { type: 'array', items: S({ id: str, title: str, file: str, phase: { type: 'integer' }, model: str, model_reason: str, effort: str, depends_on: strs, resources: strs, status: str, verification: strs, open_prerequisites: strs, challenge: bool }, ['id', 'file', 'depends_on', 'status', 'verification', 'open_prerequisites']) }, all: { type: 'array', items: S({ id: str, phase: { type: 'integer' }, status: str }, ['id']) }, max_phase: { type: 'integer' }, digest: str, run_start_ok: bool, progress_error: str, apply: APPLY_S, apply_ok: bool, apply_error: str }, ['ok', 'tasks', 'digest'])
 const REPORT_S = S({
   status: { type: 'string', enum: ['done', 'partial', 'blocked'] }, summary: str, branch: str, commit: str, path: str, changed_files: strs,
   deviations: { type: 'array', items: S({ type: { type: 'string', enum: ['deviation', 'blind-spot', 'decision', 'debt', 'needs-human', 'review'] }, description: str, affected_tasks: strs }, ['type', 'description']) },
@@ -177,6 +187,10 @@ const VERIF_S = S({ ok: bool, results: { type: 'array', items: RESULT_S }, failu
 const PROOF_BY = ['diff', 'test', 'command', 'report']
 const PROOF_S = S({ criterion: str, by: { type: 'string', enum: PROOF_BY }, ref: str }, ['criterion', 'by', 'ref'])
 const EVAL_S = S({ verdict: { type: 'string', enum: ['pass', 'fail'] }, gaps: strs, unverifiable: strs, unreadable: strs, proofs: { type: 'array', items: PROOF_S }, ...PROGRESS_P }, ['verdict'])
+// Challenger (0.22.0): no progress field, the agent is isolated; the clerk notes its step from the main checkout
+const MUTATIONS_MAX = 3
+const MUTATION_S = S({ file: str, line: { type: 'integer' }, change: str, detected: bool, by: str }, ['file', 'change', 'detected'])
+const CHALLENGE_S = S({ ok: bool, path: str, mutations: { type: 'array', items: MUTATION_S }, detail: str }, ['ok', 'mutations'])
 const INTEG_S = S({ ok: bool, merged: bool, check_ok: bool, check_skipped: bool, conflict: bool, commit: str, detail: str, worktree_kept: str, ...PROGRESS_P }, ['ok', 'merged'])
 const SCRIBE_S = S({ ok: bool, commit: str, rejected: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }, discarded: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }, ...PROGRESS_P }, ['ok'])
 const CLERK_S = S({ progress_ok: bool, progress_error: str, commit: str, detail: str, worktrees: str }, ['progress_ok'])
@@ -263,6 +277,8 @@ const pStep = (id, step, extra = {}, report = true) => (PROGRESS ? `Plan progres
 // without (0.21.0): the issues a held task starts without (released, past their deadline), so that progress logs it
 const withoutOf = ids => (ids && ids.length ? { without: ids } : {})
 const pStart = (t, model, again = false, wo = []) => `${again ? pAgain : ''}Start of the task ${t.id} of the plan ${PLAN}, which works in a worktree: note it in the plan's progress, from the main checkout. Your only command is the one below; ${runBlock}.${block(progressCmd('step', { task: t.id, step: 'worker', isolated: true, model, ...withoutOf(wo) }))}${reportProgress} Run nothing else and change no file.`
+// Step of the challenger (0.22.0), isolated in a worktree like the worker: the clerk notes it from the main checkout
+const pChallengeStep = (t, again = false) => `${again ? pAgain : ''}Challenge of the task ${t.id} of the plan ${PLAN}, which runs in a worktree: note its step in the plan's progress, from the main checkout. Your only command is the one below; ${runBlock}.${block(progressCmd('step', { task: t.id, step: 'challenge' }))}${reportProgress} Run nothing else and change no file.`
 const pRunStart = stop => `Plan progress: your first command, before any other, opens the run; ${runBlock}.${block(progressCmd('run-start', { phase: integer(PHASE, 1), mode: MODE, parallelism: PAR, max_fixes: integer(MAXFIX, 0), max_auto_decisions: integer(MAX_AUTO, 0) }))}If it exits with code 0, return run_start_ok=true and go on. Otherwise, stop there without doing anything else: ${stop}, run_start_ok=false, and the first line of its error in progress_error.
 `
 // A task's branch: new, or taken back from the most recent one (a branch held by another worktree is not taken back, we start from it).
@@ -299,9 +315,19 @@ ${(v && (v.forbidden || []).length) ? `Commands refused to the agents by their p
 For each criterion, look for a proof: file:line of the diff, a test that covers it, or a result of the verifier above. A criterion that asks for report content is met if that content is in the worker's report. PROGRESS.md, HANDOFF.md and DISCOVERY.md are written by the scribe only at the end of the task: their state proves nothing, either way. A criterion that no verification command nor the diff can demonstrate in the context of this task, whatever the worker does (for example a behavior in a worktree for a task of the main checkout), is not a gap: cite it in "unverifiable" with the reason. This is rare: a criterion that is merely not proven stays a gap. A file of the diff your permissions forbid you to read (organization or project settings): never get around the ban; it is neither a gap nor an unverifiable criterion: cite it in "unreadable", the human will review it before the PR. A criterion that can only be demonstrated by reading such a file follows the same rule. Also check that the comments, headers, DECISIONS entries and procedures added or changed by the diff tell the truth: they describe what the code really does, and each command of a procedure meant for a human exists in the repository and does what the text says. A false text is a gap. Verdict fail if a single demonstrable criterion is not demonstrated; then list the precise gaps. ${pProofs} Change nothing.${pLanguage}`
 // The second reading of the scope, by the plan-reader, when the verifier's copy does not match its digest (0.19.0)
 const pScope = (t, r) => `Your instructions read the scope of a task branch, not the plan. Run \`${scopeCmd(t, r)}\`, from the folder you start in (the main checkout), and return its JSON exactly as printed: every field and every value, \`digest\` included, character for character. Leave nothing out, add nothing, rephrase nothing: the workflow checks the copy against the digest.`
+// Challenge of a task (0.22.0), by the challenger isolated in a worktree of its own: every command it is given is a simple one
+// (isolation guard). The task's verification commands as the plan gives them, those refused to the agents left out
+const pChallenge = (t, r, cmds) => `Challenge of the task ${t.id} of the plan ${PLAN}: its evaluation passed; do the verification commands of its branch ${r.branch} detect a wrong change of its code? You are in an isolated worktree of your own: Claude Code's isolation guard only accepts simple commands there (see your rules).
+1. \`git switch --detach ${r.branch}\`: a detached checkout of the head of the task's branch, never the branch itself, which the main checkout or the worker's worktree holds. If it fails, stop there: ok=false and the first line of its error in "detail".${pSetup(t, 'once on that checkout, before any other work', 'If one fails, stop there: ok=false, the command and an excerpt of its output in "detail".')}
+2. Read ${t.file}, then \`git diff --name-only ${INTEG}...HEAD\` and \`git diff ${INTEG}...HEAD -- <file>\` for each file you may change: a file of code of that diff, never a test (a path that contains test or spec, a fixture, a snapshot), never a file outside the diff nor of ${PLAN}.
+3. Without any mutation, run once each command below, one by one, as it is. If one fails, stop there: ok=false, the command and an excerpt of its output in "detail"; a challenge proves nothing where the verification already fails.
+${bullets(cmds.map(c => '`' + c + '`'))}
+4. Then ${MUTATIONS_MAX} mutations at most, one at a time, each on a line the diff adds or changes, where a wrong change would do the most harm: invert a condition, remove a guard, a check or a call, shift a bound or a constant. For each: change that line with your Edit tool; run the commands of point 3, one by one, as they are; then \`git checkout HEAD -- <file>\`, then \`git status --porcelain\`, which must print nothing before the next mutation. A mutation is detected when one of the commands exits with a code other than 0.
+5. Return ok=true, "path" (what \`pwd\` prints) and "mutations": for each mutation tried, "file", "line", "change" (the line before → after), "detected" and "by" (the first command that detected it, nothing if none). Never commit, never change a test, and leave the worktree as you found it, without a mutation.${pLanguage}`
 const pFix = (t, r, gaps, rejection, choice) => `${pStep(t.id, 'fix', { rejection: rejection && { ...rejection, gaps: shorts(rejection.gaps) }, model: choice.model, ...(choice.change ? { change: choice.change } : {}) })}Fix of the task ${t.id}. Work in ${r.path}, on the branch ${r.branch}: prefix each command with \`cd "${r.path}" &&\` and edit the files by their absolute path under that folder. Read ${t.file} and ${PLAN}/DISCOVERY.md again.
 Gaps to fix:
-${bullets(gaps)}
+${bullets(gaps)}${rejection && rejection.by === 'challenge' ? `
+These gaps come from the challenger: each is a change of the code of the branch that no verification command detected. Add to the task's tests the case that fails under that change, or strengthen the one that should; change the code itself only if the mutation shows a real bug.` : ''}
 Same rules as the task: owned files only, commits on ${r.branch}, nothing in the progress files${PROGRESS ? ' (the progress command above aside)' : ''}, no merge into another branch and no push.${setupOf(t).length ? ` If your fix changes the dependencies or what is generated, first run again, in this folder, these setup commands of the project: ${setupOf(t).map(x => '\`' + x + '\`').join(', ')}.` : ''} Run the verifications again, then return the same report format.${(r.deviations || []).length ? `
 Deviations already reported at earlier attempts, already recorded in the plan's progress: ${JSON.stringify(r.deviations)}. Do not repeat them; if your fix cancels one, say so in a deviation.` : ''}${(r.findings || []).length ? `
 Findings of earlier attempts: ${JSON.stringify(r.findings)}. Return in your report the updated list: those that still hold, without those your fix makes false, plus the new ones.` : ''}${pLanguage}`
@@ -312,7 +338,7 @@ Then compare the tree of ${INTEG} with the verified branch: \`git diff --quiet $
 Then run on ${INTEG} this check command, without a pipe (add \`; echo "code=$?"\`): ${check}. Return check_ok according to its exit code, a useful excerpt in detail on a failure, and ok=true only if the merge and the check succeeded.${isolated ? `
 Then remove the worktree, never by force: \`git worktree unlock "${r.path}"\` (ignore the error), then \`git worktree remove "${r.path}"\`. If git refuses (modified or untracked files: work that was not committed), leave the worktree as it is, never with --force nor by deleting its folder, and return the first line of git's message in worktree_kept; the merge and the check keep their result. Keep the branch.` : ''}`
 // Choice of the model of the next fix (0.11.0): the attempt's rejection, the earlier rejections and their models
-const pChoice = (t, rejection, before, previous) => `Choice of the model of fix ${rejection.attempt} of the task ${t.id} (${t.file}). Model planned by the plan: ${t.model}${t.model_reason ? ` ("${oneLine(t.model_reason)}")` : ''}; it is a floor: the fix will never run on a weaker model. Attempt ${rejection.attempt}, on ${before}, was rejected by ${rejection.by === 'verification' ? 'the verification' : 'the evaluation'}. Gaps: ${JSON.stringify(rejection.gaps)}.${previous.length ? ` Attempts rejected before it: ${JSON.stringify(previous)}.` : ''}
+const pChoice = (t, rejection, before, previous) => `Choice of the model of fix ${rejection.attempt} of the task ${t.id} (${t.file}). Model planned by the plan: ${t.model}${t.model_reason ? ` ("${oneLine(t.model_reason)}")` : ''}; it is a floor: the fix will never run on a weaker model. Attempt ${rejection.attempt}, on ${before}, was rejected by ${rejection.by === 'verification' ? 'the verification' : rejection.by === 'challenge' ? 'the challenge (changes of its code that no verification command detected)' : 'the evaluation'}. Gaps: ${JSON.stringify(rejection.gaps)}.${previous.length ? ` Attempts rejected before it: ${JSON.stringify(previous)}.` : ''}
 Return model (haiku, sonnet or opus) and reason, on one line: haiku for a mechanical gap (text, format, renaming, configuration), sonnet for an implementation gap, opus for a gap of architecture, ambiguous, that touches several modules, or that comes back after a fix on the same model. You may read the task file. Rate no deviation, prepare no issue and change nothing.${pLanguage}`
 const pReplan = (t, r, status, gaps, unverifiable, sensitive = []) => `Replanning after ${t.id} (status: ${status}, phase ${PHASE}${LAST ? ', last phase of the plan' : ''}, mode ${MODE}). Task: ${t.file}; its code is on the branch ${r.branch}${status === 'merged' ? `, merged into ${INTEG} (main checkout)` : `, in ${r.path}`}. Deviations reported: ${JSON.stringify(r.deviations || [])}. Gaps: ${JSON.stringify(gaps)}. Criteria unverifiable in the context of the task: ${JSON.stringify(unverifiable || [])}.${sensitive.length ? ` Sensitive deviations (data, database, prod, secret), major automatically: return an issue for each, except for a deviation that only concerns a file forbidden to the agents (see below): ${JSON.stringify(sensitive)}.` : ''}
 Read ${PLAN}/PROGRESS.md, the decisions of ${PLAN}/HANDOFF.md, ${PLAN}/PREREQUISITES.md if it exists, and the remaining tasks of ${PLAN}/tasks/. Rate each deviation minor or major according to your grid and return one entry per deviation, except for those you return in "reviews".
@@ -447,6 +473,8 @@ const amended = new Map()
 // started, which its work did not take in. A task whose wait ended on a ruling starts after the apply it asks for: the loop
 // starts that apply before any task, and no task starts while it holds the lock of the main checkout
 const heldBy = new Map(), waitJobs = new Map(), startsWithout = new Map(), late = new Map()
+// ruledFor (0.22.0): task → the issues its wait ended settled on, that the next apply should apply
+const ruledFor = new Map()
 let applyWanted = false, applyBy = null, applying = null
 // Mode deviation (0.21.0, D3): the issues that wait for their ruling instead of stopping the run ({ p, id, waits }), until an
 // apply settles them or they stop it; deadlines: the issues close gave a deadline; stopJobs: their waits in flight, by task
@@ -530,7 +558,10 @@ const applyOut = x => (x && typeof x === 'object' && ['applied', 'rejected', 'di
 const refusedBy = rejected => `rulings refused by apply: ${rejected.map(x => `${x.issue} (${x.option != null ? `option ${x.option}` : 'text'}: ${x.reason})`).join('; ')}. An issue is open again only when apply reopened it, its option invalid with the reason (refused by plan-lint or by an action, or no entry in ISSUES.json); a ruling on an unknown or already settled issue, an absent option or an option already invalid is dropped, and nothing is reopened.`
 // What an apply applied, at the run start or during the run: the decisions given to the agents that follow, and the amendments it
 // could not make (task merged or cancelled), whose issue its output does not give
-const noteApplied = ap => {
+// The opening apply also gives the rulings an apply outside a run applied before it (before_run, 0.22.0): settled by the user for
+// this run too, in the return and in the decisions given to the agents
+const noteApplied = (ap, opening = false) => {
+  if (opening && arr(ap.before_run).length) { rulingsApplied.push(...ap.before_run); log(`rulings applied before the run: ${ap.before_run.map(a => a.issue).join(', ')}`) }
   rulingsApplied.push(...ap.applied)
   discardedRun.push(...ap.discarded.map(a => ({ task: null, id: a.id, reason: a.reason })))
   if (ap.applied.length) log(`rulings applied: ${ap.applied.map(a => a.issue).join(', ')}${ap.commit ? ` (${short(ap.commit, 12)})` : ''}`)
@@ -552,7 +583,7 @@ if (readerOpens && plan) {
   if (plan.apply_ok !== true) return await stopBefore('error', `progress: rulings not applied (apply), no task started — ${plan.apply_error || (plan.apply_ok === false ? 'failure without a message' : 'result not reported')}. The rulings stay recorded: the next run applies them.`)
   const ap = applyOut(plan.apply)
   if (!ap) return await stopBefore('error', `progress: output of apply not read, no task started — the copy does not match its digest. apply ran: read the last commit "progress: rulings …" on ${INTEG} and the issues of progress.json before a new run.`)
-  noteApplied(ap)
+  noteApplied(ap, true)
   // A refused ruling still stops the run, before any task, once the others are applied. No stop issue: the issue is the one
   // the user ruled on. apply reopened it (open again, the option invalid with the reason) when plan-lint or an action refused
   // the option, or when the issue has no entry in ISSUES.json; it dropped the ruling, marking nothing, on an unknown or
@@ -676,7 +707,11 @@ async function closeWithProgress(t, final, attempts, r, gaps, updates, { flaky, 
   if (!out) return stopOn(humanIssue(t.id, `Progress of ${t.id}: output of close not read`, `the copy of the output of progress.mjs close does not match its digest: the close ran, but what it rejected or discarded is unknown. Read the commit "progress(${t.id}): ${final}" on ${INTEG} and HANDOFF.md under "## ${t.id}" before the next run.`))
   // Answering during the run (0.21.0), only from a copy checked against its digest: the tasks each open issue holds wait for its
   // ruling once ready, and a ruling recorded meanwhile (pending) is applied at once
-  updates.issues.forEach((p, i) => { if (typeof arr(out.issues)[i] === 'string') issueIds.set(p, out.issues[i]) })
+  // One id per issue passed, in the order of the input (updates.issues, then updates.autoIssues); otherwise none is mapped, and
+  // every issue stays in open_issues rather than one settled under the id of another
+  const passed = [...updates.issues, ...updates.autoIssues]
+  if (arr(out.issues).length === passed.length && out.issues.every(x => typeof x === 'string')) passed.forEach((p, i) => issueIds.set(p, out.issues[i]))
+  else log(`${t.id}: close gave ${arr(out.issues).length} issue ids for ${passed.length} issues: none mapped, each stays in open_issues`)
   holdFrom(out)
   for (const w of arr(out.waits)) if (w && typeof w.issue === 'string' && typeof w.until === 'string') deadlines.add(w.issue)
   if (arr(out.pending).length) wantApply(t.id)
@@ -694,7 +729,9 @@ async function closeTask(t, status, attempts, r, gaps = [], trace = {}) {
   // issues and decisions: those of this close, passed to progress (close); tasks running in parallel have their own
   // Scope of the branch not checked (0.19.0): two copies of plan-lint --scope that did not match their digest
   const scopeBlind = trace.scopeUnread ? [{ type: 'blind-spot', severity: 'minor', description: trace.scopeUnread }] : []
-  const updates = { entries: [...(trace.entries || []), ...scopeBlind], tasks: [], amendments: [], discarded: [], auto: [], issues: [...(trace.issues || [])], decisions: [], decided: [], discardedHere: [], viaAuto: new Set(), autoIssues: [], untilRuled: [] }
+  // Challenge not done (0.22.0): a challenger without an answer, or that could not run its pass, is no rejection
+  const challengeBlind = trace.challengeBlind ? [{ type: 'blind-spot', severity: 'minor', description: trace.challengeBlind }] : []
+  const updates = { entries: [...(trace.entries || []), ...scopeBlind, ...challengeBlind], tasks: [], amendments: [], discarded: [], auto: [], issues: [...(trace.issues || [])], decisions: [], decided: [], discardedHere: [], viaAuto: new Set(), autoIssues: [], untilRuled: [] }
   // Amended by an apply during the run after it started (0.21.0): its work did not take them in. Merged, they are amendments not
   // applied (a blind-spot under its close); otherwise its file keeps them, and the next run starts it with them
   if (status === 'merged') for (const a of late.get(t.id) || []) { const d = { task: t.id, ...a }; updates.discarded.push(a); updates.discardedHere.push(d); discardedRun.push(d) }
@@ -795,17 +832,40 @@ async function chooseModel(t, rejection, models, previous) {
 // Start of a task in a worktree, noted by the clerk before its worker is launched (0.18.2, see pStart). Awaited, so that this
 // step is written before the next ones of the task. A clerk that fails, throws or does not answer only spoils the display:
 // the failure goes to progress_failures and the worker starts all the same. Without progress, nothing to note.
-async function noteStart(t, model) {
+// The step of the challenger, isolated too, is noted the same way (0.22.0)
+async function byClerk(t, step, what, call) {
   if (!PROGRESS) return
   let g = null
   // The circuit breaker is not a failure of the clerk: the task stops there
-  const start = again => ask(pStart(t, model, again, startsWithout.get(t.id)), { label: `${t.id} · start`, agentType: AG('clerk'), model: 'haiku', schema: CLERK_S })
   try {
-    g = await start(false)
+    g = await call(false)
     // The step refused, its JSON altered on the way (0.20.0): nothing was written, the clerk runs again once
-    if (altered(g)) { log(`${t.id}: start refused, payload altered in transit; run again`); g = await start(true) }
+    if (altered(g)) { log(`${t.id}: ${what} refused, payload altered in transit; run again`); g = await call(true) }
   } catch (err) { if (err === INTERRUPT) throw err; g = { progress_ok: false, progress_error: `clerk failed: ${String(err)}` } }
-  noteProgress(t.id, 'worker', g || { progress_ok: false, progress_error: 'clerk without an answer' })
+  noteProgress(t.id, step, g || { progress_ok: false, progress_error: 'clerk without an answer' })
+}
+const noteStart = (t, model) => byClerk(t, 'worker', 'start', again => ask(pStart(t, model, again, startsWithout.get(t.id)), { label: `${t.id} · start`, agentType: AG('clerk'), model: 'haiku', schema: CLERK_S }))
+
+// Challenge of a task marked challenge: true (0.22.0, D9), after a successful evaluation. Returns the gaps: one per mutation
+// that no verification command detected, among the first MUTATIONS_MAX; a mutation of a test file is not counted, the
+// challenger may not change the tests. Without an answer, or a pass it could not run (ok=false), no gap: a blind spot under
+// the close (trace.challengeBlind), never a rejection
+const TEST_PATH = /test|spec/i
+async function challenge(t, r, trace) {
+  await byClerk(t, 'challenge', 'challenge step', again => ask(pChallengeStep(t, again), { label: `${t.id} · challenge · start`, agentType: AG('clerk'), model: 'haiku', schema: CLERK_S }))
+  const cmds = (t.verification || []).filter(c => !trace.forbidden.includes(c))
+  const c = await ask(pChallenge(t, r, cmds), { label: `${t.id} · challenge`, agentType: AG('challenger'), model: 'sonnet', schema: CHALLENGE_S, isolation: 'worktree' })
+  if (!c || c.ok !== true || !Array.isArray(c.mutations)) {
+    trace.challengeBlind = `challenge of ${t.id} not done: ${c ? `challenger could not run its pass (${short(c.detail || 'no detail', 300)})` : 'challenger without an answer'}; the tests of its branch were not challenged by mutations`
+    log(`${t.id}: ${trace.challengeBlind}`)
+    return []
+  }
+  const tried = c.mutations.slice(0, MUTATIONS_MAX).filter(m => m && typeof m === 'object')
+  const onTests = tried.filter(m => TEST_PATH.test(String(m.file || '')))
+  if (onTests.length) log(`${t.id}: challenge, mutations of a test file not counted: ${short(onTests.map(m => m.file).join(', '), 200)}`)
+  const survivors = tried.filter(m => m.detected === false && !onTests.includes(m))
+  log(`${t.id}: challenge, ${tried.length} mutation(s) tried, ${survivors.length} not detected`)
+  return survivors.map(m => `mutation not detected by any verification command: ${m.file}${Number.isInteger(m.line) ? `:${m.line}` : ''}, ${oneLine(m.change)}`)
 }
 
 // Wait of a held task for the rulings of its issues (0.21.0), by the clerk, outside the exclusive queue (pWait). An issue
@@ -842,7 +902,8 @@ async function waitFor(t) {
   const settled = ids.filter(id => out.settled.includes(id)), rest = ids.filter(id => !settled.includes(id))
   if (rest.length) startsWithout.set(t.id, rest)
   log(`${t.id}: wait over${settled.length ? `, ruled: ${settled.join(', ')}` : ''}${rest.length ? `, starts without: ${rest.join(', ')}` : ''}`)
-  if (settled.some(id => !appliedHere(id))) wantApply(t.id)
+  const toApply = settled.filter(id => !appliedHere(id))
+  if (toApply.length) { ruledFor.set(t.id, toApply); wantApply(t.id) }
 }
 // Mode deviation (0.21.0, D3): the run waits for the rulings of the issues a close raised, on behalf of the task closed (pWait,
 // t.stopping). A ruling not applied yet asks for an apply, which takes its issue out of stopWaits; released, past its deadline or
@@ -865,6 +926,10 @@ async function waitForStop(task, ids) {
 async function runApply() {
   const by = applyBy
   applyWanted = false
+  // The tasks whose wait ended on rulings before this apply: what it does not apply (withdrawn meanwhile: an Undo of the pane,
+  // 0.22.0) they start without; a wait that ends while it runs is for the next apply
+  const ruledBefore = new Map(ruledFor)
+  ruledFor.clear()
   let a
   try { a = await exclusive(() => ask(pApplyRun(), { label: 'rulings · apply', agentType: AG('clerk'), model: 'haiku', schema: APPLY_RUN_S })) } catch (err) { a = err === INTERRUPT ? INTERRUPT : { progress_ok: false, progress_error: `clerk failed: ${String(err)}` } }
   if (a === INTERRUPT) return
@@ -876,6 +941,12 @@ async function runApply() {
   added.push(...arr(ap.added_tasks).map(x => ({ id: x.id, title: x.title, phase: x.phase ?? PHASE })))
   const fresh = new Set(added.map(x => x.id)), ruled = new Set(ap.applied.map(x => x.issue))
   for (const [id, s] of heldBy) { for (const i of ruled) s.delete(i); if (!s.size) heldBy.delete(id) }
+  for (const [task, ids] of ruledBefore) {
+    const not = ids.filter(id => !ruled.has(id))
+    if (!not.length) continue
+    startsWithout.set(task, [...new Set([...(startsWithout.get(task) || []), ...not])])
+    log(`${task}: ${not.join(', ')} not applied (ruling withdrawn meanwhile); it starts without`)
+  }
   // Settled now: no longer an open issue of the return, which the pilot would have the user settle again
   issues.splice(0, issues.length, ...issues.filter(p => !ruled.has(issueIds.get(p))))
   // Mode deviation: ruled in time, the issue no longer stops the run
@@ -959,6 +1030,8 @@ async function runTask(t, isolated) {
         if (e) { trace.unverifiable = e.unverifiable || []; trace.unreadable = [...new Set([...trace.unreadable, ...(e.unreadable || [])])] }
         if (!e) gaps = [invalid ? `evaluator without an answer: pass refused twice, ${invalid}` : 'evaluator without an answer']
         else if (e.verdict === 'fail') gaps = e.gaps && e.gaps.length ? e.gaps : ['verdict fail without detail']
+        // Challenge (0.22.0): only a task marked challenge: true, only after a pass; a mutation not detected rejects the attempt
+        else if (t.challenge === true) { const survivors = await challenge(t, r, trace); if (survivors.length) { by = 'challenge'; gaps = survivors } }
       }
       if (!gaps.length) break
       if (attempts > MAXFIX) return await closeTask(t, 'blocked', attempts, r, gaps, trace)

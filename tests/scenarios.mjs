@@ -82,7 +82,10 @@ const byLabel = (calls, l) => calls.filter(c => c.opts.label === l)
 const idx = (calls, l) => calls.findIndex(c => c.opts.label === l)
 const drained = (name, q) => { for (const k in q) assert.equal(q[k].length, 0, `${name}: answer not consumed for ${k}`) }
 let n = 0
+// node tests/scenarios.mjs <workflow> [<prefixes>]: only the cases whose id starts with one of the comma-separated prefixes (CH,X3)
+const ONLY = process.argv[3] ? process.argv[3].split(',') : null
 async function test(name, fn) {
+  if (ONLY && !ONLY.some(p => name.startsWith(p))) return
   last = null
   try { await fn(); n++; console.log('ok ·', name) } catch (e) { console.log('FAILED ·', name, '\n', JSON.stringify(last, null, 1)); throw e }
 }
@@ -889,6 +892,15 @@ function toyRepo() {
 }
 // The refusal of Claude Code's isolation guard, as an isolated worker reported it on a real run
 const GUARD = 'This agent is isolated in a worktree, but this command is in a form too complex to verify that it stays inside the worktree. Refusing to run it.'
+// The guard simulated on every command an isolated agent is given (0.22.0), by the rules of isolated-worker.md and
+// challenger.md: a leading cd, export or assignment, a chaining, pipe, subcommand, heredoc or redirection, inline code, or an
+// absolute path is refused. The commands are the backticked spans of the instruction outside its ~~~ blocks (the progress
+// commands of those blocks are refused above); a <placeholder> reads as a word
+const givenCommands = prompt => [...String(prompt).replace(/~~~sh\n[\s\S]*?\n~~~/g, '').matchAll(/`([^`\n]+)`/g)].map(m => m[1])
+const refusedByGuard = c => {
+  const s = String(c).replace(/<[a-z][a-z -]*>/g, 'x').trim()
+  return /^(cd|export)\s/.test(s) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(s) || /&&|\|\||;|\||\$\(|<<|<|>/.test(s) || /\b(node|tsx|python3?|php|bash|sh|ruby|perl)\s+-[ec]\b/.test(s) || /(^|\s)['"]?[/~]/.test(s)
+}
 // Each progress command of the instruction goes through the shell, in order; the report carries their exit codes
 async function play(name, D, q, args = {}) {
   const launched = [], unexpected = [], calls = []
@@ -899,6 +911,7 @@ async function play(name, D, q, args = {}) {
     const v0 = q[k].shift(), cs = progressCommands(prompt)
     // null: an agent that did not answer (expired login, usage limit) ran nothing either (0.19.0)
     if (v0 === null) return null
+    if (opts.isolation === 'worktree') for (const c of givenCommands(prompt)) if (refusedByGuard(c)) launched.push({ label: k, code: 1, out: '', err: `${GUARD} ${c}` })
     // { before, answer }: what the agent does before its progress commands (the scribe writes DISCOVERY.md)
     // { tamper, answer } (0.20.0): the agent changes the command it runs, as a copy altered on the way
     const v = v0 && typeof v0 === 'object' && 'before' in v0 ? (v0.before(), v0.answer) : v0 && typeof v0 === 'object' && 'tamper' in v0 ? v0.answer : v0
@@ -1459,6 +1472,11 @@ await test('R4: the digest reads a field left out, empty or null alike, and chan
     ...['id', 'title', 'file', 'model', 'model_reason', 'effort', 'status'].map(k => ({ tasks: [{ ...t, [k]: t[k] + 'x' }] })), { tasks: [{ ...t, phase: 2 }] },
     ...['depends_on', 'resources', 'verification', 'open_prerequisites'].map(k => ({ tasks: [{ ...t, [k]: [...t[k], 'x'] }] })), { tasks: [] }, { tasks: [t, t] }]
   for (const c of changes) assert.notEqual(planDigest({ ...base, ...c }), d, JSON.stringify(c))
+  // challenge (0.22.0): only `true` counts; a plan without the key keeps the digest of 0.21
+  assert.equal(d, 'f7ab775e', 'digest of 0.21 for a plan without challenge')
+  assert.notEqual(planDigest({ ...base, tasks: [{ ...t, challenge: true }] }), d); assert.equal(planDigest({ ...base, tasks: [{ ...t, challenge: false }] }), d)
+  assert.equal(planDigest({ ...base, tasks: [{ ...t, challenge: 'true' }] }), d, 'a string is not true')
+  assert.match(src.match(/\nconst PLAN_S = .*/)[0], /open_prerequisites: strs, challenge: bool \}/, 'the schema of the plan carries challenge for the plan-reader copy')
   // Robust to a copy of any shape: never an exception
   for (const x of [{}, { tasks: [null, 3, 'T01'] }, { tasks: 'T01', all: {} }]) assert.match(planDigest(x), /^[0-9a-f]{8}$/)
 })
@@ -2741,6 +2759,8 @@ await test('WD7: mode deviation — one wait per task whose close raised an issu
   assert.ok(idx(calls, 'T02 · progress') < idx(calls, 'T00 · wait'), 'the waits start once no task runs')
   // Stopped: P2, ruled, is not applied during the run; it stays open, its ruling for the next run start
   assert.deepEqual([res.status, res.stop_issue.title, res.open_issues.map(p => p.title), idx(calls, 'rulings · apply'), order], ['awaiting-ruling', 'P1', ['P2'], -1, ['T02 wait', 'run end']])
+  // 0.22.0 (T23-1): stopped, the run starts no new wait, even for P2, ruled in time but not applied
+  assert.deepEqual([byLabel(calls, 'T00 · wait').length, byLabel(calls, 'T02 · wait').length], [1, 1])
   drained('WD7', q)
 })
 await test('WD6: real progress.mjs, mode deviation — the user rules during the wait: apply commits it and T01 starts with the verification added, without a wait of its own; past the deadline, the run stops', async () => {
@@ -2765,6 +2785,240 @@ await test('WD6: real progress.mjs, mode deviation — the user rules during the
     assert.deepEqual(JSON.parse(launched.find(l => l.label === 'T00 · wait').out).timeout, [issueId(D)])
     assert.deepEqual([res.status, res.stop_issue.title, res.not_started, calls.some(c => c.label === 'T01 · worker' || c.label === 'rulings · apply')], ['awaiting-ruling', 'Lint rule', ['T01'], false])
     assert.equal(D.doc().runs[0].status, 'awaiting-ruling')
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+// ——— 0.22.0: fixes after the acceptance EV3 ———
+await test('R9: real progress.mjs — the run end refused once (payload altered in transit) is run once more by the clerk: the run end is written, the run no longer in progress', async () => {
+  const D = toyRepo()
+  try {
+    const alter = c => c.replace('"deferred":[]', '"deferred":["T09"]')
+    const { res, launched, calls } = await play('R9', D, { 'plan-reader': [plan(T0)], 'T00 · worker': [report(0)], 'T00 · verification': [ok(1)], 'T00 · evaluation': [{ verdict: 'pass' }], 'T00 · merge': [MOK], 'T00 · progress': [SOK],
+      'run end · progress': [{ tamper: alter, answer: { commit: '', detail: '' } }, { commit: '', detail: '' }] })
+    const ends = launched.filter(l => l.label === 'run end · progress' && /^progress: run/.test(l.out || l.err))
+    assert.deepEqual(ends.map(l => l.code), [1, 0], JSON.stringify(ends))
+    assert.match(ends[0].err, /^progress: run-end: payload altered in transit/)
+    const again = calls.filter(c => c.label === 'run end · progress')
+    assert.deepEqual([again.length, again[0].prompt.startsWith(AGAIN), again[1].prompt.startsWith(AGAIN)], [2, false, true])
+    assert.deepEqual([res.status, res.progress_failures, D.doc().runs[0].status], ['finished', [], 'finished'])
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('UN1: real progress.mjs — the user withdraws a ruling (Undo of the pane) between the end of the wait and the apply: the apply leaves it out, T01 starts without it (step "without"), the run goes on', async () => {
+  const D = toyRepo()
+  try {
+    const { res, launched, calls } = await play('UN1', D, { ...t0w(), 'T01 · wait': [{ before: () => script(D, 'rule', { issue: issueId(D), option: 'A' }), answer: {} }],
+      'rulings · apply': [{ before: () => script(D, 'unrule', { issue: issueId(D) }), answer: {} }], ...t1(), 'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    const id = issueId(D)
+    assert.deepEqual(JSON.parse(launched.find(l => l.label === 'T01 · wait').out).settled, [id])
+    assert.equal(JSON.parse(launched.find(l => l.label === 'rulings · apply').out).message, 'no ruling to apply')
+    assert.deepEqual(progressCommands(calls.find(c => c.label === 'T01 · worker').prompt).map(parse)[0].E.without, [id])
+    assert.ok(!calls.find(c => c.label === 'T01 · verification').prompt.includes('npm run lint'))
+    assert.deepEqual([res.status, res.stop_issue, res.rulings_applied, res.open_issues.map(p => p.title)], ['finished', undefined, [], ['Lint rule']])
+    assert.ok(D.doc().log.some(e => e.task === 'T01' && e.text === 'T01 starts (main checkout) without 1 ruling'), 'the log says it started without it')
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('PF1: real progress.mjs — rulings applied by the pre-flight (apply outside a run) are recorded in the next run: runs[].rulings_applied, the return and the decisions given to the agents', async () => {
+  const D = toyRepo()
+  try {
+    const ids = seed(D, [
+      { title: 'Lint', context: 'c', human: false, options: [{ id: 'A', description: 'Lint the guard', amendments: [{ id: 'T01', verification: ['npm run lint'], reason: 'lint the guard' }] }, { id: 'B', description: 'Leave it' }] },
+      { title: 'Naming', context: 'c', human: false, options: [{ id: 'A', description: 'x' }, { id: 'B', description: 'y' }] },
+    ])
+    script(D, 'rule', { items: [{ issue: ids[0], option: 'A' }, { issue: ids[1], text: 'Keep the current name' }] })
+    assert.deepEqual(JSON.parse(script(D, 'apply')).applied.map(a => a.issue), ids, 'the pre-flight applies them')
+    const { res, launched, calls } = await play('PF1', D, {
+      'plan-reader': [plan({ ...T0, status: 'merged' }, T1)], 'T01 · worker': [report(1, { branch: 'task/T01' })], 'T01 · verification': [ok(1)], 'T01 · evaluation': [{ verdict: 'pass' }], 'T01 · merge': [MOK], 'T01 · progress': [SOK],
+      'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    const out = JSON.parse(launched[1].out)
+    assert.deepEqual([out.applied, out.before_run.map(a => a.issue)], [[], ids])
+    const both = [{ issue: ids[0], task: 'T00', option: 'A', text: null }, { issue: ids[1], task: 'T00', option: null, text: 'Keep the current name' }]
+    assert.deepEqual([res.status, res.rulings_applied], ['finished', both])
+    const w = calls.find(c => c.label === 'T01 · worker').prompt
+    for (const x of [`${ids[0]}: option A (settled by the user)`, `${ids[1]}: Keep the current name (settled by the user)`]) assert.ok(w.includes(x), 'worker decisions: ' + x)
+    assert.ok(fs.readFileSync(join(D.root, 'plans', 'p', 'tasks', 'T01-x.md'), 'utf8').includes('  - "npm run lint"'))
+    assert.deepEqual(D.doc().runs[1].rulings_applied, [{ task: 'T00', title: 'Lint', option: 'A' }, { task: 'T00', title: 'Naming', option: 'free answer' }], 'kept by run-end')
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+const pl = (calls, l) => calls.filter(c => c.label === l), pi = (calls, l) => calls.findIndex(c => c.label === l)
+// T00 and T02 in worktrees; T00 raises the issues of rp at its close; what T02 does is up to the caller
+const R2T = { ...T0, id: 'T02', title: 'Task T02', file: 'plans/p/tasks/T02-x.md' }
+const withT02 = D => { D.writeTask('T02', []); script(D, 'view'); D.git('add', 'plans'); D.git('commit', '-qm', 'T02') }
+const realIso = (id, extra = {}) => ({ [`${id} · start`]: [{}], [`${id} · worker`]: [report(id, { branch: `task/${id}`, path: '/wt', deviations: DEVIATION })], [`${id} · verification`]: [ok(id)], [`${id} · evaluation`]: [{ verdict: 'pass' }], [`${id} · merge`]: [MOK], [`${id} · replanning`]: [NOTHING], [`${id} · progress`]: [SOK], ...extra })
+const PROD = { major: true, entries: [], issues: [{ title: 'Prod access', context: 'c', human: true, options: [{ id: 'A', description: 'Use the staging account' }] }] }
+await test('ST1: real progress.mjs — a run stopped by a human issue while another task\'s wait runs starts no new wait nor apply, returns only after that wait, and leaves no task nor issue waiting', async () => {
+  const D = toyRepo()
+  try {
+    withT02(D)
+    const started = deferred(), closed = deferred(), order = []
+    const past = () => { const f = join(D.root, 'plans', 'p', 'progress.json'), doc = D.doc(); doc.issues.find(p => p.title === 'Lint rule').until = '2000-01-01T00:00:00.000Z'; fs.writeFileSync(f, JSON.stringify(doc, null, 2)) }
+    const { res, calls } = await play('ST1', D, {
+      'plan-reader': [plan(T0, T1, R2T)],
+      ...realIso('T00', { 'T00 · replanning': [RP_W] }),
+      'T01 · wait': [{ before: () => { past(); setTimeout(() => started.resolve(), 0) }, answer: async () => { await closed.promise; order.push('wait over'); return {} } }],
+      ...realIso('T02', { 'T02 · worker': [async () => { await started.promise; return report('T02', { branch: 'task/T02', path: '/wt', deviations: DEVIATION }) }], 'T02 · replanning': [PROD],
+        'T02 · progress': [() => { setTimeout(() => closed.resolve(), 0); return SOK }] }),
+      'run end · progress': [() => { order.push('run end'); return { commit: '', detail: '' } }] })
+    assert.deepEqual([res.status, res.stop_issue.title, res.not_started], ['awaiting-ruling', 'Prod access', ['T01']])
+    assert.deepEqual([pl(calls, 'T01 · wait').length, pi(calls, 'rulings · apply'), pi(calls, 'T01 · worker')], [1, -1, -1], 'no new wait, no apply, T01 not started')
+    assert.deepEqual(order, ['wait over', 'run end'], 'the run ends after the wait in flight')
+    const doc = D.doc()
+    assert.deepEqual([doc.runs[0].status, doc.issues.filter(p => (p.waiting || []).length).map(p => p.id), doc.tasks.filter(t => t.step).map(t => t.id)], ['awaiting-ruling', [], []])
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('HU1: real progress.mjs — a human issue ruled from the pane during the run never restarts its needs-human task in that run, and still stops it: no apply after the stop, the ruling kept for the next run start', async () => {
+  const D = toyRepo()
+  try {
+    withT02(D)
+    const closed = deferred()
+    const { res, calls } = await play('HU1', D, {
+      'plan-reader': [plan(T0, R2T)],
+      ...realIso('T00', { 'T00 · replanning': [PROD], 'T00 · progress': [() => { setTimeout(() => closed.resolve(), 0); return SOK }] }),
+      ...realIso('T02', { 'T02 · worker': [{ before: () => {}, answer: async () => { await closed.promise; script(D, 'rule', { issue: D.doc().issues.find(p => p.title === 'Prod access').id, option: 'A' }); return report('T02', { branch: 'task/T02', path: '/wt' }) } }] }),
+      'run end · progress': [{ commit: '', detail: '' }] })
+    const H = D.doc().issues.find(p => p.title === 'Prod access').id
+    assert.deepEqual([res.status, res.stop_issue.title, res.rulings_applied], ['awaiting-ruling', 'Prod access', []])
+    assert.deepEqual([pl(calls, 'T00 · worker').length, pi(calls, 'rulings · apply')], [1, -1])
+    assert.deepEqual(D.doc().pending_rulings.map(r => r.issue), [H], 'kept for the next run start')
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('HU2: real progress.mjs — a human issue of an earlier run, ruled from the pane during a run and applied by an apply of that run, does not restart its needs-human task without rerun', async () => {
+  const D = toyRepo()
+  try {
+    withT02(D)
+    const [H] = seed(D, [{ title: 'Prod access', context: 'c', human: true, options: [{ id: 'A', description: 'Use the staging account' }] }])
+    const issue = { major: true, entries: [], issues: [{ title: 'Docs', context: 'c', options: [{ id: 'A', description: 'a', entries: [{ type: 'debt', severity: 'minor', description: 'd' }] }] }] }
+    const R2s = { ...R2T, model: 'sonnet' }
+    const { res, calls } = await play('HU2', D, {
+      'plan-reader': [plan({ ...T0, status: 'needs-human' }, R2s)],
+      'T02 · worker': [{ before: () => script(D, 'rule', { issue: H, option: 'A' }), answer: report('T02', { branch: 'task/T02', deviations: DEVIATION }) }], 'T02 · verification': [ok(2)], 'T02 · evaluation': [{ verdict: 'pass' }], 'T02 · merge': [MOK], 'T02 · replanning': [issue], 'T02 · progress': [SOK],
+      'rulings · apply': [{}], 'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(res.rulings_applied.map(a => a.issue), [H], 'applied during the run')
+    assert.deepEqual([pi(calls, 'T00 · worker'), res.tasks.map(t => t.id), res.waiting], [-1, ['T02'], ['T00']], 'T00 waits for rerun')
+    assert.equal(D.doc().tasks.find(t => t.id === 'T00').status, 'needs-human')
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+await test('IG1: a close output whose issues do not hold one id per issue passed maps none of them: every issue stays in open_issues, with a log line', async () => {
+  const rp = { major: true, entries: [], issues: [issueN(1), issueN(2)] }
+  const { res, logs, q } = await scenario('IG1', { 'plan-reader': [planOpened(W0)], ...flow('T00', { 'T00 · worker': [withProgress(report('T00', { branch: 'task/T00', deviations: DEVIATION }))], 'T00 · replanning': [rp], 'T00 · progress': [closeWith({ issues: ['T00-2'] })] }), 'run end · progress': [COK] }, AP)
+  assert.deepEqual(res.open_issues.map(p => p.title), ['P1', 'P2'])
+  assert.ok(logs.some(l => l === 'T00: close gave 1 issue ids for 2 issues: none mapped, each stays in open_issues'), JSON.stringify(logs))
+  drained('IG1', q)
+})
+await test('TI1: real progress.mjs — one close raises two issues that hold T01; the user rules only the second during the wait: open_issues keeps the first with its options and drops the second, rulings_applied lists the second', async () => {
+  const D = toyRepo()
+  try {
+    const two = { major: true, entries: [], issues: [{ ...RP_W.issues[0], title: 'First' }, { ...RP_W.issues[0], title: 'Second', options: [{ id: 'A', description: 'Test T01', amendments: [{ id: 'T01', verification: ['npm run e2e'], reason: 'e2e' }] }, { id: 'B', description: 'Leave it' }] }] }
+    const ids = () => ['First', 'Second'].map(t => D.doc().issues.find(p => p.title === t).id)
+    const during = () => { const f = join(D.root, 'plans', 'p', 'progress.json'), doc = D.doc(); doc.issues.find(p => p.title === 'First').until = '2000-01-01T00:00:00.000Z'; fs.writeFileSync(f, JSON.stringify(doc, null, 2)); script(D, 'rule', { issue: ids()[1], option: 'A' }) }
+    const { res, launched, calls } = await play('TI1', D, { ...t0w(), 'T00 · replanning': [two], 'T01 · wait': [{ before: during, answer: {} }], 'rulings · apply': [{}], ...t1(), 'run end · progress': [{ commit: '', detail: '' }] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [])
+    const [first, second] = ids()
+    assert.deepEqual(closeOf(launched).waits.map(w => [w.issue, w.holds]), [[first, ['T01']], [second, ['T01']]])
+    assert.deepEqual(res.open_issues.map(p => [p.title, p.options.map(o => o.id)]), [['First', ['A', 'B']]])
+    assert.deepEqual(res.rulings_applied, [{ issue: second, task: 'T00', option: 'A', text: null }])
+    assert.deepEqual(progressCommands(calls.find(c => c.label === 'T01 · worker').prompt).map(parse)[0].E.without, [first])
+    assert.ok(calls.find(c => c.label === 'T01 · verification').prompt.includes('npm run e2e'))
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+// ——— 0.22.0: the challenger, on the tasks marked challenge: true ———
+// C0: T00 marked, in the main checkout, without a model (the fixes follow the ladder, without a model choice)
+const C0 = { ...T00, resources: [], challenge: true }
+const MUT = (file, line, detected, change = 'if (ok) → if (!ok)') => ({ file, line, change, detected, ...(detected ? { by: 'sh scripts/typecheck.sh' } : {}) })
+const SURVIVOR = 'mutation not detected by any verification command: src/a.ts:12, if (ok) → if (!ok)'
+const challenged = (passes, extra = {}) => ({ 'plan-reader': [planOpened(C0)], 'T00 · worker': [withProgress(report(0))], 'T00 · challenge · start': passes.map(() => COK), 'T00 · challenge': passes, 'T00 · merge': [withProgress(MOK)], 'T00 · progress': [withProgress(SOK)], 'run end · progress': [COK], ...extra })
+const closeE = (calls, id = 'T00') => progressOf(calls, `${id} · progress`).find(c => c.cmd === 'close').E
+await test('CH1: challenger — a task without the key challenge, or with challenge: false, gets no challenger call; its run is that of 0.21', async () => {
+  for (const [name, t] of [['CH1 absent', T00], ['CH1 false', { ...T00, challenge: false }], ['CH1 text', { ...T00, challenge: 'true' }]]) {
+    const { res, calls, q } = await scenario(name, { 'plan-reader': [plan({ ...t, resources: [] })], ...t00(), 'T00 · progress': [SOK] })
+    assert.equal(res.status, 'finished', name); assert.equal(res.tasks[0].status, 'merged', name)
+    assert.ok(!calls.some(c => /challenge/.test(c.opts.label) || c.opts.agentType === 'orchestre:challenger'), name + ': no challenger, no challenge step')
+    assert.ok(idx(calls, 'T00 · evaluation') < idx(calls, 'T00 · merge'), name)
+    drained(name, q)
+  }
+})
+await test('CH2: challenger — a surviving mutation rejects the attempt (by: challenge); the fix adds the missing test, then verification, evaluation and challenge run again; the second pass without a survivor merges the task', async () => {
+  // First pass: one survivor in the code; a survivor on a test file and a fourth mutation (beyond 3) are not counted
+  const pass1 = { ok: true, path: '/wt/c1', mutations: [MUT('src/a.ts', 12, false), MUT('src/a.ts', 20, true), MUT('tests/a.test.ts', 3, false), MUT('src/b.ts', 7, false)] }
+  const pass2 = { ok: true, path: '/wt/c2', mutations: [MUT('src/a.ts', 12, true), MUT('src/a.ts', 20, true)] }
+  const { res, calls, logs, q } = await scenario('CH2', challenged([pass1, pass2], {
+    'T00 · verification': [withProgress(ok(1)), withProgress(ok(2))], 'T00 · evaluation': [withProgress({ verdict: 'pass' }), withProgress({ verdict: 'pass' })],
+    'T00 · fix 1': [withProgress(report(1, { summary: 'test of the guard of src/a.ts:12 added' }))] }), { ...AP, parallelism: 1 })
+  const t = res.tasks[0]
+  assert.equal(res.status, 'finished'); assert.deepEqual([t.status, t.attempts], ['merged', 2])
+  assert.deepEqual(t.rejections, [{ attempt: 1, by: 'challenge', gaps: [SURVIVOR] }])
+  assert.deepEqual(calls.map(c => c.opts.label).filter(l => l.startsWith('T00')), ['T00 · worker', 'T00 · verification', 'T00 · evaluation', 'T00 · challenge · start', 'T00 · challenge', 'T00 · fix 1', 'T00 · verification', 'T00 · evaluation', 'T00 · challenge · start', 'T00 · challenge', 'T00 · merge', 'T00 · progress'])
+  // The challenger: the agent of the plugin, sonnet (D9), in a worktree of its own, on a detached checkout of the branch
+  for (const c of byLabel(calls, 'T00 · challenge')) {
+    assert.deepEqual([c.opts.agentType, c.opts.model, c.opts.isolation, c.opts.schema.required], ['orchestre:challenger', 'sonnet', 'worktree', ['ok', 'mutations']])
+    for (const x of ['`git switch --detach task/T00`', 'never the branch itself', '3 mutations at most, one at a time', 'never a test', '`sh scripts/typecheck.sh`', '`sh scripts/e2e-local.sh`', '`git checkout HEAD -- <file>`', '`git status --porcelain`', 'plans/p/tasks/T00.md']) assert.ok(c.prompt.includes(x), 'challenger: ' + x)
+    assert.ok(!c.prompt.includes('progress.mjs') && !c.prompt.includes('ORCHESTRE_JSON') && !c.prompt.includes('cd "'), 'challenger: no progress command, no cd')
+  }
+  // Its step, noted by the clerk from the main checkout before each pass
+  for (const i of [0, 1]) assert.deepEqual(progressOf(calls, 'T00 · challenge · start', i), [{ cmd: 'step', plan: 'plans/p', E: { task: 'T00', step: 'challenge' } }])
+  assert.deepEqual(byLabel(calls, 'T00 · challenge · start').map(c => [c.opts.agentType, c.opts.model, c.opts.isolation]), [['orchestre:clerk', 'haiku', undefined], ['orchestre:clerk', 'haiku', undefined]])
+  assert.ok(idx(calls, 'T00 · challenge · start') < idx(calls, 'T00 · challenge'))
+  // The fix: the rejection by the challenge in its step, and what to do of it
+  const fx = byLabel(calls, 'T00 · fix 1')[0]
+  assert.deepEqual(progressOf(calls, 'T00 · fix 1')[0].E.rejection, { attempt: 1, by: 'challenge', gaps: [SURVIVOR] })
+  assert.ok(fx.prompt.includes(`- ${SURVIVOR}`) && fx.prompt.includes('These gaps come from the challenger') && fx.prompt.includes('Add to the task\'s tests the case that fails under that change'))
+  assert.deepEqual(closeE(calls).rejections, [{ attempt: 1, by: 'challenge', gaps: [SURVIVOR] }])
+  assert.ok(logs.includes('T00: challenge, mutations of a test file not counted: tests/a.test.ts') && logs.includes('T00: challenge, 3 mutation(s) tried, 1 not detected') && logs.includes('T00: challenge, 2 mutation(s) tried, 0 not detected'), JSON.stringify(logs))
+  drained('CH2', q)
+  // The fixes of the challenge count in max_fixes: survivors again after the last fix allowed, the task is blocked
+  const b = await scenario('CH2 max_fixes', challenged([pass1, pass1], {
+    'T00 · verification': [withProgress(ok(1)), withProgress(ok(2))], 'T00 · evaluation': [withProgress({ verdict: 'pass' }), withProgress({ verdict: 'pass' })],
+    'T00 · fix 1': [withProgress(report(1))], 'T00 · merge': [], 'T00 · replanning': [NOTHING] }), { ...AP, parallelism: 1, max_fixes: 1 })
+  assert.deepEqual([b.res.tasks[0].status, b.res.tasks[0].attempts, b.res.tasks[0].blocker], ['blocked', 2, [SURVIVOR]])
+  assert.equal(idx(b.calls, 'T00 · fix 2'), -1); assert.equal(idx(b.calls, 'T00 · merge'), -1)
+  drained('CH2 max_fixes', b.q)
+  // The model choice of a task with a model reads the rejection as the challenge's
+  const m = await scenario('CH2 model choice', challenged([pass1, pass2], {
+    'plan-reader': [planOpened({ ...C0, model: 'sonnet' })], 'T00 · verification': [withProgress(ok(1)), withProgress(ok(2))], 'T00 · evaluation': [withProgress({ verdict: 'pass' }), withProgress({ verdict: 'pass' })],
+    'T00 · model choice 1': [{ model: 'sonnet', reason: 'a missing test' }], 'T00 · fix 1': [withProgress(report(1))] }), { ...AP, parallelism: 1 })
+  assert.equal(m.res.tasks[0].status, 'merged')
+  assert.ok(byLabel(m.calls, 'T00 · model choice 1')[0].prompt.includes('was rejected by the challenge (changes of its code that no verification command detected)'))
+  drained('CH2 model choice', m.q)
+})
+await test('CH3: challenger — without an answer, or unable to run its pass (ok=false), it is no rejection: the task is merged with a blind-spot · minor; a command refused to the agents is not given to it', async () => {
+  for (const [name, answer, why] of [['CH3 silent', null, 'challenger without an answer'], ['CH3 not run', { ok: false, mutations: [], detail: 'npm test fails before any mutation' }, 'challenger could not run its pass (npm test fails before any mutation)']]) {
+    const { res, calls, q } = await scenario(name, challenged([answer], { 'T00 · verification': [withProgress(ok(1))], 'T00 · evaluation': [withProgress({ verdict: 'pass' })] }), { ...AP, parallelism: 1 })
+    const t = res.tasks[0]
+    assert.equal(res.status, 'finished', name); assert.deepEqual([t.status, t.attempts, t.rejections], ['merged', 1, undefined], name)
+    assert.equal(idx(calls, 'T00 · fix 1'), -1, name)
+    const blind = `challenge of T00 not done: ${why}; the tests of its branch were not challenged by mutations`
+    assert.deepEqual(closeE(calls).entries, [{ type: 'blind-spot', severity: 'minor', description: blind }], name)
+    assert.equal(idx(calls, 'T00 · replanning'), -1, name + ': a blind spot of the challenge calls no replanner')
+    drained(name, q)
+  }
+  // A verification command refused to the agents is not given to the challenger; the others are
+  const FORBIDDEN = 'sh scripts/e2e-local.sh'
+  const { calls, q } = await scenario('CH3 forbidden', challenged([{ ok: true, mutations: [MUT('src/a.ts', 12, true)] }], {
+    'T00 · verification': [withProgress({ ...ok(1), results: [{ command: 'sh scripts/typecheck.sh', code: 0, excerpt: 'tsc' }], forbidden: [FORBIDDEN] })], 'T00 · evaluation': [withProgress({ verdict: 'pass' })] }), { ...AP, parallelism: 1 })
+  const cp = byLabel(calls, 'T00 · challenge')[0].prompt
+  assert.ok(cp.includes('`sh scripts/typecheck.sh`') && !cp.includes(FORBIDDEN))
+  drained('CH3 forbidden', q)
+})
+await test('CH4: real progress.mjs, under the simulated isolation guard of X3 — every command given to the challenger is a simple one; the step challenge and the rejection by: challenge reach progress.json', async () => {
+  // The simulated guard refuses what the rules of the isolated agents forbid
+  for (const c of ['cd /repo && npm test', 'npm test; echo $?', 'npm test | tail', 'echo $(pwd)', 'FOO=1 npm test', 'export FOO=1', 'node -e "1"', 'node /plug/scripts/progress.mjs step plans/p', "cat <<'X'", 'npm test > out.txt']) assert.ok(refusedByGuard(c), 'guard: ' + c)
+  for (const c of ['git switch --detach task/T00', 'git diff plan/p...HEAD -- <file>', 'git checkout HEAD -- <file>', 'npm test', 'pwd']) assert.ok(!refusedByGuard(c), 'guard: ' + c)
+  const D = toyRepo()
+  try {
+    const C = { ...T0, challenge: true }
+    const { res, launched, calls } = await play('CH4', D, {
+      'plan-reader': [plan(C)], 'T00 · worker': [report(0)], 'T00 · verification': [ok(1), ok(2)], 'T00 · evaluation': [{ verdict: 'pass' }, { verdict: 'pass' }],
+      'T00 · challenge · start': [{}, {}], 'T00 · challenge': [{ ok: true, mutations: [MUT('src/a.ts', 12, false)] }, { ok: true, mutations: [MUT('src/a.ts', 12, true)] }],
+      'T00 · fix 1': [report(1)], 'T00 · merge': [MOK], 'T00 · progress': [SOK], 'run end · progress': [{ commit: '', detail: '' }] }, { setup: ['npm ci'] })
+    assert.deepEqual(launched.filter(l => l.code !== 0), [], 'nothing for the guard to refuse: every command of the challenger is a simple one, and its step goes to the clerk')
+    const given = givenCommands(calls.find(c => c.label === 'T00 · challenge').prompt)
+    assert.deepEqual(given, ['git switch --detach task/T00', 'npm ci', 'git diff --name-only plan/p...HEAD', 'git diff plan/p...HEAD -- <file>', 'npm test', 'git checkout HEAD -- <file>', 'git status --porcelain', 'pwd'])
+    assert.equal(res.status, 'finished')
+    const t = D.doc().tasks.find(x => x.id === 'T00')
+    assert.deepEqual([t.status, t.attempts, t.rejections], ['merged', 2, [{ attempt: 1, by: 'challenge', gaps: [SURVIVOR] }]])
+    assert.deepEqual(D.doc().log.filter(e => e.task === 'T00' && e.kind !== 'added').map(e => e.text), ['T00 starts (main checkout)', 'T00: verification', 'T00: evaluation', 'T00: challenge', 'T00: attempt 1 rejected (challenge): 1 gap(s)', 'T00: fix (attempt 2)', 'T00: verification', 'T00: evaluation', 'T00: challenge', 'T00: merge', 'T00: progress', 'T00: merged (2 attempts)'])
+    assert.ok(fs.readFileSync(join(D.root, 'plans', 'p', 'HANDOFF.md'), 'utf8').includes(`- rejection · minor · attempt 1, challenge: ${SURVIVOR}\n`))
+    assert.equal(spawnSync(process.execPath, [PROGRESS_SCRIPT, 'validate', 'plans/p'], { cwd: D.root }).status, 0)
   } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
 })
 console.log(`scenarios: ALL GREEN (${n} cases)`)

@@ -30,7 +30,8 @@
 // --reader (0.18.1): the JSON of the workflow orchestre:run-phase, and nothing else: ok, errors, the tasks of the phase with
 // the fields the workflow reads, all, max_phase, and "digest", a fingerprint of these fields (planDigest). The plan-reader,
 // an agent, retypes this JSON; the workflow computes the fingerprint again on its copy and reads the plan a second time,
-// then stops, when they differ. --json does not change: /orchestre:ready, /orchestre:run and /orchestre:prepare read it.
+// then stops, when they differ. 0.22.0: the key `challenge: true` of a task (boolean, absent means false) is in the view, and in the
+// digest, only when true: a plan without it keeps its digest. --json does not change, but for "challenge: true" on a task: /orchestre:ready, /orchestre:run and /orchestre:prepare read it.
 // overlaps (0.20.0, --json only): [{ a, b, files }], the pairs of tasks of one phase that can run together and share files (the
 // error "<a> and <b> can run together and share files"), with the owned_files entries that overlap.
 // --scope (0.19.0): the scope check of a task branch, read-only. It reads `git diff --name-status <integration>...<branch>` (the
@@ -106,6 +107,9 @@ const MODELS = ['haiku', 'sonnet', 'opus', 'fable']
 const fmText = x => (typeof x === 'string' && x.trim() ? x.trim() : null)
 // Model of a task: absent (nothing, or an empty value), valid, or rejected by an error
 const modelState = x => (fmText(x) === null && (x === undefined || typeof x === 'string' || (Array.isArray(x) && !x.length)) ? 'absent' : MODELS.includes(fmText(x)) ? 'valid' : 'rejected')
+// Key `challenge` of a task (0.22.0): true or false, absent (nothing, or an empty value) means false
+const challengeState = x => (x === undefined || (Array.isArray(x) && !x.length) ? 'absent' : x === 'true' ? 'true' : x === 'false' ? 'false' : 'rejected')
+const challenged = t => challengeState(t.challenge) === 'true'
 // French names of orchestre 0.11 and earlier: read silently, they would be ignored (a dependency, a branch), hence an error
 const FRENCH_TASK_KEYS = { titre: 'title', modele: 'model', raison_modele: 'model_reason', depend_de: 'depends_on', lot_parallele: 'parallel_batch', fichiers_possedes: 'owned_files', ressources: 'resources', prerequis: 'prerequisites', budget_contexte: 'context_budget', estimation_tokens: 'token_estimate', max_tours: 'max_turns', definition_du_fini: 'definition_of_done' }
 const FRENCH_CONFIG_KEYS = { parallelisme_max: 'max_parallelism', mode_par_defaut: 'default_mode', branche_integration: 'integration_branch', branche_base: 'base_branch', evaluateur: 'evaluator', corrections_max: 'max_fixes', escalade: 'escalation', decisions_office_max: 'max_auto_decisions', plafond_session_pilote: 'pilot_context_cap', preparation: 'setup', preparation_partagee: 'shared_setup' }
@@ -313,6 +317,7 @@ for (const t of T.values()) {
   // ladder); unknown value or list: error
   if (modelState(t.model) === 'rejected' && fmText(t.model) !== null) errors.push(`${t.id}: unknown model "${fmText(t.model)}" (${MODELS.join(', ')})`)
   else if (modelState(t.model) === 'rejected') errors.push(`${t.id}: unreadable model (a single name: ${MODELS.join(', ')})`)
+  if (challengeState(t.challenge) === 'rejected') errors.push(`${t.id}: challenge must be true or false`)
   if (!arr(t.verification).length) errors.push(`${t.id}: no verification command`)
   if (!arr(t.definition_of_done).length) errors.push(`${t.id}: no definition of done`)
   for (const d of arr(t.depends_on)) {
@@ -378,7 +383,7 @@ for (const ph of [...new Set([...T.values()].filter(remaining).map(t => t.phase)
 const tasks = [...T.values()].filter(t => phaseF == null || t.phase === phaseF).map(t => ({
   id: t.id, title: t.title || '', file: t.file, phase: t.phase, ...(fmText(t.model) ? { model: fmText(t.model) } : {}), ...(fmText(t.model_reason) ? { model_reason: fmText(t.model_reason) } : {}), effort: t.effort || '',
   depends_on: arr(t.depends_on), resources: arr(t.resources), status: st[t.id] || 'todo',
-  verification: arr(t.verification), token_estimate: tokens(t.token_estimate), open_prerequisites: open(t),
+  verification: arr(t.verification), token_estimate: tokens(t.token_estimate), open_prerequisites: open(t), ...(challenged(t) ? { challenge: true } : {}),
 }))
 // All tasks, whatever the requested phase: the orchestrator checks the tasks named by an auto-decision
 const all = [...T.values()].map(t => ({ id: t.id, phase: t.phase, status: st[t.id] || 'todo' }))
@@ -492,6 +497,7 @@ function readerView(p) {
       ...(t.model !== undefined ? { model: text(t.model) } : {}), ...(t.model_reason !== undefined ? { model_reason: text(t.model_reason) } : {}),
       effort: text(t.effort), depends_on: texts(t.depends_on), resources: texts(t.resources), status: text(t.status),
       verification: texts(t.verification), open_prerequisites: texts(t.open_prerequisites),
+      ...(t.challenge === true ? { challenge: true } : {}),
     })),
     all: p.all.map(x => ({ id: text(x.id), phase: int(x.phase), status: text(x.status) })),
     max_phase: int(p.max_phase),
@@ -505,7 +511,7 @@ function planDigest(p) {
   const s = x => (typeof x === 'string' ? x : ''), ss = x => (Array.isArray(x) ? x.map(s) : []), n = x => (Number.isInteger(x) ? x : null)
   const list = x => (Array.isArray(x) ? x : []).map(y => (y && typeof y === 'object' ? y : {}))
   const c = JSON.stringify([p.ok === true, ss(p.errors),
-    list(p.tasks).map(t => [s(t.id), s(t.title), s(t.file), n(t.phase), s(t.model), s(t.model_reason), s(t.effort), ss(t.depends_on), ss(t.resources), s(t.status), ss(t.verification), ss(t.open_prerequisites)]),
+    list(p.tasks).map(t => [s(t.id), s(t.title), s(t.file), n(t.phase), s(t.model), s(t.model_reason), s(t.effort), ss(t.depends_on), ss(t.resources), s(t.status), ss(t.verification), ss(t.open_prerequisites), ...(t.challenge === true ? [true] : [])]),
     list(p.all).map(x => [s(x.id), n(x.phase), s(x.status)]), n(p.max_phase)])
   let h = 0x811c9dc5
   for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193)

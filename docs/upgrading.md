@@ -2,11 +2,20 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.21.0 to 0.22.0
+
+`progress.json` stays `orchestre-progress/4` and the plans keep their format: 0.22.0 only adds optional fields (the step `challenge`, a rejection `by: challenge`, `applied_outside`, `runs[].applied_before`), and a task may carry the optional key `challenge: true`. 0.21.0 refuses a `progress.json` that holds one of these additions (`is not allowed` for the step or the rejection `challenge`, `field unknown` for `applied_outside` and `applied_before`), so going back to 0.21.0 is not supported: at most, delete the file, which is rebuilt from PROGRESS.md, HANDOFF.md and git, without its log and its pending rulings. Update between two runs, never during one, then `/reload-plugins`, or a new session.
+
+1. Nothing to migrate: a plan without `challenge` behaves as in 0.21.0, with no challenger pass.
+2. To use the challenger, add `challenge: true` to the frontmatter of the risky tasks of an existing plan (`/orchestre:ready` offers it), or let `/orchestre:prepare` mark them in a new plan. Each marked task costs a challenger pass (sonnet, 3 mutations at most) after each successful evaluation.
+3. An `[ Undo ]` of the pane during a run no longer stops it: `apply` leaves out a ruling or a `did` withdrawn while it ran, with a log line.
+4. `/orchestre:run` lists, at its pre-flight, the rulings and the prerequisites noted outside a run, and offers to withdraw them before it applies them; the rulings applied there are recorded in the run that starts next.
+
 ## From 0.20.0 to 0.21.0
 
 `progress.json` stays `orchestre-progress/4`: 0.21.0 only adds optional fields, and the plans keep their format. After the update, `/reload-plugins`, or a new session. Update between two runs, never during one.
 
-1. A file written by 0.21.0 is refused by 0.20.0 (`field unknown`): going back to 0.20.0 means deleting the new fields of `progress.json`, or the file, which is rebuilt from PROGRESS.md, HANDOFF.md and git.
+1. 0.21.0 reads a `progress.json` that 0.20.0 wrote, as it is. 0.20.0 refuses, with `field unknown`, a `progress.json` that 0.21.0 has written, so going back to 0.20.0 is not supported: at most, delete the file, which is rebuilt from PROGRESS.md, HANDOFF.md and git, without its log and its pending rulings.
 2. `orchestre.config.json` accepts `ruling_wait_minutes`, an integer from 0 to 60, 15 when absent: how long a task, or a run in `deviation` mode, waits for the ruling of an issue. `0` keeps the behavior of 0.20.0. Nothing to add if 15 minutes suits you.
 3. `/orchestre:run` applies at its pre-flight the rulings recorded and the prerequisites noted done outside a run; `/orchestre:ready` only reports them.
 4. You can settle an issue during a run, from the `/progress` pane or with `rule`: the run applies the ruling itself and the task starts with the amendment. The pilot still touches neither the checkout nor git during a run.

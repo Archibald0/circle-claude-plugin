@@ -347,6 +347,27 @@ try {
     }
     rmSync(join(E, 'progress.json'))
   })
+  test('/4 as 0.20.0 writes it (0.22.0): no until, holds, waiting, started_without, released nor pending_done, no log entry of kind wait; read without error by the mod, status.mjs and progress.mjs status, with the same moments', () => {
+    const progressMjs = join(dirname(STATUS), 'progress.mjs')
+    const pick = out => out.split('\n').filter(l => /^\*\*(Now|At run stop|Later|Your turn)\*\*/.test(l))
+    const options = [{ id: 'A', description: 'a', recommended: true, valid: true, invalid_reason: null, effect: '', amends: [] }]
+    for (const over of [{ runs: [run('in-progress')] }, {}]) {
+      const file = as4(doc({ statuses: WAITING, over: { ...over, issues: [{ ...issue('T02', 'Missing secret'), options }, issue('T04', 'Other')] } }))
+      const text = JSON.stringify(file)
+      for (const k of ['until', 'holds', 'started_without', 'released', 'pending_done', '"kind":"wait"']) assert.ok(!text.includes(k.startsWith('"') ? k : `"${k}"`), k)
+      assert.ok(!file.issues.some(p => 'waiting' in p))
+      writeFileSync(join(E, 'progress.json'), text)
+      const lines = pick(status(['plans/eq'], eq).out)
+      assert.ok(VM.normalize(file), 'the mod reads it')
+      assert.deepEqual(lines, expectedLines(file), 'status.mjs and the mod')
+      const ps = spawnSync('node', [progressMjs, 'status', 'plans/eq'], { cwd: eq, encoding: 'utf8' })
+      assert.deepEqual([ps.status, ps.stderr], [0, ''])
+      assert.deepEqual(lines, pick(ps.stdout), 'status.mjs and progress.mjs status')
+      assert.ok(!ps.stdout.includes('progress.json:'), 'no error note: progress.mjs read the file')
+    }
+    rmSync(join(E, 'progress.json'))
+  })
+
   test('moments: a plan all merged puts its reviews and auto-decisions before the PR; a line without an item is not written; nothing at all says so', () => {
     for (const id of ['T02', 'T03', 'T04', 'T05']) g('commit', '-q', '--allow-empty', '-m', `task ${id}: Task ${id}`)
     writeFileSync(join(E, 'PREREQUISITES.md'), `| ID | Type | Prerequisite | Status | Evidence |\n|----|------|--------------|--------|----------|\n${PRE.map(([id, type]) => `| ${id} | ${type} | Do ${id} | dropped | not needed |`).join('\n')}\n`)

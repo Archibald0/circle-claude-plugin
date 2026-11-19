@@ -1437,6 +1437,148 @@ try {
     for (const m of ['? something else', '▶ T01 starts (main checkout)']) assert.ok(!M.isImportant(m), m)
   })
 
+  // ── Fixes after the acceptance EV3 (0.22.0, T29) ──
+  testCase('mode deviation (0.22.0): the run waits for the ruling of an issue whose waiting task is closed — card `when`, run card, banner and arrival notification; the phase-mode texts unchanged', () => {
+    // T01 (merged) raised T01-1: in mode deviation, the run waits for it on behalf of T01, then stops
+    const devDoc = (o = {}) => ({ ...waitDoc({ waiting: ['T01'], ...o }), runs: [...rawC.runs.slice(0, -1), { ...lastRun, mode: 'deviation', status: 'in-progress', end: null }] })
+    const I = M.normalize(devDoc(), registerOf('T01-1'))
+    assert.equal(I.tasks.find(t => t.id === 'T01').status, 'merged')
+    assert.deepEqual([M.runWaits(I, tA).map(p => p.id), M.rulingWaits(I, tA)], [['T01-1'], []], 'the run waits, no task does')
+    assert.equal(whenOf2(I, tA), 'when     Now: the run waits for it 14:47, then stops')
+    assert.equal(whenOf2(I, Date.parse(UNTIL) + 5000), 'when     Now: the run waits for it 0:00, then stops')
+    const meta = M.runCard(I, tA, 100).meta.map(m => m.t).join('')
+    assert.ok(meta.startsWith('‖ run waits for you'), meta)
+    assert.deepEqual(M.runCard(I, tA, 100).meta[0].c, 'warning')
+    assert.match(M.plainText(M.banner(I, tA, 140)), /‖ run waits for you/)
+    assert.doesNotMatch(M.plainText(M.banner(I, tA, 140)), /T01 waits for you/)
+    // A blocked closed task is the run's wait too, not a task's
+    const B = M.normalize({ ...devDoc({ waiting: ['T02'] }), tasks: rawC.tasks.map(t => (t.id === 'T02' ? { ...t, status: 'blocked' } : t)) }, registerOf('T01-1'))
+    assert.deepEqual([M.runWaits(B, tA).length, M.rulingWaits(B, tA)], [1, []])
+    // Arrival: once the run waits for them, one notification per task that raised them
+    const raisedAt = new Date(Date.parse(UNTIL) - 15 * 60000).toISOString()
+    const notYet = M.normalize({ ...devDoc({ waiting: [] }), updated: raisedAt }, registerOf('T01-1'))
+    const now1 = M.normalize({ ...devDoc(), updated: raisedAt }, registerOf('T01-1'))
+    assert.deepEqual(M.changes(notYet, now1), ['? T01: 1 issue to settle now — the run waits for it 15 min, then stops'])
+    const two = M.normalize({ ...devDoc(), updated: raisedAt, issues: [issueOf('T01-1', { holds: ['T03'], waiting: ['T01'], until: UNTIL }), issueOf('T01-2', { holds: [], waiting: ['T01'], until: UNTIL })] }, registerOf('T01-1', 'T01-2'))
+    assert.deepEqual(M.changes(notYet, two), ['? T01: 2 issues to settle now — the run waits for them 15 min, then stops'])
+    assert.deepEqual(M.changes(now1, now1), [], 'nothing twice')
+    assert.ok(M.isImportant('? T01: 1 issue to settle now — the run waits for it 15 min, then stops'))
+    // In mode deviation, the close that raises an issue holding T03 says nothing of T03: it never starts without the ruling
+    const none = M.normalize({ ...devDoc(), issues: [] }, registerOf())
+    assert.deepEqual(M.changes(none, notYet), [])
+    // Phase mode: unchanged
+    assert.equal(whenOf2(waitOf(), tA), 'when     Now: T03 waits for it 14:47, then starts without it')
+  })
+
+  testCase('[ Accept the N recommended ] (0.22.0): human issues are left out, counted nor ruled; a valid recommended option of a human issue keeps its own button', () => {
+    const human = issueOf('T01-3', { human: true })
+    const I = M.normalize({ ...withRun(rawC, 'in-progress'), pending_rulings: [], issues: [issueOf('T01-1'), issueOf('T01-2'), human] }, registerOf('T01-1', 'T01-2', 'T01-3'))
+    assert.deepEqual(M.acceptable(I), [{ issue: 'T01-1', option: 'A' }, { issue: 'T01-2', option: 'A' }])
+    assert.ok(M.recommendedOf(I.issues.find(p => p.id === 'T01-3')), 'its own card still offers it')
+    const L = M.yourTurnCard(I, tA, 100).lines.map(M.plainText)
+    assert.ok(L.some(x => x.includes('[ Accept the 2 recommended ]')), L.join('\n'))
+    const one = M.normalize({ ...withRun(rawC, 'in-progress'), pending_rulings: [], issues: [issueOf('T01-1'), human] }, registerOf('T01-1', 'T01-3'))
+    assert.ok(!M.yourTurnCard(one, tA, 100).lines.map(M.plainText).some(x => x.includes('Accept the')), 'from two such issues only')
+  })
+
+  testCase('ISSUES.json unreadable (0.22.0): no issue gets `entry`, and the register adds nothing to settledIssues', () => {
+    const doc = { ...withRun(rawC, 'in-progress'), pending_rulings: [], issues: [issueOf('T01-1'), issueOf('T01-2', { status: 'settled' })] }
+    const read = M.normalize(doc, { format: 'orchestre-issues/1', issues: [{ id: 'T01-1', status: 'open' }, { id: 'T01-7', status: 'settled' }] })
+    assert.deepEqual([read.issues.map(p => p.entry), read.settledIssues], [[true], ['T01-2', 'T01-7']])
+    for (const unread of [null, undefined, 'not JSON', { issues: 'x' }]) {
+      const I = M.normalize(doc, unread)
+      assert.deepEqual([I.issues.map(p => 'entry' in p), I.settledIssues], [[false], ['T01-2']], String(unread))
+    }
+  })
+
+  testCase('log written by the real progress.mjs (0.22.0): the wait line has ‖ in warning and a news text, the start without its rulings ▶; an option whose amendments would all be discarded shows invalid with the reason of rule', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mod-wait-')), g = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    try {
+      g('init', '-q', '-b', 'main'); g('config', 'user.email', 't@t'); g('config', 'user.name', 't'); g('config', 'commit.gpgsign', 'false')
+      const w = join(root, 'plans', 'demo')
+      mkdirSync(join(w, 'tasks'), { recursive: true })
+      for (const [id, ph, dep] of T) writeFileSync(join(w, 'tasks', `${id}-x.md`), task(id, ph, dep))
+      writeFileSync(join(w, 'HANDOFF.md'), '# HANDOFF — demo\n')
+      writeFileSync(join(w, 'orchestre.config.json'), JSON.stringify({ integration_branch: 'plan/demo' }))
+      g('add', '.'); g('commit', '-qm', 'init'); g('switch', '-qc', 'plan/demo')
+      const run = (cmd, E, env = {}) => { const r = spawnSync(process.execPath, [PROGRESS, cmd, 'plans/demo', '--json', JSON.stringify(E)], { cwd: root, encoding: 'utf8', env: { ...process.env, ...env } }); assert.equal(r.status, 0, `${cmd}: ${r.stderr}`); return r.stdout }
+      run('run-start', { phase: 1, mode: 'phase', parallelism: 2, max_fixes: 2, max_auto_decisions: 3 })
+      run('close', { task: 'T01', status: 'merged', attempts: 1, branch: 'task/T01', issues: [{ title: 'Lint', context: 'c', human: false, options: [{ id: 'A', description: 'Lint T02', amendments: [{ id: 'T02', reason: 'r', verification: ['npm run lint'] }] }] }] })
+      assert.equal(JSON.parse(run('wait', { task: 'T02', issues: ['T01-1'] }, { ORCHESTRE_WAIT_SECONDS: '1' })).again, true)
+      run('step', { task: 'T02', step: 'worker', isolated: false, without: ['T01-1'] })
+      const I = M.normalize(JSON.parse(readFileSync(join(w, 'progress.json'), 'utf8')))
+      const rows = M.logCard(I, Date.now(), 100, false).lines.map(l => [M.plainText(l), l.find(m => m.t === '‖' || m.t === '▶')])
+      const wait = rows.find(([t]) => /T02 waits for 1 ruling \(15 min at most\)/.test(t)), start = rows.find(([t]) => /T02 starts \(main checkout\) without 1 ruling/.test(t))
+      assert.ok(wait && start, JSON.stringify(rows.map(r => r[0])))
+      assert.deepEqual([wait[1].t, wait[1].c, start[1].t], ['‖', 'warning', '▶'])
+      const at = /** @type {number} */ (I.log.find(j => j.kind === 'wait').at)
+      assert.equal(M.news({ ...I, log: I.log.filter(j => j.kind === 'wait') }, at + 1000)?.text, 'T02 waits for your ruling (15 min at most)')
+      // Run 9: T02 merged since, the only task option A amends: the pane shows it invalid with the reason rule gives
+      run('close', { task: 'T02', status: 'merged', attempts: 1, branch: 'task/T02' })
+      const J = M.normalize(JSON.parse(readFileSync(join(w, 'progress.json'), 'utf8')), JSON.parse(readFileSync(join(w, 'ISSUES.json'), 'utf8')))
+      const p = J.issues.find(x => x.id === 'T01-1'), A = p.options.find(o => o.id === 'A')
+      assert.equal(M.refusalOf(p, A), 'its amendments would all be discarded: T02 merged or cancelled since the issue was raised; answer with a text')
+      assert.equal(M.recommendedOf(p), null)
+      const r = spawnSync(process.execPath, [PROGRESS, 'rule', 'plans/demo', '--json', JSON.stringify({ issue: 'T01-1', option: 'A' })], { cwd: root, encoding: 'utf8' })
+      assert.deepEqual([r.status, r.stderr.trim()], [1, `progress: rule: option A of T01-1 is invalid: ${M.refusalOf(p, A)}`], 'the same reason as rule')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  testCase('step challenge (0.22.0), written by the real progress.mjs: in the timeline, the steps line and the legend; what the task does says it; a rejection by the challenge names its mutation; without it, 0.21 as before', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mod-challenge-')), g = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    try {
+      g('init', '-q', '-b', 'main'); g('config', 'user.email', 't@t'); g('config', 'user.name', 't'); g('config', 'commit.gpgsign', 'false')
+      const w = join(root, 'plans', 'demo')
+      mkdirSync(join(w, 'tasks'), { recursive: true })
+      for (const [id, ph, dep] of T) writeFileSync(join(w, 'tasks', `${id}-x.md`), task(id, ph, dep))
+      writeFileSync(join(w, 'HANDOFF.md'), '# HANDOFF — demo\n')
+      writeFileSync(join(w, 'orchestre.config.json'), JSON.stringify({ integration_branch: 'plan/demo' }))
+      g('add', '.'); g('commit', '-qm', 'init'); g('switch', '-qc', 'plan/demo')
+      const run = (cmd, E) => { const r = spawnSync(process.execPath, [PROGRESS, cmd, 'plans/demo', '--json', JSON.stringify(E)], { cwd: root, encoding: 'utf8' }); assert.equal(r.status, 0, `${cmd}: ${r.stderr}`) }
+      // progress.json dates to the second: the log is spread 10 s apart, from the start of the run, so each step lasts
+      const base = Date.parse(rawFile().updated || '2026-01-01T00:00:00Z')
+      const read = () => {
+        const raw = JSON.parse(readFileSync(join(w, 'progress.json'), 'utf8')), at = i => new Date(base + i * 10000).toISOString()
+        raw.log.forEach((j, i) => { j.at = at(i) })
+        raw.runs[0].start = at(0); raw.updated = at(raw.log.length)
+        for (const t of raw.tasks) if (t.start) t.start = at(1)
+        return M.normalize(raw)
+      }
+      const clock = I => base + I.log.length * 10000
+      run('run-start', { phase: 1, mode: 'auto', parallelism: 2, max_fixes: 2, max_auto_decisions: 3 })
+      for (const st of ['worker', 'verification', 'evaluation']) run('step', { task: 'T01', step: st, isolated: false })
+      // Without a challenge: the legend is the one of 0.21
+      const before = read(), legendOf = (I, now) => M.taskLines(I, now, 100).map(M.plainText).find(l => /━ work/.test(l))
+      assert.match(legendOf(before, clock(before)), /━ work {2}━ verif {2}━ eval {2}━ fix {2}━ merge$/)
+      assert.ok(!M.timePerStep(before, clock(before)).some(e => e[0] === 'challenge'))
+      run('step', { task: 'T01', step: 'challenge', isolated: false })
+      const I = read(), now = clock(I)
+      assert.equal(I.tasks[0].step, 'challenge')
+      // The timeline: a segment of the step, in its color
+      assert.deepEqual(M.stepsOf(I, I.tasks[0], now).map(e => e[2]), ['worker', 'verification', 'evaluation', 'challenge'])
+      assert.deepEqual(M.timePerStep(I, now).map(e => e[0]), ['worker', 'verification', 'evaluation', 'challenge'])
+      assert.match(legendOf(I, now), /━ eval {2}━ chall {2}━ fix {2}━ merge$/)
+      // What the task does
+      assert.match(M.plainText(M.banner(I, now, 140)), /◐ T01 challenge/)
+      assert.match(M.taskLines(I, now, 100).map(M.plainText).find(l => /^ {2}◐ T01\b/.test(l)), /challenge/)
+      // A rejection by the challenge names the mutation that went through
+      const MUT = 'src/form.js:42: `if (!valid) return` removed, no test fails'
+      run('step', { task: 'T01', step: 'fix', isolated: false, rejection: { attempt: 1, by: 'challenge', gaps: [MUT, 'second gap'] } })
+      const R = read(), at = R.log.findLast(j => j.kind === 'rejection').at
+      assert.equal(M.news(R, at + 1000)?.text, `T01: attempt 1 rejected by the challenge: ${MUT}`)
+      assert.match(M.plainText(M.logCard(R, at + 1000, 160, false).lines.find(l => /rejected/.test(M.plainText(l)))), new RegExp(`T01 +↻ T01: attempt 1 rejected by the challenge: ${MUT.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+      // Another rejection keeps its text, and a challenge rejection without its gap too
+      assert.equal(M.news({ ...R, tasks: R.tasks.map(t => ({ ...t, rejections: [] })) }, at + 1000)?.text, 'T01: attempt 1 rejected (challenge)')
+      // Each attempt names its own mutation
+      run('step', { task: 'T01', step: 'fix', isolated: false, rejection: { attempt: 2, by: 'challenge', gaps: ['other mutation'] } })
+      const C = read(), atC = C.log.findLast(j => j.kind === 'rejection').at
+      assert.equal(M.news(C, atC + 1000)?.text, 'T01: attempt 2 rejected by the challenge: other mutation')
+      run('step', { task: 'T01', step: 'fix', isolated: false, rejection: { attempt: 3, by: 'evaluation', gaps: ['x'] } })
+      const E = read(), at2 = E.log.findLast(j => j.kind === 'rejection').at
+      assert.equal(M.news(E, at2 + 1000)?.text, 'T01: attempt 3 rejected (evaluation)')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   console.log(`progress mod: ALL GREEN (${n} cases)`)
 } finally {
   rmSync(repoRoot, { recursive: true, force: true })
