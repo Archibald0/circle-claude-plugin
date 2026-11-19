@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/orchestre-0.21.0-E8743B" alt="orchestre 0.21.0">
+  <img src="https://img.shields.io/badge/orchestre-0.22.0-E8743B" alt="orchestre 0.22.0">
   <img src="https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.287-1F2340" alt="Claude Code 2.1.287 or later">
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A5%2018-1F2340" alt="Node.js 18 or later">
 </p>
@@ -29,9 +29,9 @@ A long dev plan does not fit in one Claude Code session: the context fills up, a
 **Follow a long run without watching it.** A banner above the prompt shows the phase, the progress and the task in progress. `/progress` opens a pane: what waits for you comes first, each item with its buttons (review it with Claude, mark it done, move it to tickets, fix its text), then the run, the tasks as timelines and the log. A notification comes only when a task needs you or a run stops, and when you come back after a break, one says what changed. To see it without a run: `/progress demo`.
 
 <p align="center">
-  <img src="brand/screenshots/progress-panel.png" width="793" alt="The /progress pane at the end of the demo, line 4 of the reviews selected: its detail card first, with when and where to act, the auto-decision and its buttons, then the reviews to do before the pull request, the finished run, the tasks as timelines and the log">
+  <img src="brand/screenshots/progress-panel.png" width="793" alt="The /progress pane during a run: the plan header and what changed while you were away, then the card of what waits for you, empty for now, with the reviews for later and their phase, the run in progress with its phases, and the tasks by phase">
   <br>
-  <em>The <code>/progress</code> pane, last frame of <code>/progress demo</code>, key <kbd>4</kbd> pressed: what waits for you comes first, with when and where to act.</em>
+  <em>The <code>/progress</code> pane during a run: what changed while you were away, then what waits for you (nothing now, the reviews come later), the run and the tasks.</em>
 </p>
 
 ## Use
@@ -153,7 +153,7 @@ The actions are buttons, in brackets, without a key:
 
 | Button | Where | What it does |
 | :- | :- | :- |
-| `[ Review with Claude ]`, `[ Go over with Claude ]`, `[ Resume the run ]`… | Detail card | Prepares the item's request in the prompt; nothing is sent without you. |
+| `[ Review with Claude ]`, `[ Go over with Claude ]`, `[ Ask Claude ]`… | Detail card | Prepares the item's request in the prompt; nothing is sent without you. |
 | `[ ✓ Done ]`, `[ → Ticket ]`, `[ ✎ Edit text ]` | Detail card of a review or an auto-decision | Marks it done, moves it to the tickets to open after the PR, or changes its text. At once, without a turn of Claude. |
 | `[ Undo ]` | Under "Your turn" | Cancels the last of these actions. |
 | `[ Next 3 › ]` | Under "Your turn" | Shows the items beyond the 9th. |

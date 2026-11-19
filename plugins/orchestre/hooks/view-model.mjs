@@ -98,6 +98,8 @@ export function normalize(raw, register = undefined) {
     id: text(t.id), title: text(t.title) || text(t.id), phase: integer(t.phase, 1),
     status: STATUSES.includes(t.status) ? t.status : 'todo', attempts: integer(t.attempts, 0),
     step: typeof t.step === 'string' ? t.step : null, isolated: t.isolated === true,
+    // The rejections of the attempts (the challenger's gap is the mutation that went through, 0.22.0)
+    rejections: (Array.isArray(t.rejections) ? t.rejections : []).filter(isObject).map(x => ({ attempt: integer(x.attempt, 0), by: text(x.by), gaps: texts(x.gaps) })),
     start: date(t.start), end: date(t.end), waiting: texts(t.waiting), blocker: texts(t.blocker),
     // Model planned by the plan and last model launched (0.11.0)
     model: typeof t.model === 'string' && t.model ? t.model : null, modelUsed: typeof t.model_used === 'string' && t.model_used ? t.model_used : null,
@@ -279,7 +281,7 @@ const WHEEL = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏', SPIN = '◐◓◑◒'
 /** @param {number} m */ export const spin = m => /** @type {string} */ (SPIN[Math.floor(m / IMAGE_MS) % SPIN.length])
 /** @param {number} m */ const pulse = m => Math.floor(m / 450) % 2 === 1
 // One color per step, from the person's theme
-const STEP_COLOR = /** @type {Record<string, string>} */ ({ worker: 'suggestion', verification: 'merged', evaluation: 'planMode', fix: 'warning', merge: 'success', replanning: 'subtle', progress: 'subtle' })
+const STEP_COLOR = /** @type {Record<string, string>} */ ({ worker: 'suggestion', verification: 'merged', evaluation: 'planMode', challenge: 'claude', fix: 'warning', merge: 'success', replanning: 'subtle', progress: 'subtle' })
 // Classes of a task, in the order of the bar: merged, in progress, needs a human, blocked or failed, the rest
 const CLASSES = /** @type {const} */ ([
   { c: 'success', g: '█' }, { c: 'suggestion', g: '█' }, { c: 'warning', g: '█' }, { c: 'error', g: '█' }, { c: 'subtle', g: '░' },
@@ -346,7 +348,7 @@ export function phaseDots(phases, current) {
 // The status of a task closed, as progress.mjs writes it: "T01: merged (2 attempts)", "T02: failed, closed at the run end
 // without a scribe — …", "T03: todo → merged (PROGRESS.md and git)" when it follows git again
 const RE_STATUS = /^(\S+): (?:\S+ → )?(merged|needs-human|blocked|failed)\b/
-// Glyph of a log entry, by its kind (contract orchestre-progress/4, the same kinds as /3)
+// Glyph of a log entry, by its kind (contract orchestre-progress/4: the kinds of /3, and wait since 0.21.0)
 const KINDS = /** @type {Record<string, Piece>} */ ({
   run: { t: '▶', c: 'claude' }, task: { t: '▶', c: 'suggestion' }, step: { t: '·', d: true }, rejection: { t: '↻', c: 'merged' },
   status: { t: '●', c: 'success' }, added: { t: '+', c: 'suggestion' }, amendment: { t: '~', c: 'merged' }, review: { t: '⚑', c: 'warning' },
@@ -368,9 +370,19 @@ function mark(j) {
 // What makes news at the end of the banner, from the most important to the least; not the steps nor the starts, which the
 // banner already shows. A write of progress.json often notes several, at the same second: the most important wins, and
 // the most recent at equal importance.
-const NOTABLE_KINDS = ['status', 'run', 'error', 'ruling', 'issue', 'rejection', 'auto-decision', 'review', 'pilot', 'added']
-/** The news in a few words, from the text progress.mjs writes in the log. @param {{ kind: string, text: string }} j */
-function brief(j) {
+const NOTABLE_KINDS = ['status', 'run', 'error', 'ruling', 'issue', 'wait', 'rejection', 'auto-decision', 'review', 'pilot', 'added']
+/**
+ * A rejection by the challenger (0.22.0): "T01: attempt 1 rejected by the challenge: <mutation>", the mutation being the first
+ * gap of that rejection. null for another rejection, or when the task carries no such gap: the usual text stays.
+ * @param {Snapshot} inst @param {string} id @param {string} attempt @param {string} by @returns {string | null}
+ */
+function challenged(inst, id, attempt, by) {
+  if (by !== 'challenge') return null
+  const gap = inst.tasks.find(t => t.id === id)?.rejections.find(r => r.by === 'challenge' && r.attempt === Number(attempt))?.gaps[0]
+  return gap ? `${id}: attempt ${attempt} rejected by the challenge: ${gap}` : null
+}
+/** The news in a few words, from the text progress.mjs writes in the log. @param {{ kind: string, text: string, task?: string | null }} j @param {Snapshot} inst */
+function brief(j, inst) {
   const t = j.text
   /** @type {RegExpMatchArray | null} */
   let m
@@ -379,10 +391,12 @@ function brief(j) {
     const [, id, st, n] = m
     return st === 'merged' ? `${id} merged${Number(n) > 1 ? ` at attempt ${n}` : ''}` : `${id} ${/** @type {Record<string, string>} */ (ATTENTION)[/** @type {string} */ (st)]}`
   }
-  if (j.kind === 'rejection' && (m = t.match(/^(\S+): attempt (\d+) rejected \(([^)]+)\)/))) return `${m[1]}: attempt ${m[2]} rejected (${m[3]})`
+  if (j.kind === 'rejection' && (m = t.match(/^(\S+): attempt (\d+) rejected \(([^)]+)\)/))) return challenged(inst, m[1], m[2], m[3]) ?? `${m[1]}: attempt ${m[2]} rejected (${m[3]})`
   if (j.kind === 'review' && (m = t.match(/^(\S+): review/))) return `${m[1]}: to review before the PR`
   if (j.kind === 'auto-decision' && (m = t.match(/^(\S+):/))) return `${m[1]}: decision taken automatically`
   if (j.kind === 'ruling' && (m = t.match(/^(\S+): .* settled, option (\S+)/))) return `${m[1]}: issue settled (option ${m[2]})`
+  // "T01 waits for 2 rulings (15 min at most)", as progress.mjs wait writes it (0.21.0)
+  if (j.kind === 'wait' && (m = t.match(/^(\S+) waits for (\d+) rulings? \((\d+) min at most\)/))) return `${m[1]} waits for your ruling (${m[3]} min at most)`
   return t
 }
 /**
@@ -395,7 +409,7 @@ export function news(inst, now) {
   const at = Math.max(...recent.map(j => /** @type {number} */ (j.at)))
   const j = recent.filter(x => x.at === at).reverse().sort((x, y) => NOTABLE_KINDS.indexOf(x.kind) - NOTABLE_KINDS.indexOf(y.kind))[0]
   if (!j) return null
-  return { mark: mark(j), text: brief(j), age: Math.max(0, now - at), kind: j.kind }
+  return { mark: mark(j), text: brief(j, inst), age: Math.max(0, now - at), kind: j.kind }
 }
 
 /** Glyph and color of a task; a task in progress spins when `animated`. @param {TaskView} t @param {boolean} active @param {number} [now] @param {boolean} [animated] @returns {Piece} */
@@ -407,7 +421,7 @@ export function glyph(t, active, now = 0, animated = false) {
   if (t.status === 'blocked' || t.status === 'failed') return { t: '✗', c: 'error', b: true }
   return { t: '○', c: 'subtle' }
 }
-const STEPS = /** @type {Record<string, string>} */ ({ worker: 'work', verification: 'verification', evaluation: 'evaluation', fix: 'fix', merge: 'merge', replanning: 'replanning', progress: 'progress' })
+const STEPS = /** @type {Record<string, string>} */ ({ worker: 'work', verification: 'verification', evaluation: 'evaluation', challenge: 'challenge', fix: 'fix', merge: 'merge', replanning: 'replanning', progress: 'progress' })
 // The step's slot in the banner: "verification +9"
 const STEP_WIDTH = 15
 
@@ -518,7 +532,9 @@ function bannerLine(inst, s, now, f, animated, yours) {
   const ec = s.inProgress
   // A task that waits for a ruling (0.21.0) asks for someone: it takes the place of the current step
   const rw = rulingWaits(inst, now)
-  if (runLive && rw.length) {
+  // Mode deviation: the run itself waits for a ruling before it stops (0.22.0)
+  if (runLive && runWaits(inst, now).length) l.push({ t: f.step || f.labels ? '  ‖ run waits for you' : '  ‖ run', c: 'warning', b: true })
+  else if (runLive && rw.length) {
     const first = /** @type {{ task: string }} */ (rw[0]), id = Math.min(8, Math.max(3, ...inst.tasks.map(x => [...x.id].length)))
     if (f.step) {
       const plus = rw.length > 1 ? ` +${rw.length - 1}` : '', said = `waits for you${plus}`
@@ -559,11 +575,11 @@ export function suffix(inst, now) {
 // Ticket, Edit text and Undo, on a review or an auto-decision, write through progress.mjs (register.tsx runs it).
 
 const MODES = /** @type {Record<string, string>} */ ({ auto: 'autonomous', deviation: 'stop on deviation', phase: 'stop at each phase' })
-const SHORT_STEP = /** @type {Record<string, string>} */ ({ worker: 'work', verification: 'verif', evaluation: 'eval', fix: 'fix', merge: 'merge', replanning: 'replan', progress: 'prog' })
-const STEP_ORDER = ['worker', 'verification', 'evaluation', 'fix', 'merge', 'replanning', 'progress']
+const SHORT_STEP = /** @type {Record<string, string>} */ ({ worker: 'work', verification: 'verif', evaluation: 'eval', challenge: 'chall', fix: 'fix', merge: 'merge', replanning: 'replan', progress: 'prog' })
+const STEP_ORDER = ['worker', 'verification', 'evaluation', 'challenge', 'fix', 'merge', 'replanning', 'progress']
 // What progress.mjs writes in the log at each step: "T01 starts (worktree)" for the work (kind task), "T01: verification",
 // "T01: fix (attempt 2)" for the next ones (kind step)
-const RE_STEP = /^(\S+): (verification|evaluation|fix|merge|replanning|progress)(?: \(|$)/
+const RE_STEP = /^(\S+): (verification|evaluation|challenge|fix|merge|replanning|progress)(?: \(|$)/
 const RE_STARTS = /^(\S+) starts \(/
 export const SHORT_LOG = 6
 const LONG_LOG = 60
@@ -743,6 +759,18 @@ export const isNow = it => it.moment === NOW.moment
 const timeLeft = (until, now) => chrono(Math.max(0, until - now))
 /** The tasks of an issue that wait for it now, those that started without it left out. @param {IssueView} p */
 const waitingOn = p => (p.waiting ?? []).filter(id => !(p.startedWithout ?? []).includes(id))
+// Mode deviation (0.21.0, D3): the run waits for the issues a close raised, on behalf of that task, already closed. Told apart
+// from a held task by its status alone (0.22.0): no field of progress.json says it
+const CLOSED_STATUSES = ['merged', 'blocked', 'failed', 'needs-human']
+/** @param {Snapshot} inst @param {string} id */
+const closedTask = (inst, id) => { const t = inst.tasks.find(x => x.id === id); return !!t && CLOSED_STATUSES.includes(t.status) }
+/** The run waits for this issue (mode deviation): a task in its `waiting` is already closed. @param {Snapshot} inst @param {IssueView} p */
+const runWaitsFor = (inst, p) => waitingOn(p).some(id => closedTask(inst, id))
+/**
+ * The issues the run itself waits for before it stops (mode deviation), during an active run. @param {Snapshot} inst
+ * @param {number} now @returns {IssueView[]}
+ */
+export const runWaits = (inst, now) => (activeRun(inst, now) ? inst.issues.filter(p => runWaitsFor(inst, p)) : [])
 /**
  * The tasks that wait for a ruling while the run goes on, each with the deadline that ends its wait (the latest of its issues;
  * null when none gives one). A task that started or merged waits no more; an issue with a ruling recorded is no longer open.
@@ -754,7 +782,8 @@ export function rulingWaits(inst, now) {
   const by = new Map()
   for (const p of inst.issues) for (const id of waitingOn(p)) {
     const t = inst.tasks.find(x => x.id === id)
-    if (t && (t.step || isMerged(t))) continue
+    // Started, or closed: the run's wait in mode deviation, not a task's (runWaits)
+    if (t && (t.step || CLOSED_STATUSES.includes(t.status))) continue
     const u = p.until ?? null, k = by.get(id)
     by.set(id, k == null ? u : u == null ? k : Math.max(k, u))
   }
@@ -927,7 +956,8 @@ export function yourTurnItems(inst, now) {
   for (const it of items) {
     it.when = capital(it.moment)
     const p = it.issue, ids = p && activeRun(inst, now) && p.until != null ? waitingOn(p) : []
-    if (p && p.until != null && ids.length) it.when += `: ${ids.join(', ')} ${ids.length > 1 ? 'wait' : 'waits'} for it ${timeLeft(p.until, now)}, then ${ids.length > 1 ? 'start' : 'starts'} without it`
+    if (p && p.until != null && ids.length && runWaitsFor(inst, p)) it.when += `: the run waits for it ${timeLeft(p.until, now)}, then stops`
+    else if (p && p.until != null && ids.length) it.when += `: ${ids.join(', ')} ${ids.length > 1 ? 'wait' : 'waits'} for it ${timeLeft(p.until, now)}, then ${ids.length > 1 ? 'start' : 'starts'} without it`
   }
   // By rank, stable: the order above stays at an equal rank
   items.sort((a, b) => a.rank - b.rank)
@@ -938,7 +968,8 @@ export function yourTurnItems(inst, now) {
  * The open issues whose recommended option the pane can record, as `rule` takes them ([ Accept the N recommended ], 0.21.0).
  * @param {Snapshot} inst @returns {{ issue: string, option: string }[]}
  */
-export const acceptable = inst => inst.issues.flatMap(p => { const o = p.id ? recommendedOf(p) : null; return o && p.id ? [{ issue: p.id, option: o.id }] : [] })
+// A human issue is left out (0.22.0): it is answered from its own card
+export const acceptable = inst => inst.issues.flatMap(p => { const o = p.id && !p.human ? recommendedOf(p) : null; return o && p.id ? [{ issue: p.id, option: o.id }] : [] })
 
 /**
  * The line `last: …` of "Your turn", from the last action of the pane and the state of the plan; null: nothing to say.
@@ -988,7 +1019,8 @@ function heldLines(inst, now, p, inner) {
   const room = Math.max(8, inner - 5)
   if (held.length && activeRun(inst, now)) {
     const head = `holds ${held.join(', ')}`
-    if (p.until == null) out.push([{ t: `     ${cut(head, room)}`, d: true }])
+    // Mode deviation: no task starts without the ruling, the run stops at the deadline (the card's `when` says it)
+    if (p.until == null || runWaitsFor(inst, p)) out.push([{ t: `     ${cut(head, room)}`, d: true }])
     else {
       const time = timeLeft(p.until, now)
       out.push([{ t: `     ${cut(`${head} · starts without it in`, Math.max(8, room - 1 - time.length))} `, d: true }, { t: time, c: 'warning' }])
@@ -1259,12 +1291,12 @@ export function runCard(inst, now, columns, animated) {
   }
   const marker = runLive ? '' : r.status === 'finished' ? '✓ ' : r.status === 'error' ? '✗ ' : '■ '
   // The tasks that wait for a ruling (0.21.0), right of the title
-  const waiting = rulingWaits(inst, now)
+  const waiting = rulingWaits(inst, now), stops = runWaits(inst, now).length > 0
   return {
     id: 'run', color,
     title: [{ t: `${marker}Run ${r.number} · ${phasesLabel(r.phase, cur ?? r.phase)} · ${MODES[r.mode] || r.mode}`, c: color, b: true }],
     meta: runLive
-      ? (s.silent ? [{ t: `◌ no news for ${duration(now - /** @type {number} */ (inst.updated))}`, c: 'warning' }] : [...(waiting.length ? [{ t: `‖ ${waiting.length} ${waiting.length > 1 ? 'wait' : 'waits'} for you`, c: 'warning', b: true }, { t: '  ' }] : []), { t: `◐ ${s.inProgress.length} in progress`, c: 'suggestion' }])
+      ? (s.silent ? [{ t: `◌ no news for ${duration(now - /** @type {number} */ (inst.updated))}`, c: 'warning' }] : [...(stops ? [{ t: '‖ run waits for you', c: 'warning', b: true }, { t: '  ' }] : []), ...(waiting.length ? [{ t: `‖ ${waiting.length} ${waiting.length > 1 ? 'wait' : 'waits'} for you`, c: 'warning', b: true }, { t: '  ' }] : []), { t: `◐ ${s.inProgress.length} in progress`, c: 'suggestion' }])
       : [{ t: r.status, c: color, b: true }],
     lines,
   }
@@ -1480,19 +1512,25 @@ export function taskLines(inst, now, columns, animated = false) {
   if (!out.length) return [[{ t: 'No task in progress.json.', d: true }]]
   if (segments) {
     // The legend of the steps under the timeline; closer together, then further left, when the width lacks room
-    const legend = /** @param {string} sep */ sep => joinParts(STEP_ORDER.slice(0, 5).map(e => [{ t: '━', c: STEP_COLOR[e] }, { t: ` ${SHORT_STEP[e]}`, d: true }]), sep)
+    const shown = timePerStep(inst, now).some(([e]) => e === 'challenge') ? STEP_ORDER.slice(0, 6) : STEP_ORDER.filter(e => e !== 'challenge').slice(0, 5)
+    const legend = /** @param {string} sep */ sep => joinParts(shown.map(e => [{ t: '━', c: STEP_COLOR[e] }, { t: ` ${SHORT_STEP[e]}`, d: true }]), sep)
     const l = G.at.timeline + width(legend('  ')) <= columns ? legend('  ') : legend(' ')
     out.push([spaces(Math.min(G.at.timeline, columns - width(l))), ...l])
   }
   return out
 }
 
+/** The text of a log line: a rejection by the challenger names its mutation. @param {Snapshot} inst @param {{ kind: string, text: string }} j */
+function logText(inst, j) {
+  const m = j.kind === 'rejection' ? j.text.match(/^(\S+): attempt (\d+) rejected \(([^)]+)\)/) : null
+  return (m && challenged(inst, /** @type {string} */ (m[1]), /** @type {string} */ (m[2]), /** @type {string} */ (m[3]))) || j.text
+}
 /** The log in columns: age, colored source, message; the last entries, or all of them with `full`. @param {Snapshot} inst @param {number} now @param {number} columns @param {boolean} full @returns {Card} */
 export function logCard(inst, now, columns, full) {
   const inner = columns - 4
   const js = inst.log.slice(-(full ? LONG_LOG : SHORT_LOG))
   const lines = js.length
-    ? js.map(j => { const m = mark(j); return [{ t: age(j.at, now).padStart(6), d: true }, { t: '  ' }, { t: column(j.task ?? (j.kind === 'run' || j.kind === 'error' ? 'run' : 'plan'), 6), c: m.c, d: m.d, b: !m.d }, m, { t: ` ${cut(j.text, Math.max(16, inner - 18))}` }] })
+    ? js.map(j => { const m = mark(j); return [{ t: age(j.at, now).padStart(6), d: true }, { t: '  ' }, { t: column(j.task ?? (j.kind === 'run' || j.kind === 'error' ? 'run' : 'plan'), 6), c: m.c, d: m.d, b: !m.d }, m, { t: ` ${cut(logText(inst, j), Math.max(16, inner - 18))}` }] })
     : [[{ t: 'Empty log.', d: true }]]
   const rest = inst.log.length - js.length
   return { id: 'log', color: 'subtle', title: [{ t: 'log', b: true }], meta: [{ t: full ? 'l: less' : rest > 0 ? `l: all (${inst.log.length})` : '', d: true }], lines }
@@ -1700,9 +1738,20 @@ export function changes(before, after) {
   const known = new Set([...before.issues.map(itemKey), ...(before.pendingRulings ?? []).map(r => r.issue)])
   /** @type {Map<string, IssueView[]>} */
   const arrived = new Map()
+  // Mode deviation (0.22.0): the held tasks never start without the ruling, the run waits for it and stops; said once the run
+  // waits for them, by the issues that start being waited for by the run
+  const deviation = after.run?.mode === 'deviation'
   for (const p of after.issues) {
-    if (p.role === 'stop' || seen.has(itemKey(p)) || (p.id != null && known.has(p.id)) || p.until == null || !(p.holds ?? []).some(id => !(p.startedWithout ?? []).includes(id))) continue
+    if (deviation || p.role === 'stop' || seen.has(itemKey(p)) || (p.id != null && known.has(p.id)) || p.until == null || !(p.holds ?? []).some(id => !(p.startedWithout ?? []).includes(id))) continue
     arrived.set(p.task, [...(arrived.get(p.task) ?? []), p])
+  }
+  const runWaitedBefore = new Set(before.issues.filter(p => runWaitsFor(before, p)).map(itemKey))
+  /** @type {Map<string, IssueView[]>} */
+  const stopping = new Map()
+  for (const p of after.issues) if (p.role !== 'stop' && p.until != null && runWaitsFor(after, p) && !runWaitedBefore.has(itemKey(p))) stopping.set(p.task, [...(stopping.get(p.task) ?? []), p])
+  for (const [who, ps] of stopping) {
+    const minutes = Math.round((Math.max(...ps.map(p => /** @type {number} */ (p.until))) - (after.updated ?? 0)) / 60000)
+    m.push(`? ${who}: ${plural(ps.length, 'issue')} to settle now — the run waits for ${ps.length > 1 ? 'them' : 'it'}${minutes > 0 ? ` ${minutes} min` : ''}, then stops`)
   }
   for (const [who, ps] of arrived) {
     const holds = [...new Set(ps.flatMap(p => (p.holds ?? []).filter(id => !(p.startedWithout ?? []).includes(id))))]

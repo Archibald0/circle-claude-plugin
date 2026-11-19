@@ -70,6 +70,8 @@ Split along the rules of `format.md`, model of each task included (criteria belo
 
 Each task needs one of the reasons of "Own task only for a reason" (parallel, contract, risk, size). Before writing, go over each pair of tasks of one phase where one depends on the other and both own the same files: merge them, unless a reason keeps them apart.
 
+Mark `challenge: true` in the frontmatter of each task whose reason to stand alone is risk (security, data, a migration or a removal), and only those: the challenger will try mutations of its code after its evaluation (key described in `format.md`). Say how many tasks you marked, and which, in the summary (step 6).
+
 ## 2c. Model of each task
 
 Each task gets `model` and `model_reason`, a required line that says why this model:
@@ -120,4 +122,4 @@ Write `plans/<name>/`: the tasks in `tasks/`, each with `model` and `model_reaso
 
 ## 6. Summary
 
-Give the table of PROGRESS.md and the number of tasks, then one line per task: why it stands alone (parallel, contract, risk or size, in a few words) and why this model, the `fable` setting and the `language` of the plan, then the estimate line and the "Ready to run" block of plan-lint. List next the open prerequisites, that is what remains to do before launching, with the first phase each one blocks. Add the reviews to plan before the PR. For a conversion, add the correspondence table (task or section of the source plan → orchestre task) and what was split, merged or added (global review included). Next: `/orchestre:install` if the settings were declined at step 0, `/orchestre:ready plans/<name>` the day before the launch, then, in a new session, `/orchestre:run plans/<name>`, with a first run in "stop at each phase" mode.
+Give the table of PROGRESS.md and the number of tasks, then one line per task: why it stands alone (parallel, contract, risk or size, in a few words; `challenge: true` for the risky ones) and why this model, the `fable` setting and the `language` of the plan, then the estimate line and the "Ready to run" block of plan-lint. List next the open prerequisites, that is what remains to do before launching, with the first phase each one blocks. Add the reviews to plan before the PR. For a conversion, add the correspondence table (task or section of the source plan → orchestre task) and what was split, merged or added (global review included). Next: `/orchestre:install` if the settings were declined at step 0, `/orchestre:ready plans/<name>` the day before the launch, then, in a new session, `/orchestre:run plans/<name>`, with a first run in "stop at each phase" mode.

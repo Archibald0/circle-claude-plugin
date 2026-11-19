@@ -14,12 +14,12 @@ const lint = (...a) => {
   return { code: r.status, out: r.stdout, err: r.stderr, json: a.includes('--json') && r.stdout ? JSON.parse(r.stdout) : null }
 }
 // model and reason: null to omit the line; an empty string writes "model:" without a value
-const task = (id, { phase = 1, depends_on = '[]', files = [`src/${id}/**`], resources = '[]', verification = ['"npm test"'], done = ['"the test passes"'], prerequisites = null, model = 'sonnet', reason = 'ordinary implementation' } = {}) => `---
+const task = (id, { phase = 1, depends_on = '[]', files = [`src/${id}/**`], resources = '[]', verification = ['"npm test"'], done = ['"the test passes"'], prerequisites = null, model = 'sonnet', reason = 'ordinary implementation', challenge = null } = {}) => `---
 id: ${id}
 title: Task ${id}
 phase: ${phase}
 ${model != null ? `model: ${model}\n` : ''}${reason != null ? `model_reason: ${reason}\n` : ''}effort: high
-depends_on: ${depends_on}
+${challenge != null ? `challenge: ${challenge}\n` : ''}depends_on: ${depends_on}
 owned_files:
 ${files.map(f => `  - ${f}`).join('\n')}
 resources: ${resources}${prerequisites ? `\nprerequisites: ${prerequisites}` : ''}
@@ -522,6 +522,27 @@ Checked by /orchestre:ready on 2026-11-03: not ready.
     assert.equal(e.code, 1)
     const je = JSON.parse(e.out)
     assert.equal(je.ok, false); assert.ok(je.errors.some(x => x.includes('T09')), JSON.stringify(je.errors)); assert.equal(je.digest, planDigest(je))
+  })
+
+  test('challenge (0.22.0): boolean key, in --reader and its digest only when true; refused when it is not true or false', () => {
+    const src = readFileSync(LINT, 'utf8')
+    const planDigest = new Function(src.match(/\nfunction planDigest\(p\) \{\n[\s\S]*?\n\}/)[0] + '\nreturn planDigest')()
+    const C = plan('chal', { T01: task('T01'), T02: task('T02', { challenge: 'true' }), T03: task('T03', { challenge: 'false' }), T04: task('T04', { challenge: '' }) })
+    const r = lint(C, '--reader', '--phase', '1')
+    assert.equal(r.code, 0, r.out + r.err)
+    const j = JSON.parse(r.out)
+    assert.deepEqual(j.tasks.map(t => t.challenge), [undefined, true, undefined, undefined], 'only true is in the view')
+    assert.equal(j.digest, planDigest(j))
+    const f = lint(C, '--json', '--phase', '1').json.tasks
+    assert.deepEqual(f.map(t => t.challenge), [undefined, true, undefined, undefined], 'and in --json')
+    // The digest changes with the key, and a plan without any keeps its digest
+    const plain = JSON.parse(lint(plan('chal0', { T01: task('T01'), T02: task('T02'), T03: task('T03', { challenge: 'false' }), T04: task('T04') }), '--reader', '--phase', '1').out)
+    assert.notEqual(planDigest({ ...j, digest: undefined }), planDigest({ ...plain, tasks: plain.tasks.map((t, i) => ({ ...t, file: j.tasks[i].file })) }))
+    assert.equal(planDigest({ ...plain, tasks: plain.tasks.map(t => ({ ...t, challenge: undefined })) }), plain.digest)
+    for (const bad of ['yes', '1', 'True', '[true]']) {
+      const e = lint(plan(`chal-${bad.replace(/\W/g, '')}`, { T01: task('T01', { challenge: bad }) }), '--json')
+      assert.equal(e.code, 1, bad); assert.ok(e.json.errors.includes('T01: challenge must be true or false'), JSON.stringify(e.json.errors))
+    }
   })
 
   // --scope (0.19.0): the scope check of a task branch, in the temporary repository

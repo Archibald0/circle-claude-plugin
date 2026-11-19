@@ -33,6 +33,8 @@ A plan written by orchestre 0.11 or earlier (French format: `taches/`, `SUIVI.md
   - risk: security, data, a migration or a removal that deserves an evaluation of its own;
   - size: together with its neighbor, it would exceed half a context.
 
+  `challenge: true` (0.22.0) marks the tasks whose reason to stand alone is risk. After a passed evaluation, the challenger (sonnet) tries 3 mutations at most of the code the task added, never of its tests, and runs the verification commands after each. A mutation that no command detects rejects the attempt: the fix adds the missing test, then verification, evaluation and challenge run again, within `max_fixes`. Only `true` or `false` is accepted (plan-lint errors on anything else); absent means `false`, and a plan without the key behaves as before. The other reasons (parallel, contract, size) never get it.
+
   Always goes into the task that causes it: the documentation, configuration and tests of a change; the removal of the mechanism the change replaces, when it fits; a follow-up finding on the same files; a fix of the same module found at the same time. Neither a different model for part of the work nor a list of root causes is a reason: root causes become criteria of one task. This rule holds for `/orchestre:prepare`, for the replanner and for the tasks the pilot writes during a run.
 - Documentation and configuration follow their change, in the same task. A separate documentation task only for a cross-cutting document that no task owns.
 - The order of execution only comes from `phase`, `depends_on` and `resources`: two tasks of the same phase, without a dependency between them nor a shared resource, can run at the same time, each in a worktree if the parallelism chosen at launch allows it. They must then own no file in common. Declare resources (database, port, service) as narrowly as possible: two tasks that share one run one after the other. `parallel_batch` and the Batch column of PROGRESS.md are indicative: nothing reads them.
@@ -76,6 +78,7 @@ prerequisites: []       # ids of PREREQUISITES.md: the task waits until they are
 context_budget: 40%
 token_estimate: 1.0M
 max_turns: 60
+challenge: true         # optional, only on a risky task: a challenger changes its code after a passed evaluation (default false: leave the line out)
 verification:
   - "<real command, found during the exploration>"
 definition_of_done:

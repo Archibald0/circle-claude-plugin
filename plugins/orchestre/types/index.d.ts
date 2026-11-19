@@ -11,6 +11,8 @@ export type TaskView = {
   attempts: number
   step: string | null
   isolated: boolean
+  // The rejections of the attempts; by: verification, evaluation or challenge (0.22.0)
+  rejections: { attempt: number; by: string; gaps: string[] }[]
   start: number | null
   end: number | null
   waiting: string[]

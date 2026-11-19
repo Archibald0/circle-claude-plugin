@@ -273,13 +273,15 @@ async function main() {
     assert.equal(C.progress('run-start', RUN).out, 'progress: run 1 opened (phase 1, mode phase)')
     const view0 = C.read('PROGRESS.md')
     assert.equal(C.progress('step', { task: 'T01', step: 'worker', isolated: false }).out, 'progress: T01 → worker')
-    for (const e of ['verification', 'evaluation']) assert.equal(C.progress('step', { task: 'T01', step: e }).code, 0)
+    for (const e of ['verification', 'evaluation', 'challenge']) assert.equal(C.progress('step', { task: 'T01', step: e }).code, 0)
+    assert.equal(JSON.parse(C.read('progress.json')).tasks.find(t => t.id === 'T01').step, 'challenge')
+    assert.equal(C.progress('step', { task: 'T01', step: 'fix', rejection: { attempt: 1, by: 'challenge', gaps: ['mutation survived: the guard on the empty list'] } }).code, 0, 'a rejection by the challenge')
     assert.equal(C.progress('step', { task: 'T01', step: 'fix', rejection: { attempt: 1, by: 'evaluation', gaps: ['wrong comment on the flag'] } }).code, 0)
     assert.equal(C.progress('step', { task: 'T01', step: 'merge' }).code, 0)
     assert.equal(C.clean(), '', 'a step only touches progress.json, ignored by git')
     assert.equal(C.read('PROGRESS.md'), view0)
     let t = tC('T01')
-    assert.deepEqual([t.step, t.isolated, t.attempts, t.end, t.rejections], ['merge', false, 2, null, [{ attempt: 1, by: 'evaluation', gaps: ['wrong comment on the flag'] }]])
+    assert.deepEqual([t.step, t.isolated, t.attempts, t.end, t.rejections], ['merge', false, 2, null, [{ attempt: 1, by: 'challenge', gaps: ['mutation survived: the guard on the empty list'] }, { attempt: 1, by: 'evaluation', gaps: ['wrong comment on the flag'] }]])
     assert.match(t.start, /^\d{4}-\d{2}-\d{2}T/)
     const r = C.progress('close', { task: 'T01', status: 'merged', attempts: 2, branch: 'task/T01', replanning: true, reviews: ['agents/x/.env.example: add MR_MAX'] })
     // 0.20.0: one line of JSON, and the plan committed by close itself
@@ -337,6 +339,8 @@ async function main() {
   await test('invalid write refused: code 1 or 2, progress.json and PROGRESS.md untouched', () => {
     const before = [C.read('progress.json'), C.read('PROGRESS.md')]
     const refused = [
+      ['step', { task: 'T03', step: 'challenger' }, 1, /tasks\[\d\]\.step: "challenger" is not allowed/],
+      ['step', { task: 'T03', step: 'fix', rejection: { attempt: 1, by: 'mutation', gaps: [] } }, 1, /rejections\[\d\]\.by/],
       ['step', { task: 'T03', step: 'nap' }, 1, /tasks\[\d\]\.step: "nap" is not allowed/],
       ['step', { task: 'T99', step: 'worker' }, 1, /unknown task in progress: T99/],
       ['close', { task: 'T03', status: 'merged', attempts: -1, branch: 'task/T03' }, 1, /attempts: -1 is less than 0/],
@@ -1984,7 +1988,7 @@ process.exitCode = r.status
     }
   }
 
-  await test('close and apply (0.20.0): no plan-lint call while .progress.lock is held (dry run, check of the tasks written, each ruling); a ruling changed while apply runs refuses it with code 1, every file put back', () => {
+  await test('close and apply (0.20.0): no plan-lint call while .progress.lock is held (dry run, check of the tasks written, each ruling); a ruling withdrawn while apply runs is left out with a log line, the rest applied (0.22.0)', () => {
     const R = repo('lock', { tasks: [{ id: 'T01' }, { id: 'T02' }, { id: 'T03' }], progress: PROGRESS_TEMPLATE(['T01', 'T02', 'T03']), handoff: '# HANDOFF — lock\n' })
     assert.equal(R.progress('run-start', RUN).code, 0)
     const run = probe()
@@ -1996,20 +2000,26 @@ process.exitCode = r.status
     assert.ok(r.calls.length >= 6, r.calls.join())
     assert.deepEqual([...new Set(r.calls)], ['free'], r.calls.join())
     assert.equal(R.progress('rule', { items: [{ issue: 'T01-1', option: 'B' }, { issue: 'T01-2', option: 'A' }] }).code, 0)
-    // A ruling changed while apply works outside the lock (unrule, then rule with a text): apply refused, nothing written
-    const before = snapshot(R)
-    r = run(R, 'apply', undefined, [[['unrule', R.plan], { issue: 'T01-2' }], [['rule', R.plan], { issue: 'T01-2', text: 'Not that way' }]])
-    assert.equal(r.code, 1, r.out)
-    assert.equal(r.err, 'progress: apply: the ruling of T01-2 was withdrawn or changed while apply ran (unrule, rule): nothing is written; run apply again')
-    const after = snapshot(R)
-    assert.deepEqual({ ...after, files: after.files.filter((_, i) => i !== 0) }, { ...before, files: before.files.filter((_, i) => i !== 0) }, 'the plan as it was')
-    assert.deepEqual(R.doc().pending_rulings.map(x => [x.issue, x.option, x.text]), [['T01-1', 'B', null], ['T01-2', null, 'Not that way']])
-    assert.ok(!existsSync(join(R.d, 'tasks', 'T01C-c.md')))
-    // Applied again: two rulings, no plan-lint under the lock
+    // A ruling withdrawn while apply works outside the lock (an Undo of the pane during a run, 0.22.0): left out with a log
+    // line, the other applied, exit 0; the withdrawn issue stays open, its task untouched
+    const t03 = R.read('tasks/T03-x.md')
+    r = run(R, 'apply', undefined, [[['unrule', R.plan], { issue: 'T01-2' }]])
+    assert.equal(r.code, 0, r.err)
+    let out = JSON.parse(r.out)
+    assert.ok(r.calls.length >= 3, r.calls.join())
+    assert.deepEqual([...new Set(r.calls)], ['free'], 'no plan-lint under the lock, on either pass')
+    assert.deepEqual(out.applied.map(x => [x.issue, x.option, x.text]), [['T01-1', 'B', null]])
+    assert.match(out.message, /; left out, withdrawn while apply ran: T01-2$/)
+    assert.ok(R.doc().log.some(e => e.kind === 'ruling' && e.task === 'T01' && e.text === 'T01-2: option A withdrawn while apply ran: left out'), 'the log line')
+    assert.deepEqual([R.doc().pending_rulings, R.doc().issues.find(p => p.id === 'T01-2').status, R.read('tasks/T03-x.md')], [[], 'open', t03])
+    assert.ok(existsSync(join(R.d, 'tasks', 'T01C-c.md')))
+    assert.equal(R.clean(), '')
+    // Ruled again with a text, then applied: no plan-lint under the lock
+    assert.equal(R.progress('rule', { issue: 'T01-2', text: 'Not that way' }).code, 0)
     r = run(R, 'apply')
     assert.equal(r.code, 0, r.err)
-    assert.deepEqual(JSON.parse(r.out).applied.map(x => [x.issue, x.option, x.text]), [['T01-1', 'B', null], ['T01-2', null, 'Not that way']])
-    assert.ok(r.calls.length >= 2, r.calls.join())
+    assert.deepEqual(JSON.parse(r.out).applied.map(x => [x.issue, x.option, x.text]), [['T01-2', null, 'Not that way']])
+    assert.ok(r.calls.length >= 1, r.calls.join())
     assert.deepEqual([...new Set(r.calls)], ['free'], r.calls.join())
     assert.ok(existsSync(join(R.d, 'tasks', 'T01C-c.md')))
     assert.equal(R.clean(), ''); assert.deepEqual(R.leftovers(), [])
@@ -2068,7 +2078,7 @@ process.exitCode = r.status
     assert.equal(R.progress('run-end', { status: 'partial' }).code, 0)
     // Run 2: the same choice raised again, settled by the user through apply, which discards an amendment of T05 (cancelled)
     assert.equal(R.progress('run-start', RUN).code, 0)
-    assert.equal(R.progress('close', { task: 'T02', status: 'blocked', attempts: 1, branch: 'task/T02', issues: [{ task: 'T01', title: 'Choice', options: [{ id: 'B', description: 'User', amendments: [{ id: 'T05', reason: 'too late' }] }] }] }).code, 0)
+    assert.equal(R.progress('close', { task: 'T02', status: 'blocked', attempts: 1, branch: 'task/T02', issues: [{ task: 'T01', title: 'Choice', options: [{ id: 'B', description: 'User', amendments: [{ id: 'T05', reason: 'too late' }, { id: 'T02', reason: 'r', verification: ['npm run b'] }] }] }] }).code, 0)
     assert.equal(R.progress('rule', { issue: 'T01-2', option: 'B' }).code, 0)
     const r = apply(R)
     assert.equal(r.code, 0, r.err)
@@ -2496,12 +2506,12 @@ Types: decision · manual · environment.
     r = apply(W)
     assert.deepEqual([r.code, r.json.done, r.json.commit, r.json.message], [0, [], null, 'nothing applied; nothing to commit'])
     assert.deepEqual([W.doc().pending_done, W.doc().log.at(-1).text], [[], 'M2: "done" not written: already done'])
-    // A did withdrawn while apply works outside the lock: apply refused, PREREQUISITES.md put back
+    // A did withdrawn while apply works outside the lock (0.22.0): left out with a log line, PREREQUISITES.md put back, exit 0
     assert.equal(W.progress('did', { prerequisite: 'M3' }).code, 0)
     const pre = W.read('PREREQUISITES.md')
     r = probe()(W, 'apply', undefined, [[['undid', W.plan], { prerequisite: 'M3' }]])
-    assert.deepEqual([r.code, r.err], [1, 'progress: apply: the did of M3 was withdrawn while apply ran (undid): nothing is written; run apply again'])
-    assert.deepEqual([W.read('PREREQUISITES.md'), W.doc().pending_done, W.clean()], [pre, [], ''])
+    assert.deepEqual([r.code, JSON.parse(r.out).message, JSON.parse(r.out).done], [0, 'no ruling to apply; left out, withdrawn while apply ran: M3', undefined], r.err)
+    assert.deepEqual([W.read('PREREQUISITES.md'), W.doc().pending_done, W.clean(), W.doc().log.at(-1).text], [pre, [], '', 'M3: "done" withdrawn while apply ran: left out'])
     // A plan without ISSUES.json: a did applied creates none
     const V = repo('did2', { tasks: [{ id: 'T01', prerequisites: 'EV1, E1, M2, M3, D1' }], progress: PROGRESS_TEMPLATE(['T01']), handoff: '# HANDOFF — did2\n', prerequisites: PREREQS })
     assert.equal(V.progress('did', { prerequisite: 'M3' }).code, 0)
@@ -2509,6 +2519,154 @@ Types: decision · manual · environment.
     assert.deepEqual([r.code, r.json.done], [0, ['M3']], r.err)
     assert.ok(!existsSync(join(V.d, 'ISSUES.json')))
     assert.equal(V.clean(), '')
+  })
+
+  await test('apply outside a run, then run-start (0.22.0): the rulings applied at the pre-flight are recorded in the run that run-start opens (rulings_applied, applied_before), and apply reports them as before_run', () => {
+    const R = repo('outside', { tasks: [{ id: 'T01' }, { id: 'T02' }, { id: 'T03' }], progress: PROGRESS_TEMPLATE(['T01', 'T02', 'T03']), handoff: '# HANDOFF — outside\n' })
+    assert.equal(R.progress('run-start', RUN).code, 0)
+    assert.equal(R.progress('close', { task: 'T01', status: 'merged', attempts: 1, branch: 'task/T01', issues: [one('Pick', ['T02']), one('Name', [])] }).code, 0)
+    assert.equal(R.progress('run-end', { status: 'partial' }).code, 0)
+    // Between two runs: two rulings, applied by the pre-flight (no run in progress)
+    assert.equal(R.progress('rule', { items: [{ issue: 'T01-1', option: 'A' }, { issue: 'T01-2', text: 'Keep it' }] }).code, 0)
+    let r = apply(R)
+    assert.equal(r.code, 0, r.err)
+    assert.deepEqual(r.json.applied.map(x => x.issue), ['T01-1', 'T01-2'])
+    assert.equal(r.json.before_run, undefined, 'no run in progress: nothing to report')
+    assert.deepEqual([R.doc().runs[0].rulings_applied, R.doc().applied_outside], [[], [
+      { issue: 'T01-1', task: 'T01', title: 'Pick', option: 'A', text: null }, { issue: 'T01-2', task: 'T01', title: 'Name', option: null, text: 'Keep it' }]])
+    // The next run-start records them in its run, and empties applied_outside
+    assert.equal(R.progress('run-start', RUN).code, 0)
+    const run = R.doc().runs[1]
+    assert.deepEqual(run.rulings_applied, [{ task: 'T01', title: 'Pick', option: 'A' }, { task: 'T01', title: 'Name', option: 'free answer' }])
+    assert.deepEqual(run.applied_before.map(a => a.issue), ['T01-1', 'T01-2'])
+    assert.equal(R.doc().applied_outside, undefined)
+    assert.equal(R.doc().log.at(-1).text, 'run 2: 2 rulings applied before it recorded (T01-1, T01-2)')
+    // The run's opening apply, with nothing new to apply, reports them for the workflow return and the decisions given to agents
+    r = apply(R)
+    assert.deepEqual([r.code, r.json.message, r.json.before_run], [0, 'no ruling to apply', [{ issue: 'T01-1', task: 'T01', option: 'A', text: null }, { issue: 'T01-2', task: 'T01', option: null, text: 'Keep it' }]])
+    assert.equal(r.json.digest, payloadDigest(r.json, 'digest'))
+    assert.equal(R.progress('validate').code, 0)
+    // A run after it: nothing taken in again
+    assert.equal(R.progress('run-end', { status: 'partial' }).code, 0)
+    assert.equal(R.progress('run-start', RUN).code, 0)
+    assert.deepEqual([R.doc().runs[2].rulings_applied, R.doc().runs[2].applied_before], [[], undefined])
+    assert.equal(R.clean(), '')
+  })
+
+  await test('rule (0.22.0, run 9): an option whose amendments all target tasks merged or cancelled since its issue was raised is refused, marked invalid in progress.json and shown invalid by progress.mjs status with the same reason; one with only some names them in its effect', () => {
+    const R = repo('wasted', { tasks: [{ id: 'T01' }, { id: 'T02' }, { id: 'T03' }, { id: 'T04' }], progress: PROGRESS_TEMPLATE(['T01', 'T02', 'T03', 'T04']), handoff: '# HANDOFF — wasted\n' })
+    assert.equal(R.progress('run-start', RUN).code, 0)
+    const two = { title: 'Two', context: 'c', human: false, options: [{ id: 'A', description: 'Both', amendments: [{ id: 'T02', reason: 'r', definition_of_done: ['x'] }, { id: 'T03', reason: 'r', definition_of_done: ['y'] }] }, { id: 'B', description: 'Leave it' }] }
+    const adds = { title: 'Adds', context: 'c', human: false, options: [{ id: 'A', description: 'Amend and add', amendments: [{ id: 'T02', reason: 'r', definition_of_done: ['z'] }], added_tasks: [{ id: 'T01B', title: 'B', phase: 1, content: task({ id: 'T01B' }) }] }] }
+    assert.equal(R.progress('close', { task: 'T01', status: 'merged', attempts: 1, branch: 'task/T01', issues: [one('Pick', ['T02']), two, adds] }).code, 0)
+    // T02 merged since: the options that only amend it are useless
+    assert.equal(R.progress('close', { task: 'T02', status: 'merged', attempts: 1, branch: 'task/T02' }).code, 0)
+    const reason = 'its amendments would all be discarded: T02 merged or cancelled since the issue was raised; answer with a text'
+    let r = R.progress('rule', { issue: 'T01-1', option: 'A' })
+    assert.deepEqual([r.code, r.err], [1, `progress: rule: option A of T01-1 is invalid: ${reason}`])
+    const opt = (id, o) => R.doc().issues.find(p => p.id === id).options.find(x => x.id === o)
+    assert.deepEqual([opt('T01-1', 'A').valid, opt('T01-1', 'A').invalid_reason], [false, reason])
+    // Only some amendments discarded: valid, and its effect names them; an option that adds a task stays valid
+    assert.deepEqual([opt('T01-2', 'A').valid, opt('T01-2', 'A').effect], [true, 'amends T02, T03; T02 merged or cancelled since: its amendment would be discarded'])
+    assert.equal(opt('T01-3', 'A').valid, true)
+    assert.equal(R.progress('rule', { issue: 'T01-3', option: 'A' }).code, 0)
+    // progress.mjs status says it too, with the same reason, under the moments; the option amended only partly is not named
+    let s = R.progress('status')
+    assert.equal(s.code, 0)
+    assert.ok(s.out.split('\n').includes(`T01-1 option A is invalid: ${reason}`), s.out)
+    assert.ok(!/T01-2 option A|T01-3 option A/.test(s.out), s.out)
+    // The note is not written twice; once T03 is gone too, the option is invalid
+    assert.equal(R.progress('close', { task: 'T03', status: 'merged', attempts: 1, branch: 'task/T03' }).code, 0)
+    assert.deepEqual([opt('T01-2', 'A').valid, opt('T01-2', 'A').invalid_reason], [false, 'its amendments would all be discarded: T02, T03 merged or cancelled since the issue was raised; answer with a text'])
+    r = R.progress('rule', { issue: 'T01-2', option: 'A' })
+    assert.equal(r.code, 1)
+    s = R.progress('status')
+    assert.ok(s.out.split('\n').includes('T01-2 option A is invalid: its amendments would all be discarded: T02, T03 merged or cancelled since the issue was raised; answer with a text'), s.out)
+    // A text and an option without amendment still go through; a ruled issue no longer shows its invalid options
+    assert.equal(R.progress('rule', { items: [{ issue: 'T01-1', text: 'Not needed now' }, { issue: 'T01-2', option: 'B' }] }).code, 0)
+    assert.ok(!/ is invalid: /.test(R.progress('status').out))
+    assert.equal(R.progress('validate').code, 0)
+  })
+
+  await test('rule (0.22.0, T34C): an option that also writes a review, a ticket or another entry than decision and amendment is not wasted; rule, progress.json and status agree, and apply writes its entries and the amendment not applied', () => {
+    const R = repo('wasted-entries', { tasks: [{ id: 'T01' }, { id: 'T02' }, { id: 'T03' }], progress: PROGRESS_TEMPLATE(['T01', 'T02', 'T03']), handoff: '# HANDOFF — wasted-entries\n' })
+    assert.equal(R.progress('run-start', RUN).code, 0)
+    const entry = (type, description, severity = 'major') => ({ type, severity, description })
+    const amend = [{ id: 'T02', reason: 'r', definition_of_done: ['x'] }]
+    const opt = (id, entries) => ({ id, description: `Option ${id}`, amendments: amend, entries })
+    const kept = ['ticket', 'needs-human', 'debt', 'blind-spot', 'deviation']
+    const issue = {
+      title: 'Entries', context: 'c', human: false, options: [
+        opt('A', [entry('review', 'check the wording'), entry('decision', 'decided')]),
+        ...kept.map((type, i) => opt(`K${i + 1}`, [entry(type, `a ${type}`)])),
+        opt('W', [entry('decision', 'decided')]), opt('X', [entry('amendment', 'amended'), entry('decision', 'decided')]), opt('Y', [{ type: 'review', description: 'no severity' }]), opt('Z', []),
+        { id: 'B', description: 'Leave it' },
+      ],
+    }
+    assert.equal(R.progress('close', { task: 'T01', status: 'merged', attempts: 1, branch: 'task/T01', issues: [issue] }).code, 0)
+    assert.equal(R.progress('close', { task: 'T02', status: 'merged', attempts: 1, branch: 'task/T02' }).code, 0)
+    const copy = id => R.doc().issues.find(p => p.id === 'T01-1').options.find(x => x.id === id)
+    const reason = 'its amendments would all be discarded: T02 merged or cancelled since the issue was raised; answer with a text'
+    const keeps = ['A', 'K1', 'K2', 'K3', 'K4', 'K5'], wastes = ['W', 'X', 'Y', 'Z']
+    // progress.json: the options that keep an entry stay valid and name the discarded amendment; the others are invalid with the reason of rule
+    for (const id of keeps) assert.deepEqual([id, copy(id).valid, copy(id).invalid_reason, copy(id).effect], [id, true, null, 'amends T02; T02 merged or cancelled since: its amendment would be discarded'])
+    for (const id of wastes) assert.deepEqual([id, copy(id).valid, copy(id).invalid_reason], [id, false, reason])
+    // status: the same verdict, option by option
+    const s = R.progress('status')
+    assert.equal(s.code, 0)
+    const invalid = s.out.split('\n').filter(l => / is invalid: /.test(l))
+    assert.deepEqual(invalid, wastes.map(id => `T01-1 option ${id} is invalid: ${reason}`), s.out)
+    // rule: the same verdict, with the reason of the pane
+    for (const id of wastes) {
+      const r = R.progress('rule', { issue: 'T01-1', option: id })
+      assert.deepEqual([id, r.code, r.err], [id, 1, `progress: rule: option ${id} of T01-1 is invalid: ${reason}`])
+    }
+    for (const id of keeps) {
+      const r = R.progress('rule', { issue: 'T01-1', option: id })
+      assert.deepEqual([id, r.code], [id, 0])
+      assert.equal(R.progress('unrule', { issue: 'T01-1' }).code, 0)
+    }
+    // apply: the entries of the option, then the amendment it cannot make
+    assert.equal(R.progress('rule', { issue: 'T01-1', option: 'A' }).code, 0)
+    const r = apply(R)
+    assert.equal(r.code, 0, r.err)
+    assert.deepEqual(r.json.discarded, [{ id: 'T02', reason: 'r' }])
+    assert.deepEqual(section(R, 'T01'), [
+      '- decision · major · Entries: option A settled by the user — Option A',
+      '- review · major · check the wording',
+      '- decision · major · decided',
+      '- blind-spot · major · amendment not applied to T02: r',
+    ])
+    // An issue whose copy was written before the fix (an option that keeps an entry marked invalid by the old derive): status does
+    // not show it, rule accepts it, and the next write puts its copy right
+    const R2 = repo('wasted-entries-old', { tasks: [{ id: 'T01' }, { id: 'T02' }, { id: 'T03' }], progress: PROGRESS_TEMPLATE(['T01', 'T02', 'T03']), handoff: '# HANDOFF — wasted-entries-old\n' })
+    assert.equal(R2.progress('run-start', RUN).code, 0)
+    assert.equal(R2.progress('close', { task: 'T01', status: 'merged', attempts: 1, branch: 'task/T01', issues: [{ ...issue, options: issue.options.filter(o => ['A', 'W', 'B'].includes(o.id)) }] }).code, 0)
+    assert.equal(R2.progress('close', { task: 'T02', status: 'merged', attempts: 1, branch: 'task/T02' }).code, 0)
+    const copy2 = id => R2.doc().issues[0].options.find(x => x.id === id)
+    assert.deepEqual([copy2('A').valid, copy2('W').valid], [true, false])
+    // Register unreadable at a write that does not need it (step): derive cannot read the entries of A, so it leaves its copy as it
+    // is (valid, effect with the note of the discarded amendment) and does not mark it wasted; W stays invalid
+    const register0 = R2.read('ISSUES.json'), effectA = copy2('A').effect
+    writeFileSync(join(R2.d, 'ISSUES.json'), '{ not json')
+    assert.equal(R2.progress('step', { task: 'T03', step: 'worker', isolated: false }).code, 0)
+    assert.deepEqual([copy2('A').valid, copy2('A').invalid_reason, copy2('A').effect], [true, null, effectA])
+    assert.equal(effectA, 'amends T02; T02 merged or cancelled since: its amendment would be discarded')
+    assert.deepEqual([copy2('W').valid, copy2('W').invalid_reason], [false, reason])
+    writeFileSync(join(R2.d, 'ISSUES.json'), register0)
+    const old = R2.doc()
+    Object.assign(old.issues[0].options.find(o => o.id === 'A'), { valid: false, invalid_reason: reason })
+    writeFileSync(join(R2.d, 'progress.json'), JSON.stringify(old, null, 2) + '\n')
+    assert.equal(R2.progress('validate').code, 0)
+    assert.deepEqual(R2.progress('status').out.split('\n').filter(l => / is invalid: /.test(l)), [`T01-1 option W is invalid: ${reason}`])
+    // Register unreadable: status cannot read the entries, so it shows the copies as they are written
+    const register = R2.read('ISSUES.json')
+    writeFileSync(join(R2.d, 'ISSUES.json'), '{ not json')
+    assert.deepEqual(R2.progress('status').out.split('\n').filter(l => / is invalid: /.test(l)), [`T01-1 option A is invalid: ${reason}`, `T01-1 option W is invalid: ${reason}`])
+    writeFileSync(join(R2.d, 'ISSUES.json'), register)
+    assert.equal(R2.progress('rule', { issue: 'T01-1', option: 'A' }).code, 0)
+    assert.deepEqual([copy2('A').valid, copy2('A').invalid_reason], [true, null])
+    assert.equal(R2.progress('validate').code, 0)
   })
 
   console.log(`progress: ALL GREEN (${n} tests)`)

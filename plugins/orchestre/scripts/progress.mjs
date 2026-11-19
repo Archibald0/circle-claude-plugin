@@ -12,8 +12,8 @@
 // before the shell reads the command. Without a folder, the only plan in plans/.
 //   run-start  { phase, mode, parallelism, max_fixes, max_auto_decisions, run_id? }
 //              once per run, by its first agent: rereads the plan (plan-lint), turns a run left in progress into "interrupted"
-//   step       { task, step, isolated?, rejection?, model?, change?, without? }      step: worker, verification, evaluation, fix,
-//              merge, replanning, progress; worker resets the task's run fields; fix adds rejection { attempt, by, gaps };
+//   step       { task, step, isolated?, rejection?, model?, change?, without? }      step: worker, verification, evaluation, challenge (0.22.0), fix,
+//              merge, replanning, progress; worker resets the task's run fields; fix adds rejection { attempt, by, gaps } (by: verification, evaluation or challenge);
 //              model: the model launched (worker, fix), noted in model_used; change { from, to, reason }: "model" event;
 //              without (worker only, 0.21.0): the ids of the issues the task starts without, after its wait: each issue notes
 //              the task in started_without, and the log says "<id> starts (main checkout) without <n> rulings"
@@ -120,7 +120,7 @@ export const LEGACY_FORMATS = ['orchestre-suivi/2', 'orchestre-suivi/1']
 export const REGISTER = 'ISSUES.json'
 export const REGISTER_FORMAT = 'orchestre-issues/1'
 const STATUSES = ['todo', 'added', 'merged', 'blocked', 'failed', 'needs-human', 'cancelled']
-const STEPS = ['worker', 'verification', 'evaluation', 'fix', 'merge', 'replanning', 'progress']
+const STEPS = ['worker', 'verification', 'evaluation', 'challenge', 'fix', 'merge', 'replanning', 'progress']
 const RUN_ENDS = ['finished', 'partial', 'awaiting-ruling', 'rerun', 'error']
 const CLOSES = ['merged', 'blocked', 'failed', 'needs-human']
 const KINDS = ['run', 'task', 'step', 'rejection', 'status', 'added', 'amendment', 'review', 'auto-decision', 'issue', 'ruling', 'pilot', 'error', 'model', 'wait']
@@ -211,6 +211,9 @@ export const SCHEMA = {
     log_omitted: { type: 'integer', minimum: 0 },
     closed: ref('date'),
     pending_done: arrayOf(object(['prerequisite', 'at'], { prerequisite: ref('taskId'), at: ref('date') })),
+    // applied_outside (0.22.0): the rulings an apply outside a run applied (pre-flight of /orchestre:run); the next run-start
+    // takes them into its run
+    applied_outside: arrayOf(ref('applied')),
   }),
   $defs: {
     date: { type: 'string', format: 'date-time' },
@@ -239,7 +242,7 @@ export const SCHEMA = {
       start: ref('dateOrNull'),
       end: ref('dateOrNull'),
       waiting: arrayOf({ type: 'string', minLength: 1 }),
-      rejections: arrayOf(object(['attempt', 'by', 'gaps'], { attempt: INT1, by: { enum: ['verification', 'evaluation'] }, gaps: ref('texts') })),
+      rejections: arrayOf(object(['attempt', 'by', 'gaps'], { attempt: INT1, by: { enum: ['verification', 'evaluation', 'challenge'] }, gaps: ref('texts') })),
       flaky: ref('texts'),
       unverifiable: ref('texts'),
       blocker: ref('texts'),
@@ -263,7 +266,10 @@ export const SCHEMA = {
       not_started: ref('ids'),
       waiting: ref('ids'),
       waiting_on_prerequisites: arrayOf(object(['id', 'prerequisites'], { id: ref('taskId'), prerequisites: arrayOf({ type: 'string' }) })),
+      // applied_before (0.22.0): the rulings applied outside a run that run-start took in, which apply reports as before_run
+      applied_before: arrayOf(ref('applied')),
     }),
+    applied: object(['issue', 'task', 'title', 'option', 'text'], { issue: ref('issueId'), task: ref('taskId'), title: { type: 'string' }, option: { type: ['string', 'null'] }, text: { type: ['string', 'null'] } }),
     // The short copy of an issue, for display; the whole issue, with the actions of its options, is in ISSUES.json
     issue: object(['id', 'run', 'task', 'title', 'context', 'human', 'role', 'status', 'chosen_option', 'options'], {
       id: ref('issueId'),
@@ -740,8 +746,9 @@ function mergeReviews(doc, handoff) {
   }
 }
 
-// Derived fields, recomputed at each write and valid as of the updated date
-function derive(doc, L, handoff) {
+// Derived fields, recomputed at each write and valid as of the updated date. reg() gives the register, or null when it cannot be
+// read: only an option whose amendments are all gone needs it (its entries), and then an unreadable register leaves it as it is (effect, valid and invalid_reason)
+function derive(doc, L, handoff, reg = () => null) {
   if (Array.isArray(L.prerequisites)) doc.prerequisites = L.prerequisites.filter(p => RE_ID.test(p.id)).map(p => ({ id: p.id, type: String(p.type ?? ''), status: String(p.status ?? ''), text: String(p.text ?? ''), evidence: String(p.evidence ?? ''), how: Array.isArray(p.how) ? p.how.map(String) : [], blocks: p.blocks || [] }))
   doc.lint = { ok: !!L.ok, errors: (L.errors || []).map(String) }
   doc.handoff = parseHandoff(handoff).counts
@@ -749,7 +756,37 @@ function derive(doc, L, handoff) {
   for (const t of doc.tasks) {
     t.waiting = DONE(t.status) ? [] : [...t.depends_on.filter(d => !DONE(st.get(d))), ...doc.prerequisites.filter(p => p.status === 'open' && p.blocks.includes(t.id)).map(p => p.id)]
   }
+  // The options of an open issue whose amendments target tasks merged or cancelled since (0.22.0): invalid when apply would
+  // discard all their actions, otherwise their effect names the amendments it would discard
+  for (const p of doc.issues) if (p.status === 'open') for (const o of p.options) {
+    // A copy marked wasted by an earlier write is judged again: it is never invalid when rule accepts the option
+    const marked = o.valid === false && WASTED.test(String(o.invalid_reason || ''))
+    if (o.valid === false && !marked) continue
+    const gone = staleAmends(o, st)
+    const all = gone.length > 0 && gone.length === o.amends.length
+    const R = all ? reg() : null
+    if (all && !R) continue
+    o.effect = String(o.effect || '').replace(STALE_NOTE, '')
+    if (!gone.length) continue
+    const ro = all ? registerOption(R, p.id, o.id) : null
+    if (all && wastedOption(o, gone, ro)) Object.assign(o, { valid: false, invalid_reason: wasted(gone) })
+    else {
+      if (marked) Object.assign(o, { valid: ro ? ro.valid : null, invalid_reason: ro ? ro.invalid_reason : null })
+      o.effect += `; ${gone.join(', ')} merged or cancelled since: its amendment would be discarded`
+    }
+  }
 }
+// An option that amends only tasks merged or cancelled since its issue was raised, adds no task and writes no HANDOFF entry that a
+// text ruling would lose: apply would write its decision and discard every action (run 9). rule refuses it; derive marks its copy
+// invalid, so the pane and the status say why. The entries are those of the option in the register (the copy knows no entry);
+// `decision` and `amendment` entries do not count, since almost every option has a decision and a text ruling records it anyway.
+const STALE_NOTE = /; [A-Z]+[0-9]+[A-Z]*(?:, [A-Z]+[0-9]+[A-Z]*)* merged or cancelled since: its amendment would be discarded$/
+const staleAmends = (o, st) => (Array.isArray(o.amends) ? o.amends : []).filter(id => DONE(st.get(id)))
+const registerOption = (reg, issue, id) => (reg && reg.issues.find(p => p.id === issue)?.options.find(x => x.id === id)) || null
+const keepsEntry = ro => !!ro && actionsOf(ro, 'entries').some(e => isEntry(e) && e.type !== 'decision' && e.type !== 'amendment')
+const wastedOption = (o, gone, ro) => gone.length > 0 && gone.length === o.amends.length && !/(^|; )adds /.test(String(o.effect || '')) && !keepsEntry(ro)
+export const wasted = ids => `its amendments would all be discarded: ${ids.join(', ')} merged or cancelled since the issue was raised; answer with a text`
+const WASTED = /^its amendments would all be discarded: /
 
 function rebuild(ctx, L, handoff, at) {
   const doc = emptyDoc(ctx, at), J = logger(doc, at)
@@ -852,7 +889,7 @@ function writeLocked(ctx, change, { runStart = false } = {}, L, handoff) {
     let register = null
     const r = change(doc, { L, handoff, at, J, ctx, register: () => (register ??= loadRegister(ctx)) }) || {}
     if (r.view && existing) sync(doc, L, ctx, J, { statuses: false })
-    derive(doc, L, handoff)
+    derive(doc, L, handoff, () => attempt(() => (register ??= loadRegister(ctx))))
     doc.updated = at
     truncate(doc)
     const err = validate(doc)
@@ -882,6 +919,15 @@ function runStart(doc, E, { L, handoff, J, at, ctx }) {
     status: 'in-progress', start: at, end: null, detail: null, rulings_applied: [], discarded_amendments: [], added_tasks: [], deferred: [], not_started: [], waiting: [], waiting_on_prerequisites: [],
   })
   J('run', null, `run ${number}: phase ${E.phase}, mode ${E.mode}, ${E.parallelism} in parallel`)
+  // The rulings applied outside a run since the last one (0.22.0): recorded in this run, as if its own apply had applied them
+  const before = doc.applied_outside || []
+  if (before.length) {
+    const run = doc.runs[doc.runs.length - 1]
+    for (const a of before) if (!run.rulings_applied.some(x => x.task === a.task && x.title === a.title)) run.rulings_applied.push({ task: a.task, title: a.title, option: a.option ?? FREE_ANSWER })
+    run.applied_before = before
+    J('ruling', null, `run ${number}: ${plural(before.length, 'ruling')} applied before it recorded (${before.map(a => a.issue).join(', ')})`)
+  }
+  delete doc.applied_outside
   return { message: `run ${number} opened (phase ${E.phase}, mode ${E.mode})` }
 }
 
@@ -1119,6 +1165,10 @@ function rule(doc, E, { J, at, ...tools }) {
     if (!o) refuse(`rule: option ${x.option} absent from issue ${p.id} (${p.options.map(o => o.id).join(', ') || 'it has no option'}): give a text instead`)
     if (o.valid === false) refuse(`rule: option ${x.option} of ${p.id} is invalid: ${o.invalid_reason || 'refused by the dry run'}`)
     if (!p.entry) refuse(`rule: option ${x.option} of ${p.id} is invalid: ${RAISED}`)
+    // Its copy says what it amends; the statuses, what is merged or cancelled since (run 9); the register, what it writes
+    const c = (doc.issues.find(q => q.id === p.id)?.options || []).find(y => y.id === x.option)
+    const gone = c ? staleAmends(c, new Map(doc.tasks.map(t => [t.id, t.status]))) : []
+    if (c && wastedOption(c, gone, o)) refuse(`rule: option ${x.option} of ${p.id} is invalid: ${wasted(gone)}`)
     return { p, r: { issue: p.id, option: x.option, text: null, at } }
   })
   for (const { p, r } of rulings) {
@@ -1617,6 +1667,24 @@ function status(arg) {
   }
   if (inProgress.length) out.push('', `**In progress**: ${shorten(inProgress.map(e => e.text), 5).join(' · ')}`)
   out.push('', ...yourTurn)
+  // An option apply would discard whole (run 9, 0.22.0) is shown invalid with the reason rule gives, from the statuses above
+  // (git first), one line under the moments; the moments themselves do not change (T25-3)
+  const st = new Map(all.map(t => [t.id, t.status]))
+  // The entries come from the register, as for rule; an unreadable register leaves a copy as it is (marked or not)
+  const reg = attempt(() => loadRegister(ctx))
+  const reasonOf = (p, o) => {
+    const marked = o.valid === false && WASTED.test(String(o.invalid_reason || ''))
+    if (o.valid === false && !marked) return null
+    if (!reg) return marked ? o.invalid_reason : null
+    const g = staleAmends(o, st)
+    return wastedOption(o, g, registerOption(reg, p.id, o.id)) ? wasted(g) : null
+  }
+  for (const p of doc ? doc.issues.filter(p => p.status !== 'settled' && !ruled.has(p.id)) : []) {
+    for (const o of (Array.isArray(p.options) ? p.options : []).filter(o => o && typeof o === 'object')) {
+      const reason = reasonOf(p, o)
+      if (reason) out.push(`${p.id} option ${o.id} is invalid: ${reason}`)
+    }
+  }
   return out.join('\n')
 }
 
@@ -2039,16 +2107,40 @@ const registerOf = copy => ({
   status: 'open', ruling: null,
 })
 // Outside the lock: progress.json read (written by rename, a read sees a whole file), plan-lint, the tasks and HANDOFF.md
-// written. Under the lock: the rulings read checked unchanged (a ruling withdrawn or changed by unrule or rule meanwhile
-// refuses the whole apply, every file put back), progress.json and ISSUES.json written, then the commit.
+// written. Under the lock: the rulings read checked unchanged, progress.json and ISSUES.json written, then the commit. A ruling
+// or a did withdrawn or changed meanwhile (unrule, undid, rule: an Undo of the pane during a run, 0.22.0) puts every file back,
+// then apply runs again on what is recorded now: the withdrawn one is left out, with a log line, and the rest is applied
+class Withdrawn extends Error { constructor(rulings, dids) { super('withdrawn while apply ran'); Object.assign(this, { rulings, dids }) } }
+const APPLY_TRIES = 5
 function applyRulings(ctx) {
+  const left = { rulings: [], dids: [] }
+  for (let i = 1; ; i++) {
+    try { return applyOnce(ctx, left) } catch (e) {
+      if (!(e instanceof Withdrawn)) throw e
+      if (i >= APPLY_TRIES) refuse(`apply: rulings or dids withdrawn or changed ${APPLY_TRIES} times while apply ran (unrule, undid, rule): nothing is written; run apply again`)
+      left.rulings.push(...e.rulings); left.dids.push(...e.dids)
+    }
+  }
+}
+const leftOutLines = (left, J) => {
+  for (const r of left.rulings) J('ruling', r.task, `${r.issue}: ${answer(r)} withdrawn while apply ran: left out`)
+  for (const d of left.dids) J('pilot', null, `${d.prerequisite}: "done" withdrawn while apply ran: left out`)
+}
+const leftOutSaid = left => { const ids = [...left.rulings.map(r => r.issue), ...left.dids.map(d => d.prerequisite)]; return ids.length ? `; left out, withdrawn while apply ran: ${ids.join(', ')}` : '' }
+function applyOnce(ctx, left) {
   onIntegration(ctx, 'apply')
   const doc0 = load(ctx), pending = doc0 ? doc0.pending_rulings : [], dids = (doc0 && doc0.pending_done) || []
   const result = { applied: [], rejected: [], discarded: [], amended: [], added_tasks: [], commit: null }
   const answerOf = (o, message) => { const x = { ...o, message }; return { ...x, digest: payloadDigest(x, 'digest') } }
-  if (!pending.length && !dids.length) return answerOf(result, 'no ruling to apply')
+  // before_run (0.22.0): the rulings applied outside a run that the run in progress took in at its run-start
+  const before = (doc0 && currentRun(doc0)?.applied_before) || []
+  if (!pending.length && !dids.length) {
+    if (left.rulings.length || left.dids.length) write(ctx, (doc, { J }) => { leftOutLines(left, J) })
+    return answerOf({ ...result, ...(before.length ? { before_run: before.map(({ issue, task, option, text }) => ({ issue, task, option, text })) } : {}) }, `no ruling to apply${leftOutSaid(left)}`)
+  }
   // done: only when a did was pending (0.21.0), so that the output of 0.20.0 stays the same without one
   if (dids.length) result.done = []
+  if (before.length) result.before_run = before.map(({ issue, task, option, text }) => ({ issue, task, option, text }))
   const reg0 = pending.length ? loadRegister(ctx) : emptyRegister(), L0 = planLint(ctx)
   const statuses = new Map((L0.all || L0.tasks || []).map(t => [t.id, t.status]))
   // The phase of the run in progress, of the last run when none is: a task an option adds joins it when its own phase is earlier
@@ -2150,11 +2242,12 @@ function applyRulings(ctx) {
         // progress.json and ISSUES.json: each issue applied settled, each ruling out of pending_rulings
         writeLocked(ctx, (doc, tools) => {
           const same = (a, b) => a.issue === b.issue && a.option === b.option && a.text === b.text && a.at === b.at
-          const moved = pending.filter(r => !doc.pending_rulings.some(y => same(r, y))).map(r => r.issue)
-          if (moved.length) refuse(`apply: the ruling of ${moved.join(', ')} was withdrawn or changed while apply ran (unrule, rule): nothing is written; run apply again`)
+          const moved = pending.filter(r => !doc.pending_rulings.some(y => same(r, y)))
           const sameDid = (a, b) => a.prerequisite === b.prerequisite && a.at === b.at
-          const undone = dids.filter(d => !(doc.pending_done || []).some(y => sameDid(d, y))).map(d => d.prerequisite)
-          if (undone.length) refuse(`apply: the did of ${undone.join(', ')} was withdrawn while apply ran (undid): nothing is written; run apply again`)
+          const undone = dids.filter(d => !(doc.pending_done || []).some(y => sameDid(d, y)))
+          const taskOf = r => (doc.issues.find(p => p.id === r.issue) || doc0.issues.find(p => p.id === r.issue) || {}).task ?? null
+          if (moved.length || undone.length) throw new Withdrawn(moved.map(r => ({ ...r, task: taskOf(r) })), undone)
+          leftOutLines(left, tools.J)
           if (dids.length) {
             doc.pending_done = doc.pending_done.filter(y => !dids.some(d => sameDid(d, y)))
             for (const id of result.done) tools.J('pilot', null, `${id}: done, written into PREREQUISITES.md`)
@@ -2176,6 +2269,8 @@ function applyRulings(ctx) {
             if (copy) Object.assign(copy, { status: 'settled', chosen_option: r.option })
             J('ruling', x.p.task, `${r.issue}: ${answer(r)} applied`)
             if (run && !run.rulings_applied.some(a => a.task === x.p.task && a.title === x.p.title)) run.rulings_applied.push({ task: x.p.task, title: x.p.title, option: r.option ?? FREE_ANSWER })
+            // Outside a run (pre-flight, 0.22.0): kept for the next run-start, which records them in its run
+            if (!run) (doc.applied_outside ??= []).push({ issue: r.issue, task: x.p.task, title: x.p.title, option: r.option, text: r.text })
             for (const a of x.discarded) if (run) run.discarded_amendments.push({ task: x.p.task, id: a.id, reason: a.reason })
             add(doc, x.created, x.p.task, tools)
           }
@@ -2190,7 +2285,7 @@ function applyRulings(ctx) {
         const subject = ids.length ? `progress: rulings ${ids.join(', ')}${dones ? `; ${dones}` : ''}` : dones ? `progress: ${dones}` : `progress: rulings refused ${result.rejected.map(x => x.issue).join(', ')}`
         result.commit = commitPlan(ctx, [handoffFile, join(ctx.dir, 'PROGRESS.md'), join(ctx.dir, REGISTER), ...written, ...(doneIds.length ? [prereqFile] : [])], subject, 'apply')
         const said = [...(ids.length ? [`${plural(ids.length, 'ruling')} applied (${ids.join(', ')})`] : []), ...(result.rejected.length ? [`${result.rejected.length} refused (${result.rejected.map(x => x.issue).join(', ')})`] : []), ...(doneIds.length ? [`${doneIds.join(', ')} done`] : [])]
-        return answerOf(result, `${said.length ? said.join('; ') : 'nothing applied'}; ${result.commit ? `committed ${result.commit.slice(0, 7)}` : 'nothing to commit'}`)
+        return answerOf(result, `${said.length ? said.join('; ') : 'nothing applied'}; ${result.commit ? `committed ${result.commit.slice(0, 7)}` : 'nothing to commit'}${leftOutSaid(left)}`)
       } catch (e) {
         for (const [f, c] of held) { if (c == null) attempt(() => unlinkSync(f)); else writeFileSync(f, c) }
         throw e
@@ -2277,7 +2372,7 @@ function main() {
       if (!existing && !L.tasks) throw new Refusal(`${L.errors[0]}: progress.json missing, it cannot be rebuilt without plan-lint`)
       const doc = existing || rebuild(ctx, L, handoff, at)
       if (existing) sync(doc, L, ctx, logger(doc, at), { statuses: true })
-      derive(doc, L, handoff)
+      derive(doc, L, handoff, () => attempt(() => loadRegister(ctx)))
       process.stdout.write(render(doc, readOrNull(join(ctx.dir, 'PROGRESS.md'))))
       return 0
     }
