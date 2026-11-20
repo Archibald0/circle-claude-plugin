@@ -2,6 +2,14 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.22.1 to 0.22.2
+
+`progress.json` stays `orchestre-progress/4` and the plans keep their format: 0.22.2 changes no script and adds no field to `progress.json`, so a file that 0.22.2 wrote is read as it is by 0.22.1 (and by 0.22.0, with its false stop, below). Going back to 0.22.1 is supported. Update between two runs, never during one, then `/reload-plugins`, or a new session.
+
+1. Nothing to migrate or to add.
+2. The step of a fix carries the gaps of its rejection whole, so a worker no longer has a cut gap to complete in its progress command.
+3. After a circuit breaker, the detail of a task whose integrator gave no verdict says `without a merge verdict, which may have run: see merged_unclosed`.
+
 ## From 0.22.0 to 0.22.1
 
 `progress.json` stays `orchestre-progress/4` and the plans keep their format: 0.22.1 adds no field to `progress.json`, and a file that 0.22.1 wrote is read as it is by 0.22.0. Going back to 0.22.0 is supported, with its false stop: the clerk could drop the empty `waits` of the output of `close` and stop the run on `Progress of <id>: output of close not read`. Update between two runs, never during one, then `/reload-plugins`, or a new session.

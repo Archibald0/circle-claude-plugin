@@ -63,10 +63,11 @@ const DEVIATION = [{ type: 'deviation', description: 'isSuperAdmin optional in U
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
 let last = null
 async function scenario(name, q, args = {}) {
-  const calls = [], logs = [], unexpected = []
+  const calls = [], logs = [], unexpected = [], cut = []
   const agent = async (prompt, opts = {}) => {
     calls.push({ prompt, opts })
     const k = opts.label
+    cut.push(...cutPayloads(prompt).map(v => `${k}: ${v}`))
     if (!(k in q) || !q[k].length) { unexpected.push(k); throw new Error(`[${name}] unexpected call: ${k}`) }
     const v = q[k].shift()
     return sealed(k, typeof v === 'function' ? await v(prompt, opts) : v, prompt)
@@ -76,6 +77,7 @@ async function scenario(name, q, args = {}) {
   // The workflow catches an agent that throws where only the display is at stake (the clerk of a task start, of the run end):
   // a call without an answer must not pass for such a failure
   assert.deepEqual(unexpected, [], `[${name}] call without an answer`)
+  assert.deepEqual(cut, [], `[${name}] progress payload cut by "…" that the prompt gives longer`)
   return { res, calls, logs, q }
 }
 const byLabel = (calls, l) => calls.filter(c => c.opts.label === l)
@@ -672,6 +674,27 @@ function parse(c) {
   assert.equal(_digest, payloadDigest(E), `${m[1]}: _digest missing or wrong`)
   return { cmd: m[1], plan: m[2], E }
 }
+// A text of a progress payload cut by "…" while the same prompt gives it longer (0.22.2, issue #22): the agent that copies the
+// command sees both, completes the cut text in the heredoc, and the payload fails its digest. For each string of each payload
+// of the prompt (nested ones included) that ends with "…": a violation when the prompt, its whitespace collapsed, holds that text
+// without the "…" followed by more text (an occurrence followed by the "…" itself is the payload's own). A declaration, hoisted:
+// scenario() and play() collect the violations of every call and assert them after the run, as for the calls without an answer
+function cutPayloads(prompt) {
+  const flat = String(prompt).replace(/\s+/g, ' '), found = []
+  const walk = x => {
+    if (typeof x === 'string') {
+      if (!x.endsWith('…') || x.length < 2) return
+      const head = x.slice(0, -1)
+      for (let i = flat.indexOf(head); i !== -1; i = flat.indexOf(head, i + 1)) {
+        const next = flat.slice(i + head.length)
+        if (next.trim() && !next.startsWith('…')) { found.push(`"${x.length > 70 ? x.slice(0, 69) + '…' : x}": the prompt holds it longer`); return }
+      }
+    } else if (Array.isArray(x)) x.forEach(walk)
+    else if (x && typeof x === 'object') Object.values(x).forEach(walk)
+  }
+  for (const c of progressCommands(String(prompt))) walk(parse(c).E)
+  return found
+}
 // The Bash tool of Claude Code decodes the \uXXXX sequences of a command before the shell reads it (issue #1); the agents
 // played by play() go through the same decoding when BASH_TOOL.decodes is on
 const BASH_TOOL = { decodes: false }
@@ -718,11 +741,11 @@ await test('V2: progress — fix and its rejection, escaped text; full close in 
     'plan-reader': [planOpened(T00, T01)], 'T00 · worker': [withProgress(report(0, { deviations: DEVIATION }))], 'T00 · verification': [withProgress(ok(1)), withProgress(ok(2))],
     'T00 · evaluation': [withProgress({ verdict: 'fail', gaps: [M, LONG] }), withProgress({ verdict: 'pass' })], 'T00 · fix 1': [withProgress(report(1))],
     'T00 · merge': [withProgress(MOK)], 'T00 · replanning': [RP_E], 'T00 · progress': [withProgress(SOK)], ...s01(), 'run end · progress': [COK] }, { ...AP, mode: 'auto' })
-  const LONG1 = 'npm test: 2 failures at a.test.ts:12 ' + 'x'.repeat(202) + '…'
-  assert.equal(LONG1.length, 240)
+  const LONG_ONE = 'npm test: 2 failures at a.test.ts:12 ' + 'x'.repeat(400)
+  assert.equal(LONG_ONE.length, 437)
   assert.equal(res.status, 'rerun'); assert.deepEqual(res.progress_failures, [])
   const fix = byLabel(calls, 'T00 · fix 1')[0].prompt
-  assert.deepEqual(progressOf(calls, 'T00 · fix 1'), [{ cmd: 'step', plan: 'plans/p', E: { task: 'T00', step: 'fix', rejection: { attempt: 1, by: 'evaluation', gaps: [M, LONG1] }, model: 'sonnet' } }], 'long text on one line and cut')
+  assert.deepEqual(progressOf(calls, 'T00 · fix 1'), [{ cmd: 'step', plan: 'plans/p', E: { task: 'T00', step: 'fix', rejection: { attempt: 1, by: 'evaluation', gaps: [M, LONG_ONE] }, model: 'sonnet' } }], 'long text on one line and whole, never cut (0.22.2, issue #22)')
   assert.ok(fix.includes(LONG), 'the fix worker gets the whole gap')
   assert.ok(progressCommands(fix).every(c => c.split('\n').length === 3), 'the JSON on one line, between the command and the delimiter')
   assert.ok(fix.includes("the option's `--force` costs $5") && !fix.includes('\\u0027'), 'apostrophe, backtick and dollar as they are, in the quoted heredoc')
@@ -903,10 +926,11 @@ const refusedByGuard = c => {
 }
 // Each progress command of the instruction goes through the shell, in order; the report carries their exit codes
 async function play(name, D, q, args = {}) {
-  const launched = [], unexpected = [], calls = []
+  const launched = [], unexpected = [], calls = [], cut = []
   const agent = async (prompt, opts = {}) => {
     const k = opts.label
     calls.push({ label: k, prompt })
+    cut.push(...cutPayloads(prompt).map(v => `${k}: ${v}`))
     if (!(k in q) || !q[k].length) { unexpected.push(k); throw new Error(`[${name}] unexpected call: ${k}`) }
     const v0 = q[k].shift(), cs = progressCommands(prompt)
     // null: an agent that did not answer (expired login, usage limit) ran nothing either (0.19.0)
@@ -953,6 +977,7 @@ async function play(name, D, q, args = {}) {
   const res = await run({ ...ARGS, progress: PROGRESS_SCRIPT, ...args }, agent, () => {}, () => {})
   last = { res, launched }
   assert.deepEqual(unexpected, [], `[${name}] call without an answer`)
+  assert.deepEqual(cut, [], `[${name}] progress payload cut by "…" that the prompt gives longer`)
   return { res, launched, calls }
 }
 const T0 = { ...T00, resources: [], file: 'plans/p/tasks/T00-x.md', verification: ['npm test'] }
@@ -1917,7 +1942,7 @@ await test('SC6: circuit breaker — a task merged then interrupted at its scrib
   const m = await trip('SC6 merge', 'T02 · merge', { 'T02 · progress': [] })
   assert.equal(m.res.status, 'error'); assert.deepEqual([...m.res.interrupted].sort(), ['T02', 'T03'])
   assert.deepEqual(m.res.merged_unclosed, [{ id: 'T02', branch: 'task/T02', merge: 'unknown', deviations: DEVIATION, reviews: [R.description], unverifiable: [UV], issues: [] }])
-  assert.ok(m.res.detail.endsWith(' T02 interrupted at their merge, which may have run: see merged_unclosed.') && !m.res.detail.includes('merged before the trip'), m.res.detail)
+  assert.ok(m.res.detail.endsWith(' T02 without a merge verdict, which may have run: see merged_unclosed.') && !m.res.detail.includes('merged before the trip'), m.res.detail)
   for (const l of ['T02 · replanning', 'T02 · progress']) assert.equal(idx(m.calls, l), -1, l)
   drained('SC6 merge', m.q)
   // A post-merge check failed, then the scribe interrupted: the issue of the check stays in stop_issue, and does not come
@@ -1968,7 +1993,7 @@ await test('SC6: circuit breaker — a task merged then interrupted at its scrib
   const r12 = await verdictless('SC6 run 12', null, { 'T02 · replanning': [null] })
   assert.equal(r12.res.status, 'error'); assert.deepEqual(r12.res.interrupted, ['T02'])
   assert.deepEqual(r12.res.merged_unclosed, UNKNOWN)
-  assert.ok(r12.res.detail.startsWith('agents not answering: ') && r12.res.detail.endsWith(' T02 interrupted at their merge, which may have run: see merged_unclosed.') && !/before (its|their) merge/.test(r12.res.detail) && !r12.res.detail.includes('merged before the trip'), r12.res.detail)
+  assert.ok(r12.res.detail.startsWith('agents not answering: ') && r12.res.detail.endsWith(' T02 without a merge verdict, which may have run: see merged_unclosed.') && !/before (its|their) merge/.test(r12.res.detail) && !r12.res.detail.includes('merged before the trip'), r12.res.detail)
   assert.equal(idx(r12.calls, 'T02 · progress'), -1, 'no close of an interrupted task')
   drained('SC6 run 12', r12.q)
   // The breaker never trips: the replanning answers, the task is closed as blocked, and the return still says its merge is unknown
@@ -3092,6 +3117,15 @@ await test('CH5: challenger — an equivalent mutation (equivalent: true and a r
     assert.ok(!b.logs.some(l => l.includes('equivalent mutation not counted')), name)
     drained('CH5 ' + name, b.q)
   }
+  // A mutation of a test file reported as equivalent (0.22.2, issue #24, mutation W17e): it is a mutation of a test file, not
+  // counted as such, never as an equivalent one: no 'equivalent mutation not counted' line, and the next pass is told 'not detected'
+  const onTest = await scenario('CH5 test file', challenged([{ ok: true, mutations: [EQ('tests/a.test.ts', 3, EQ_REASON), MUT('src/a.ts', 12, false)] }, { ok: true, mutations: [MUT('src/b.ts', 7, true)] }], { 'T00 · verification': [withProgress(ok(1)), withProgress(ok(2))], 'T00 · evaluation': [withProgress({ verdict: 'pass' }), withProgress({ verdict: 'pass' })], 'T00 · fix 1': [withProgress(report(1))] }), { ...AP, parallelism: 1 })
+  assert.deepEqual([onTest.res.tasks[0].status, onTest.res.tasks[0].attempts, onTest.res.tasks[0].rejections], ['merged', 2, [{ attempt: 1, by: 'challenge', gaps: [SURVIVOR] }]], 'the survivor of the source file rejects the attempt')
+  assert.ok(!onTest.logs.some(l => l.includes('equivalent mutation not counted')), 'a mutation of a test file is not logged as an equivalent one: ' + JSON.stringify(onTest.logs))
+  assert.ok(onTest.logs.includes('T00: challenge, mutations of a test file not counted: tests/a.test.ts'), JSON.stringify(onTest.logs))
+  const [, onTest2] = byLabel(onTest.calls, 'T00 · challenge').map(c => c.prompt)
+  assert.ok(onTest2.includes('- tests/a.test.ts:3, if (ok) → if (!ok), not detected') && !onTest2.includes(EQ_REASON), 'the next pass lists it as not detected, without its reason')
+  drained('CH5 test file', onTest.q)
   // Case 2: a survivor rejects attempt 1; the fix answers it with a deviation that says why it is equivalent; the evaluator is told
   // to weigh it; the second pass is told the mutations of the first and finds no survivor; merged within max_fixes
   const WHY = 'src/a.ts:12: the guard repeats the check of the caller, no test could observe it'

@@ -2620,6 +2620,17 @@ Types: decision · manual · environment.
     r = applyStopped(M)
     assert.equal(r.code, 0, r.err)
     assert.deepEqual([r.json.before_run, r.json.applied.map(x => x.issue), M.doc().runs[1].status, M.doc().runs[1].rulings_applied, M.doc().applied_outside.map(a => a.issue)], [undefined, ['T01-2'], 'interrupted', [{ task: 'T01', title: 'Pick', option: 'A' }], ['T01-2']])
+    // #23: the last run is finished and nothing is pending: apply --run-stopped writes nothing, not even the `updated` date (one-second precision, hence the wait)
+    const F = open('finished')
+    assert.equal(F.progress('run-start', RUN).code, 0)
+    assert.equal(F.progress('run-end', { status: 'finished' }).code, 0)
+    const before = F.read('progress.json')
+    assert.equal(F.doc().runs[0].status, 'finished')
+    assert.deepEqual([F.doc().pending_rulings ?? [], F.doc().pending_done ?? []], [[], []])
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1100)
+    r = applyStopped(F)
+    assert.deepEqual([r.code, r.json.message], [0, 'no ruling to apply'], r.err)
+    assert.equal(F.read('progress.json'), before, 'progress.json is byte-identical')
   })
 
   await test('rule (0.22.0, run 9): an option whose amendments all target tasks merged or cancelled since its issue was raised is refused, marked invalid in progress.json and shown invalid by progress.mjs status with the same reason; one with only some names them in its effect', () => {
