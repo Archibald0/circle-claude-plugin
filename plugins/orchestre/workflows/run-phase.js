@@ -330,7 +330,9 @@ ${bullets(cmds.map(c => '`' + c + '`'))}
 Mutations already tried by the earlier passes of this task (file:line, change, result): do not try them again, pick other lines of the diff.
 ${bullets(tried.map(m => `${m.file}${Number.isInteger(m.line) ? `:${m.line}` : ''}, ${m.change}, ${m.result}`))}` : ''}
 5. Return ok=true, "path" (what \`pwd\` prints) and "mutations": for each mutation tried, "file", "line", "change" (the line before → after), "detected" and "by" (the first command that detected it, nothing if none). A mutation that no test could observe, because it changes no behavior (dead code, a guard another one already makes redundant, a value no path reads), is an equivalent mutant: return it with "equivalent" true and its "reason", the one thing that makes it equivalent. Never use it to dismiss a survivor: a mutation that a test could observe, and that none detected, is not equivalent, and "equivalent" without a "reason" counts as not detected. Never commit, never change a test, and leave the worktree as you found it, without a mutation.${pLanguage}`
-const pFix = (t, r, gaps, rejection, choice) => `${pStep(t.id, 'fix', { rejection: rejection && { ...rejection, gaps: shorts(rejection.gaps) }, model: choice.model, ...(choice.change ? { change: choice.change } : {}) })}Fix of the task ${t.id}. Work in ${r.path}, on the branch ${r.branch}: prefix each command with \`cd "${r.path}" &&\` and edit the files by their absolute path under that folder. Read ${t.file} and ${PLAN}/DISCOVERY.md again.
+// The gaps in the step of a fix go whole, on one line, never cut (0.22.2, issue #22): the worker has them whole in its prompt
+// too, and a cut text it completed in the heredoc changed the payload, hence its digest, and the step was refused
+const pFix = (t, r, gaps, rejection, choice) => `${pStep(t.id, 'fix', { rejection: rejection && { ...rejection, gaps: (rejection.gaps || []).map(oneLine) }, model: choice.model, ...(choice.change ? { change: choice.change } : {}) })}Fix of the task ${t.id}. Work in ${r.path}, on the branch ${r.branch}: prefix each command with \`cd "${r.path}" &&\` and edit the files by their absolute path under that folder. Read ${t.file} and ${PLAN}/DISCOVERY.md again.
 Gaps to fix:
 ${bullets(gaps)}${rejection && rejection.by === 'challenge' ? `
 These gaps come from the challenger: each is a change of the code of the branch that no verification command detected. Add to the task's tests the case that fails under that change, or strengthen the one that should; change the code itself only if the mutation shows a real bug. A gap that you judge equivalent (the mutation changes no behavior that any test could observe) gets no test: answer it with a deviation of your report that names the mutation (file:line) and says why no test could observe it. The evaluator weighs that reason against the diff and accepts it only if it holds; otherwise the gap rejects the attempt again.` : ''}
@@ -1172,10 +1174,12 @@ const summary = {
 }
 // Circuit breaker: error, whatever else happened. The interrupted tasks are in "interrupted", outside what run-end reads; the
 // issue that stopped the run before, if any, stays (forget took out those of the interrupted closes). The tasks interrupted after
-// their merge, or at their merge call, are also in "merged_unclosed" (0.19.0), with what their close did not record
+// their merge are also in "merged_unclosed" (0.19.0), with what their close did not record; so are those whose integrator
+// returned no verdict (no answer, an error, or the trip itself), with merge: "unknown" (0.22.1): the detail says "without a
+// merge verdict", since the breaker may have tripped at a later call of the task, or the merge may have run
 if (breaker) {
   const known = mergedUnclosed.filter(x => !x.merge).map(x => x.id), unknown = mergedUnclosed.filter(x => x.merge).map(x => x.id)
-  const unrecorded = (known.length ? ` ${known.join(', ')} merged before the trip: their deviations were not recorded, see merged_unclosed.` : '') + (unknown.length ? ` ${unknown.join(', ')} interrupted at their merge, which may have run: see merged_unclosed.` : '')
+  const unrecorded = (known.length ? ` ${known.join(', ')} merged before the trip: their deviations were not recorded, see merged_unclosed.` : '') + (unknown.length ? ` ${unknown.join(', ')} without a merge verdict, which may have run: see merged_unclosed.` : '')
   return await finish({ status: 'error', ...summary, ...(stop ? { stop_issue: stop } : {}), interrupted, merged_unclosed: mergedUnclosed, detail: `agents not answering: ${breaker.length} calls in a row without an answer (${breaker.join(', ')}). Login expired, usage limit or network. ${interrupted.join(', ')} interrupted, their branches kept. Launch a new run once claude answers again.${unrecorded}` })
 }
 if (stop) return await finish({ status: 'awaiting-ruling', stop_issue: stop, ...summary })

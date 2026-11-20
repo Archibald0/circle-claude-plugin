@@ -1060,7 +1060,7 @@ try {
     const VMS = read(join(PLUGIN, 'hooks', 'view-model.mjs')), prefix = VMS.match(/const MUTATION_PREFIX = '([^']+)'/)
     assert.ok(prefix && WF.includes('`' + prefix[1] + '${where(m)}'), 'view-model.mjs strips the prefix run-phase.js writes on each challenger gap')
     // #14: README
-    for (const w of ['`[ Other… ]`', '`[ Accept the N recommended ]`', '`[ ✓ I did it ]`', 'withdraws a ruling or a `did`', 'challenge{"challenge<br/>', 'Going back from 0.20, 0.21 or 0.22 is not supported', 'to 0.22.1.']) assert.ok(README.includes(w), `README.md: ${w}`)
+    for (const w of ['`[ Other… ]`', '`[ Accept the N recommended ]`', '`[ ✓ I did it ]`', 'withdraws a ruling or a `did`', 'challenge{"challenge<br/>', 'Going back to 0.19, 0.20 or 0.21 is not supported; going back within 0.22 is.', 'to 0.22.2.']) assert.ok(README.includes(w), `README.md: ${w}`)
     assert.ok(!README.includes('from 0.12 and from 0.11'), 'README.md: no stale upgrading line')
     // #15: the pre-flight and the challenger's worktrees; the downgrade text of 0.22.0 is pinned as that of 0.21.0 is
     assert.ok(REF.includes("the challenger's detached worktrees go with them when the run has no progress, and one that has changes or commits of its own is kept and reported"), 'reference.md: the challenger worktrees at the pre-flight')
@@ -1069,11 +1069,39 @@ try {
     // The version: 0.22.1, the badge, the section and ten lines, the upgrade note, and the commands cited exist
     const version = JSON.parse(read(join(PLUGIN, '.claude-plugin', 'plugin.json'))).version
     assert.ok(version >= '0.22.1', 'version 0.22.1 or later')
-    const top = CL.slice(CL.indexOf('\n## ') + 1), first = top.slice(0, top.indexOf('\n## ', 4))
-    assert.ok(/^## 0\.22\.1 — \d{4}-\d{2}-\d{2}: .+$/m.test(first.split('\n')[0]), 'CHANGELOG.md starts with ## 0.22.1 — <date>: <title>')
+    const at1 = CL.indexOf('## 0.22.1 — '), first = CL.slice(at1, CL.indexOf('\n## ', at1 + 4))
+    assert.ok(/^## 0\.22\.1 — \d{4}-\d{2}-\d{2}: .+$/m.test(first.split('\n')[0]), 'CHANGELOG.md has the section ## 0.22.1 — <date>: <title>')
     assert.deepEqual(first.split('\n').filter(l => /^Fixes #\d+\.$/.test(l)), Array.from({ length: 10 }, (_, i) => `Fixes #${11 + i}.`), 'CHANGELOG.md: Fixes #11. to Fixes #20.')
+    assert.ok(first.includes('which clears the `isCollapsed` type warnings of `npm run validate`') && !first.includes('clears the type warnings'), 'CHANGELOG.md 0.22.1: the Pane bullet claims only the isCollapsed warnings')
     assert.ok(UPG.includes('## From 0.22.0 to 0.22.1') && UPG.includes('Going back to 0.22.0 is supported'), 'upgrading.md: the 0.22.1 section')
     const sec = UPG.slice(UPG.indexOf('## From 0.22.0 to 0.22.1'), UPG.indexOf('## From 0.21.0 to 0.22.0'))
+    for (const m of [...sec.matchAll(/\/orchestre:([a-z]+)/g), ...first.matchAll(/\/orchestre:([a-z]+)/g)]) assert.ok(SKILLS.includes(m[1]), `/orchestre:${m[1]} exists`)
+    for (const m of [...sec.matchAll(/progress\.mjs ([a-z-]+)/g), ...first.matchAll(/progress\.mjs ([a-z-]+)/g)]) assert.ok(SRC.progress.match(/usage: progress\.mjs <([a-z|-]+)>/)[1].split('|').includes(m[1]), `progress.mjs ${m[1]}`)
+  })
+
+  test('docs and version (0.22.2): the doc fixes of #26 to #28, the step of a fix and the breaker detail, the section and seven lines', () => {
+    const REF = read(join(ROOT, 'docs', 'reference.md')), README = read(join(ROOT, 'README.md')), UPG = read(join(ROOT, 'docs', 'upgrading.md')), CL = read(join(ROOT, 'CHANGELOG.md'))
+    const flat = t => t.replace(/\s+/g, ' ')
+    // #27: the 0.20.0 retry no longer lists the wait (it arrived in 0.21.0)
+    const at20 = CL.indexOf('## 0.20.0 — '), s20 = CL.slice(at20, CL.indexOf('\n## ', at20 + 4))
+    assert.ok(s20.includes('for the steps that go through the clerk or the plan reader only (the run start, the start of a task, the close and the run end)') && !s20.includes('the wait'), 'CHANGELOG.md 0.20.0: the retry list without the wait')
+    assert.ok(REF.includes('about thirty of which run the real `progress.mjs` or `worktrees.mjs` (two the real `plan-lint.mjs`)'), 'reference.md: the scenarios that run real scripts')
+    // #28: the two README rows and the downgrade sentence
+    assert.ok(/^\| `\[ Accept the N recommended \]` \| "Your turn" card \|/m.test(README) && /^\| `\[ ✓ I did it \]` \| Detail card of a prerequisite \|/m.test(README), 'README.md: the two buttons in their own rows')
+    assert.ok(!/`\[ Decide later \]`, `\[ Accept/.test(README), 'README.md: the row of the issue card no longer holds them')
+    assert.ok(README.includes('Going back to 0.19, 0.20 or 0.21 is not supported; going back within 0.22 is.'), 'README.md: the downgrades')
+    // T41: the step of a fix and the breaker detail
+    assert.ok(flat(REF).includes('`step` payload carries each gap whole, on one line, never cut with an ellipsis (0.22.2)'), 'reference.md: whole gaps in the step of a fix')
+    assert.ok(flat(REF).includes('`<ids> without a merge verdict, which may have run: see merged_unclosed.`') && WF.includes('without a merge verdict, which may have run: see merged_unclosed'), 'reference.md and run-phase.js: the breaker detail')
+    // The version, the section, seven lines, the upgrade note, the commands cited
+    const version = JSON.parse(read(join(PLUGIN, '.claude-plugin', 'plugin.json'))).version
+    assert.ok(version >= '0.22.2', 'version 0.22.2 or later')
+    const top = CL.slice(CL.indexOf('\n## ') + 1), first = top.slice(0, top.indexOf('\n## ', 4))
+    assert.ok(/^## 0\.22\.2 — \d{4}-\d{2}-\d{2}: .+$/.test(first.split('\n')[0]), 'CHANGELOG.md starts with ## 0.22.2 — <date>: <title>')
+    assert.deepEqual(first.split('\n').filter(l => /^Fixes #\d+\.$/.test(l)), Array.from({ length: 7 }, (_, i) => `Fixes #${22 + i}.`), 'CHANGELOG.md: Fixes #22. to Fixes #28.')
+    assert.ok(!first.includes('#29'), 'CHANGELOG.md 0.22.2 does not cite #29')
+    assert.ok(UPG.includes('## From 0.22.1 to 0.22.2') && UPG.includes('Going back to 0.22.1 is supported'), 'upgrading.md: the 0.22.2 section')
+    const sec = UPG.slice(UPG.indexOf('## From 0.22.1 to 0.22.2'), UPG.indexOf('## From 0.22.0 to 0.22.1'))
     for (const m of [...sec.matchAll(/\/orchestre:([a-z]+)/g), ...first.matchAll(/\/orchestre:([a-z]+)/g)]) assert.ok(SKILLS.includes(m[1]), `/orchestre:${m[1]} exists`)
     for (const m of [...sec.matchAll(/progress\.mjs ([a-z-]+)/g), ...first.matchAll(/progress\.mjs ([a-z-]+)/g)]) assert.ok(SRC.progress.match(/usage: progress\.mjs <([a-z|-]+)>/)[1].split('|').includes(m[1]), `progress.mjs ${m[1]}`)
   })
