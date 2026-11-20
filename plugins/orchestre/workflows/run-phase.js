@@ -28,7 +28,9 @@ export const meta = {
 //   verification commands after each and restores the file. A mutation that nothing detected rejects the attempt (by:
 //   challenge): the fix adds the missing test, then verification, evaluation and challenge run again, within max_fixes. A
 //   challenger without an answer, or that could not run its pass, is no rejection: a blind spot under the task's close. Its
-//   worktree, detached, is removed at the end of the run by worktrees.mjs clean.
+//   worktree, detached, is removed at the end of the run by worktrees.mjs clean. An equivalent mutation (equivalent: true with a
+//   reason, 0.22.1) is logged and not counted; the fix may answer a survivor it judges equivalent by a deviation, which the
+//   evaluator weighs; each later pass is told the mutations the earlier ones tried.
 // rerun: ids of "needs-human" tasks the user restarts, after their decision
 // progress (0.8.0): path of scripts/progress.mjs, sole writer of progress.json and of the PROGRESS.md view (contract orchestre-progress/4
 //   since 0.20.0, which converts a file of orchestre-progress/3, orchestre-suivi/2 or /1).
@@ -189,19 +191,21 @@ const PROOF_S = S({ criterion: str, by: { type: 'string', enum: PROOF_BY }, ref:
 const EVAL_S = S({ verdict: { type: 'string', enum: ['pass', 'fail'] }, gaps: strs, unverifiable: strs, unreadable: strs, proofs: { type: 'array', items: PROOF_S }, ...PROGRESS_P }, ['verdict'])
 // Challenger (0.22.0): no progress field, the agent is isolated; the clerk notes its step from the main checkout
 const MUTATIONS_MAX = 3
-const MUTATION_S = S({ file: str, line: { type: 'integer' }, change: str, detected: bool, by: str }, ['file', 'change', 'detected'])
+// equivalent and reason (0.22.1): a mutation that no test could observe, because it changes no behavior, with why
+const MUTATION_S = S({ file: str, line: { type: 'integer' }, change: str, detected: bool, by: str, equivalent: bool, reason: str }, ['file', 'change', 'detected'])
 const CHALLENGE_S = S({ ok: bool, path: str, mutations: { type: 'array', items: MUTATION_S }, detail: str }, ['ok', 'mutations'])
 const INTEG_S = S({ ok: bool, merged: bool, check_ok: bool, check_skipped: bool, conflict: bool, commit: str, detail: str, worktree_kept: str, ...PROGRESS_P }, ['ok', 'merged'])
 const SCRIBE_S = S({ ok: bool, commit: str, rejected: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }, discarded: { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }, ...PROGRESS_P }, ['ok'])
 const CLERK_S = S({ progress_ok: bool, progress_error: str, commit: str, detail: str, worktrees: str }, ['progress_ok'])
 // Close of a task with progress (0.20.0), by the clerk or the scribe: the output of progress.mjs close, copied as printed, and
-// the paths cited by an auto-decision that neither exist nor belong to a task the close creates
+// the paths cited by an auto-decision that neither exist nor belong to a task the close creates. Every field the script prints
+// every time, empty or not, is required (0.22.1): an agent that drops an empty one (waits: []) makes its copy's digest differ
 const IDREASON_S = { type: 'array', items: S({ id: str, reason: str }, ['id', 'reason']) }
 // A rejected automatic decision names its issue (0.21.0): issue, its id, and title
 const REJECTED_S = { type: 'array', items: S({ id: str, issue: nullable('string'), title: str, reason: str }, ['id', 'reason']) }
 // waits (0.21.0): each open issue that is not human, its deadline and the tasks not started it holds
 const WAITS_S = { type: 'array', items: S({ issue: str, until: str, holds: strs }, ['issue', 'until', 'holds']) }
-const CLOSE_OUT_S = S({ task: str, status: str, commit: { type: ['string', 'null'] }, rejected: REJECTED_S, discarded: IDREASON_S, issues: strs, pending: strs, waits: WAITS_S, message: str, digest: str }, ['task', 'status', 'commit', 'rejected', 'discarded', 'issues', 'pending', 'message', 'digest'])
+const CLOSE_OUT_S = S({ task: str, status: str, commit: { type: ['string', 'null'] }, rejected: REJECTED_S, discarded: IDREASON_S, issues: strs, pending: strs, waits: WAITS_S, message: str, digest: str }, ['task', 'status', 'commit', 'rejected', 'discarded', 'issues', 'pending', 'waits', 'message', 'digest'])
 const CLOSE_S = S({ progress_ok: bool, progress_error: str, close: CLOSE_OUT_S, missing: strs }, ['progress_ok'])
 // Wait of a held task (0.21.0), by the clerk: the last output of progress.mjs wait, copied as printed
 const WAIT_OUT_S = S({ task: str, settled: strs, released: strs, timeout: strs, again: bool, digest: str }, ['task', 'settled', 'released', 'timeout', 'again', 'digest'])
@@ -306,28 +310,30 @@ The failures listed as pre-existing in ${PLAN}/DISCOVERY.md do not count. A comm
 const pScopeFacts = scope => scope ? `Scope check of this branch by plan-lint --scope, a script whose copy the workflow checked: the files outside owned_files are already checked, do not read the scope yourself. Test files deleted or renamed (tests_removed): ${JSON.stringify(arr(scope.tests_removed))}. Skipped-test markers added (skips_added): ${JSON.stringify(arr(scope.skips_added))}. A test deleted or skipped is a gap, unless the definition of done asks for it. tests_removed lists the paths containing \`test\` or \`spec\` (case-insensitive), which can include files that are not tests (such as \`docs/latest.md\`): such a file is not a gap by itself.`
   : 'The scope check of this branch (plan-lint --scope) could not be read: check yourself, in the diff, that it touches no file outside owned_files, and that it deletes or skips no test, unless the definition of done asks for it.'
 const pProofs = `On a pass, return "proofs": one entry per criterion of the definition of done, with "criterion" (its text), "by" and "ref": \`diff\` and the file:line of the diff, \`test\` and the test file and case, \`command\` and the command exactly as in the results of the verifier above (only a result of code 0 proves), or \`report\` and the passage of the worker's report (only for a criterion that asks for report content). A pass without proofs, or with a \`command\` proof that matches no result of code 0, is refused.`
-const pEval = (t, r, v, scope, refused = null) => `${refused ? `Your first evaluation of this attempt of the task ${t.id} returned pass, refused by the workflow: ${refused}. Evaluate again, from the start.
+const pEval = (t, r, v, scope, refused = null, challenged = []) => `${refused ? `Your first evaluation of this attempt of the task ${t.id} returned pass, refused by the workflow: ${refused}. Evaluate again, from the start.
 ` : pStep(t.id, 'evaluation')}Evaluate the task ${t.id}. Read the definition of done in ${t.file}, then the diff \`git diff ${INTEG}...${r.branch}\`.
 Results of the verifier, taken on this branch just before you; they are proof of execution: ${JSON.stringify((v && v.results) || [])}.${v && (v.flaky || []).length ? ` Tests passed only on the second run, counted as passed: ${JSON.stringify(v.flaky)}.` : ''}
 ${pScopeFacts(scope)}
 ${(v && (v.forbidden || []).length) ? `Commands refused to the agents by their permissions, that the human will run before the PR: ${JSON.stringify(v.forbidden)}. A criterion that only they demonstrate is neither a gap nor an unverifiable criterion.
 ` : ''}Report of the worker; it is a deliverable, not a proof: its claims of execution demonstrate nothing. ${JSON.stringify({ summary: r.summary, findings: r.findings || [], deviations: r.deviations || [] })}
-For each criterion, look for a proof: file:line of the diff, a test that covers it, or a result of the verifier above. A criterion that asks for report content is met if that content is in the worker's report. PROGRESS.md, HANDOFF.md and DISCOVERY.md are written by the scribe only at the end of the task: their state proves nothing, either way. A criterion that no verification command nor the diff can demonstrate in the context of this task, whatever the worker does (for example a behavior in a worktree for a task of the main checkout), is not a gap: cite it in "unverifiable" with the reason. This is rare: a criterion that is merely not proven stays a gap. A file of the diff your permissions forbid you to read (organization or project settings): never get around the ban; it is neither a gap nor an unverifiable criterion: cite it in "unreadable", the human will review it before the PR. A criterion that can only be demonstrated by reading such a file follows the same rule. Also check that the comments, headers, DECISIONS entries and procedures added or changed by the diff tell the truth: they describe what the code really does, and each command of a procedure meant for a human exists in the repository and does what the text says. A false text is a gap. Verdict fail if a single demonstrable criterion is not demonstrated; then list the precise gaps. ${pProofs} Change nothing.${pLanguage}`
+For each criterion, look for a proof: file:line of the diff, a test that covers it, or a result of the verifier above. A criterion that asks for report content is met if that content is in the worker's report. PROGRESS.md, HANDOFF.md and DISCOVERY.md are written by the scribe only at the end of the task: their state proves nothing, either way. A criterion that no verification command nor the diff can demonstrate in the context of this task, whatever the worker does (for example a behavior in a worktree for a task of the main checkout), is not a gap: cite it in "unverifiable" with the reason. This is rare: a criterion that is merely not proven stays a gap. A file of the diff your permissions forbid you to read (organization or project settings): never get around the ban; it is neither a gap nor an unverifiable criterion: cite it in "unreadable", the human will review it before the PR. A criterion that can only be demonstrated by reading such a file follows the same rule. Also check that the comments, headers, DECISIONS entries and procedures added or changed by the diff tell the truth: they describe what the code really does, and each command of a procedure meant for a human exists in the repository and does what the text says. A false text is a gap.${challenged.length ? ` An earlier attempt was rejected by the challenger, for changes of the code that no verification command detected: ${JSON.stringify(shorts(challenged))}. The worker may answer one that it judges equivalent (the change alters no behavior that any test could observe) by a deviation of its report, instead of a test: weigh its reason against the diff, and accept it only if it holds. A change that a test could observe, with neither a test for it nor a reason that holds, is a gap.` : ''} Verdict fail if a single demonstrable criterion is not demonstrated; then list the precise gaps. ${pProofs} Change nothing.${pLanguage}`
 // The second reading of the scope, by the plan-reader, when the verifier's copy does not match its digest (0.19.0)
 const pScope = (t, r) => `Your instructions read the scope of a task branch, not the plan. Run \`${scopeCmd(t, r)}\`, from the folder you start in (the main checkout), and return its JSON exactly as printed: every field and every value, \`digest\` included, character for character. Leave nothing out, add nothing, rephrase nothing: the workflow checks the copy against the digest.`
 // Challenge of a task (0.22.0), by the challenger isolated in a worktree of its own: every command it is given is a simple one
 // (isolation guard). The task's verification commands as the plan gives them, those refused to the agents left out
-const pChallenge = (t, r, cmds) => `Challenge of the task ${t.id} of the plan ${PLAN}: its evaluation passed; do the verification commands of its branch ${r.branch} detect a wrong change of its code? You are in an isolated worktree of your own: Claude Code's isolation guard only accepts simple commands there (see your rules).
+const pChallenge = (t, r, cmds, tried = []) => `Challenge of the task ${t.id} of the plan ${PLAN}: its evaluation passed; do the verification commands of its branch ${r.branch} detect a wrong change of its code? You are in an isolated worktree of your own: Claude Code's isolation guard only accepts simple commands there (see your rules).
 1. \`git switch --detach ${r.branch}\`: a detached checkout of the head of the task's branch, never the branch itself, which the main checkout or the worker's worktree holds. If it fails, stop there: ok=false and the first line of its error in "detail".${pSetup(t, 'once on that checkout, before any other work', 'If one fails, stop there: ok=false, the command and an excerpt of its output in "detail".')}
 2. Read ${t.file}, then \`git diff --name-only ${INTEG}...HEAD\` and \`git diff ${INTEG}...HEAD -- <file>\` for each file you may change: a file of code of that diff, never a test (a path that contains test or spec, a fixture, a snapshot), never a file outside the diff nor of ${PLAN}.
 3. Without any mutation, run once each command below, one by one, as it is. If one fails, stop there: ok=false, the command and an excerpt of its output in "detail"; a challenge proves nothing where the verification already fails.
 ${bullets(cmds.map(c => '`' + c + '`'))}
-4. Then ${MUTATIONS_MAX} mutations at most, one at a time, each on a line the diff adds or changes, where a wrong change would do the most harm: invert a condition, remove a guard, a check or a call, shift a bound or a constant. For each: change that line with your Edit tool; run the commands of point 3, one by one, as they are; then \`git checkout HEAD -- <file>\`, then \`git status --porcelain\`, which must print nothing before the next mutation. A mutation is detected when one of the commands exits with a code other than 0.
-5. Return ok=true, "path" (what \`pwd\` prints) and "mutations": for each mutation tried, "file", "line", "change" (the line before → after), "detected" and "by" (the first command that detected it, nothing if none). Never commit, never change a test, and leave the worktree as you found it, without a mutation.${pLanguage}`
+4. Then ${MUTATIONS_MAX} mutations at most, one at a time, each on a line the diff adds or changes, where a wrong change would do the most harm: invert a condition, remove a guard, a check or a call, shift a bound or a constant. For each: change that line with your Edit tool; run the commands of point 3, one by one, as they are; then \`git checkout HEAD -- <file>\`, then \`git status --porcelain\`, which must print nothing before the next mutation. A mutation is detected when one of the commands exits with a code other than 0.${tried.length ? `
+Mutations already tried by the earlier passes of this task (file:line, change, result): do not try them again, pick other lines of the diff.
+${bullets(tried.map(m => `${m.file}${Number.isInteger(m.line) ? `:${m.line}` : ''}, ${m.change}, ${m.result}`))}` : ''}
+5. Return ok=true, "path" (what \`pwd\` prints) and "mutations": for each mutation tried, "file", "line", "change" (the line before → after), "detected" and "by" (the first command that detected it, nothing if none). A mutation that no test could observe, because it changes no behavior (dead code, a guard another one already makes redundant, a value no path reads), is an equivalent mutant: return it with "equivalent" true and its "reason", the one thing that makes it equivalent. Never use it to dismiss a survivor: a mutation that a test could observe, and that none detected, is not equivalent, and "equivalent" without a "reason" counts as not detected. Never commit, never change a test, and leave the worktree as you found it, without a mutation.${pLanguage}`
 const pFix = (t, r, gaps, rejection, choice) => `${pStep(t.id, 'fix', { rejection: rejection && { ...rejection, gaps: shorts(rejection.gaps) }, model: choice.model, ...(choice.change ? { change: choice.change } : {}) })}Fix of the task ${t.id}. Work in ${r.path}, on the branch ${r.branch}: prefix each command with \`cd "${r.path}" &&\` and edit the files by their absolute path under that folder. Read ${t.file} and ${PLAN}/DISCOVERY.md again.
 Gaps to fix:
 ${bullets(gaps)}${rejection && rejection.by === 'challenge' ? `
-These gaps come from the challenger: each is a change of the code of the branch that no verification command detected. Add to the task's tests the case that fails under that change, or strengthen the one that should; change the code itself only if the mutation shows a real bug.` : ''}
+These gaps come from the challenger: each is a change of the code of the branch that no verification command detected. Add to the task's tests the case that fails under that change, or strengthen the one that should; change the code itself only if the mutation shows a real bug. A gap that you judge equivalent (the mutation changes no behavior that any test could observe) gets no test: answer it with a deviation of your report that names the mutation (file:line) and says why no test could observe it. The evaluator weighs that reason against the diff and accepts it only if it holds; otherwise the gap rejects the attempt again.` : ''}
 Same rules as the task: owned files only, commits on ${r.branch}, nothing in the progress files${PROGRESS ? ' (the progress command above aside)' : ''}, no merge into another branch and no push.${setupOf(t).length ? ` If your fix changes the dependencies or what is generated, first run again, in this folder, these setup commands of the project: ${setupOf(t).map(x => '\`' + x + '\`').join(', ')}.` : ''} Run the verifications again, then return the same report format.${(r.deviations || []).length ? `
 Deviations already reported at earlier attempts, already recorded in the plan's progress: ${JSON.stringify(r.deviations)}. Do not repeat them; if your fix cancels one, say so in a deviation.` : ''}${(r.findings || []).length ? `
 Findings of earlier attempts: ${JSON.stringify(r.findings)}. Return in your report the updated list: those that still hold, without those your fix makes false, plus the new ones.` : ''}${pLanguage}`
@@ -849,12 +855,16 @@ const noteStart = (t, model) => byClerk(t, 'worker', 'start', again => ask(pStar
 // Challenge of a task marked challenge: true (0.22.0, D9), after a successful evaluation. Returns the gaps: one per mutation
 // that no verification command detected, among the first MUTATIONS_MAX; a mutation of a test file is not counted, the
 // challenger may not change the tests. Without an answer, or a pass it could not run (ok=false), no gap: a blind spot under
-// the close (trace.challengeBlind), never a rejection
+// the close (trace.challengeBlind), never a rejection; the same for a pass that counted no mutation (0.22.1). A mutation
+// returned with equivalent: true and a reason (it changes no behavior any test could observe) is logged, not counted (0.22.1);
+// without a reason, it is a survivor. The mutations of every pass are kept in trace.tried, and given to the next pass
 const TEST_PATH = /test|spec/i
+const where = m => `${m.file}${Number.isInteger(m.line) ? `:${m.line}` : ''}`
+const equivalentOf = m => m.detected === false && m.equivalent === true && typeof m.reason === 'string' && oneLine(m.reason) !== ''
 async function challenge(t, r, trace) {
   await byClerk(t, 'challenge', 'challenge step', again => ask(pChallengeStep(t, again), { label: `${t.id} · challenge · start`, agentType: AG('clerk'), model: 'haiku', schema: CLERK_S }))
   const cmds = (t.verification || []).filter(c => !trace.forbidden.includes(c))
-  const c = await ask(pChallenge(t, r, cmds), { label: `${t.id} · challenge`, agentType: AG('challenger'), model: 'sonnet', schema: CHALLENGE_S, isolation: 'worktree' })
+  const c = await ask(pChallenge(t, r, cmds, trace.tried), { label: `${t.id} · challenge`, agentType: AG('challenger'), model: 'sonnet', schema: CHALLENGE_S, isolation: 'worktree' })
   if (!c || c.ok !== true || !Array.isArray(c.mutations)) {
     trace.challengeBlind = `challenge of ${t.id} not done: ${c ? `challenger could not run its pass (${short(c.detail || 'no detail', 300)})` : 'challenger without an answer'}; the tests of its branch were not challenged by mutations`
     log(`${t.id}: ${trace.challengeBlind}`)
@@ -863,9 +873,14 @@ async function challenge(t, r, trace) {
   const tried = c.mutations.slice(0, MUTATIONS_MAX).filter(m => m && typeof m === 'object')
   const onTests = tried.filter(m => TEST_PATH.test(String(m.file || '')))
   if (onTests.length) log(`${t.id}: challenge, mutations of a test file not counted: ${short(onTests.map(m => m.file).join(', '), 200)}`)
-  const survivors = tried.filter(m => m.detected === false && !onTests.includes(m))
+  const equivalents = tried.filter(m => !onTests.includes(m) && equivalentOf(m))
+  for (const m of equivalents) log(`${t.id}: challenge, equivalent mutation not counted: ${where(m)}, ${short(m.reason, 300)}`)
+  const survivors = tried.filter(m => m.detected === false && !onTests.includes(m) && !equivalents.includes(m))
+  trace.tried = [...trace.tried, ...tried.map(m => ({ file: String(m.file || ''), line: m.line, change: short(m.change, 200), result: m.detected === true ? `detected${m.by ? ` by ${short(m.by, 100)}` : ''}` : equivalents.includes(m) ? `equivalent: ${short(m.reason, 200)}` : 'not detected' }))]
+  // A pass that counted no mutation (an empty list, or only mutations of test files) challenged nothing: a blind spot, no rejection
+  if (tried.length === onTests.length) trace.challengeBlind = `challenge of ${t.id}: no mutation tried`
   log(`${t.id}: challenge, ${tried.length} mutation(s) tried, ${survivors.length} not detected`)
-  return survivors.map(m => `mutation not detected by any verification command: ${m.file}${Number.isInteger(m.line) ? `:${m.line}` : ''}, ${oneLine(m.change)}`)
+  return survivors.map(m => `mutation not detected by any verification command: ${where(m)}, ${oneLine(m.change)}`)
 }
 
 // Wait of a held task for the rulings of its issues (0.21.0), by the clerk, outside the exclusive queue (pWait). An issue
@@ -980,7 +995,7 @@ async function runTask(t, isolated) {
     // Model of each attempt, in order: the worker, then each fix
     const models = [workerModel]
     let attempts = 1
-    const trace = { flaky: [], rejections: [], unverifiable: [], unreadable: [], forbidden: [], issues: [] }
+    const trace = { flaky: [], rejections: [], unverifiable: [], unreadable: [], forbidden: [], issues: [], tried: [] }
     for (;;) {
       if (!r) return await closeTask(t, 'failed', attempts, null, ['worker without an answer (usage limit or API error)'], trace)
       if (r.status === 'blocked') return await closeTask(t, 'blocked', attempts, r, [r.blocker || 'blocked by the worker'], trace)
@@ -1014,7 +1029,9 @@ async function runTask(t, isolated) {
       else {
         by = 'evaluation'
         const facts = { ...v, forbidden: trace.forbidden }
-        let e = await ask(pEval(t, r, facts, scope), { label: `${t.id} · evaluation`, agentType: AG('evaluator'), model: 'opus', schema: EVAL_S })
+        // The survivors of the challenger that an earlier attempt was rejected for: the evaluator weighs the fix's answer to them
+        const challenged = trace.rejections.filter(x => x.by === 'challenge').flatMap(x => x.gaps)
+        let e = await ask(pEval(t, r, facts, scope, null, challenged), { label: `${t.id} · evaluation`, agentType: AG('evaluator'), model: 'opus', schema: EVAL_S })
         noteProgress(t.id, 'evaluation', e)
         // Proof contract (0.19.0): a pass without valid proofs is sent back once, with the reason; invalid again, it counts as an
         // evaluation without an answer
@@ -1022,7 +1039,7 @@ async function runTask(t, isolated) {
         let invalid = null
         if (refusal) {
           log(`${t.id}: pass refused, ${refusal}; evaluation sent back`)
-          const again = await ask(pEval(t, r, facts, scope, refusal), { label: `${t.id} · evaluation · proofs`, agentType: AG('evaluator'), model: 'opus', schema: EVAL_S })
+          const again = await ask(pEval(t, r, facts, scope, refusal, challenged), { label: `${t.id} · evaluation · proofs`, agentType: AG('evaluator'), model: 'opus', schema: EVAL_S })
           invalid = again && proofsRefused(again, v, r.path)
           e = invalid ? null : again
         }
@@ -1050,14 +1067,15 @@ async function runTask(t, isolated) {
     }
     // Post-merge check: the first verification command the agents are allowed to run
     const check = (t.verification || []).find(c => !trace.forbidden.includes(c)) || 'none'
-    // Circuit breaker on this very call (0.19.0): the integrator was launched and did not answer, so its merge may have run.
-    // The task comes out in merged_unclosed with merge: 'unknown', besides interrupted. Not when the breaker had latched before
-    // the call: no integrator was launched, the merge did not run
+    // An integrator that was launched and returned no verdict (no answer, an error, the circuit breaker at that call) may have
+    // merged: the task comes out in merged_unclosed with merge: 'unknown' (0.19.0, whatever happens after it since 0.22.1: the
+    // breaker at a later call of the task, or no breaker at all), besides interrupted if the breaker tripped. Not when the
+    // breaker had latched before the call: no integrator was launched, the merge did not run
     let launched = false
     const i = await exclusive(() => { launched = !breaker; return ask(pMerge(t, r, isolated, check), { label: `${t.id} · merge`, agentType: AG('integrator'), model: 'sonnet', schema: INTEG_S }) })
-      .catch(err => { if (err === INTERRUPT && launched) unclosedOf(t, r, trace, reviewsOf(r, trace), [], true); throw err })
+      .catch(err => { if (launched) unclosedOf(t, r, trace, reviewsOf(r, trace), [], true); throw err })
     noteProgress(t.id, 'merge', i)
-    if (!i) return await closeTask(t, 'blocked', attempts, r, ['integrator without an answer'], trace)
+    if (!i) { unclosedOf(t, r, trace, reviewsOf(r, trace), [], true); return await closeTask(t, 'blocked', attempts, r, ['integrator without an answer'], trace) }
     if (!(i.merged ?? i.ok)) return await closeTask(t, 'blocked', attempts, r, [`merge: ${i.detail || 'failure'}`], trace)
     if (isolated && i.worktree_kept) {
       trace.kept = [`worktree ${r.path} kept after the merge of ${t.id} (${short(i.worktree_kept, 200)}): what it holds uncommitted is not in ${INTEG}; look at it, then remove it`]
@@ -1149,6 +1167,8 @@ const summary = {
   added_tasks: added.map(x => ({ id: x.id, phase: x.phase, title: x.title })),
   reviews: results.flatMap(x => (x.reviews || []).map(d => ({ task: x.id, review: d }))),
   auto_decisions: autoDecisions, discarded_amendments: discardedRun, open_issues: issues, rulings_applied: rulingsApplied, waiting, waiting_on_prerequisites: waitingOnPrerequisites,
+  // Outside the circuit breaker too (0.22.1): a task whose integrator returned no verdict, for the pilot to look for its commit
+  ...(mergedUnclosed.length ? { merged_unclosed: mergedUnclosed } : {}),
 }
 // Circuit breaker: error, whatever else happened. The interrupted tasks are in "interrupted", outside what run-end reads; the
 // issue that stopped the run before, if any, stays (forget took out those of the interrupted closes). The tasks interrupted after

@@ -692,7 +692,7 @@ async function releaseIssue($: EngineInterface, action: Action): Promise<void> {
 async function noteDone($: EngineInterface, action: Action): Promise<void> {
   const inst = await read($, snapshot), id = action.prerequisite
   if (!inst || !id) return
-  if (inst.demo) return demoToast($, 'notes it done; PREREQUISITES.md follows at the run stop')
+  if (inst.demo) return demoToast($, 'notes it done; PREREQUISITES.md follows at the next apply')
   const r = await runProgress($, 'did', { prerequisite: id })
   if (!r) { $.ui.toast(`${NODE_MISSING} Nothing is noted.`, { timeoutMs: IMPORTANT_TOAST_MS }); return }
   if (!r.ok) return refused($, r.out)

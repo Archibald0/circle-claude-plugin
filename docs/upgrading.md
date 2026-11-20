@@ -2,6 +2,15 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.22.0 to 0.22.1
+
+`progress.json` stays `orchestre-progress/4` and the plans keep their format: 0.22.1 adds no field to `progress.json`, and a file that 0.22.1 wrote is read as it is by 0.22.0. Going back to 0.22.0 is supported, with its false stop: the clerk could drop the empty `waits` of the output of `close` and stop the run on `Progress of <id>: output of close not read`. Update between two runs, never during one, then `/reload-plugins`, or a new session.
+
+1. Nothing to migrate or to add.
+2. `/orchestre:run` also applies, at its end, the rulings and the prerequisites noted done after the last run, and when `progress.json` still marks a run `in-progress`, it asks whether that run is stopped and then runs `progress.mjs apply <plan> --run-stopped`: the rulings no longer land in the dead run.
+3. A task whose integrator gave no verdict comes out in `merged_unclosed` with `merge: "unknown"` on any return, with or without the circuit breaker.
+4. The challenger no longer rejects an equivalent mutation, and a pass that tried nothing is a blind spot. `progress.mjs close` always prints `waits`.
+
 ## From 0.21.0 to 0.22.0
 
 `progress.json` stays `orchestre-progress/4` and the plans keep their format: 0.22.0 only adds optional fields (the step `challenge`, a rejection `by: challenge`, `applied_outside`, `runs[].applied_before`), and a task may carry the optional key `challenge: true`. 0.21.0 refuses a `progress.json` that holds one of these additions (`is not allowed` for the step or the rejection `challenge`, `field unknown` for `applied_outside` and `applied_before`), so going back to 0.21.0 is not supported: at most, delete the file, which is rebuilt from PROGRESS.md, HANDOFF.md and git, without its log and its pending rulings. Update between two runs, never during one, then `/reload-plugins`, or a new session.
@@ -16,7 +25,7 @@ Update the plugin between two runs, never during one: `/plugin marketplace updat
 `progress.json` stays `orchestre-progress/4`: 0.21.0 only adds optional fields, and the plans keep their format. After the update, `/reload-plugins`, or a new session. Update between two runs, never during one.
 
 1. 0.21.0 reads a `progress.json` that 0.20.0 wrote, as it is. 0.20.0 refuses, with `field unknown`, a `progress.json` that 0.21.0 has written, so going back to 0.20.0 is not supported: at most, delete the file, which is rebuilt from PROGRESS.md, HANDOFF.md and git, without its log and its pending rulings.
-2. `orchestre.config.json` accepts `ruling_wait_minutes`, an integer from 0 to 60, 15 when absent: how long a task, or a run in `deviation` mode, waits for the ruling of an issue. `0` keeps the behavior of 0.20.0. Nothing to add if 15 minutes suits you.
+2. `orchestre.config.json` accepts `ruling_wait_minutes`, an integer from 0 to 60, 15 when absent: the deadline, counted from the close of the task that raised the issue, up to which a task, or a run in `deviation` mode, waits for the ruling. `0` keeps the behavior of 0.20.0. Nothing to add if 15 minutes suits you.
 3. `/orchestre:run` applies at its pre-flight the rulings recorded and the prerequisites noted done outside a run; `/orchestre:ready` only reports them.
 4. You can settle an issue during a run, from the `/progress` pane or with `rule`: the run applies the ruling itself and the task starts with the amendment. The pilot still touches neither the checkout nor git during a run.
 5. In `deviation` mode, a major issue that is not human no longer stops the run at once: the run waits for the ruling, then stops as before if none comes.

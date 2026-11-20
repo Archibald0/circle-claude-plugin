@@ -1959,6 +1959,37 @@ await test('SC6: circuit breaker — a task merged then interrupted at its scrib
   const n0 = await scenario('SC6 none', y1(), { ...AP, parallelism: 1 })
   assert.deepEqual([n0.res.merged_unclosed, n0.res.detail], [[], silentDetail('T02 · verification, T02 · fix 1', 'T02')])
   drained('SC6 none', n0.q)
+  // An integrator launched that returns no verdict (#20, run 12 of 0.22.0): the first silence does not trip the breaker, the task
+  // is closed as blocked; whatever happens after, T02 comes out once in merged_unclosed with merge: 'unknown'
+  const verdictless = (name, merge, after) => scenario(name, { 'plan-reader': [planOpened(P2)], 'T02 · worker': [withProgress(report('T02', { branch: 'task/T02', deviations: [...DEVIATION, R] }))],
+    'T02 · verification': [withProgress(ok('T02'))], 'T02 · evaluation': [withProgress({ verdict: 'pass', unverifiable: [UV] })], 'T02 · merge': [merge], 'run end · progress': [COK], ...after }, { ...AP, parallelism: 1, mode: 'auto' })
+  const UNKNOWN = [{ id: 'T02', branch: 'task/T02', merge: 'unknown', deviations: DEVIATION, reviews: [R.description], unverifiable: [UV], issues: [] }]
+  // The breaker trips at the next call of the task (its replanning)
+  const r12 = await verdictless('SC6 run 12', null, { 'T02 · replanning': [null] })
+  assert.equal(r12.res.status, 'error'); assert.deepEqual(r12.res.interrupted, ['T02'])
+  assert.deepEqual(r12.res.merged_unclosed, UNKNOWN)
+  assert.ok(r12.res.detail.startsWith('agents not answering: ') && r12.res.detail.endsWith(' T02 interrupted at their merge, which may have run: see merged_unclosed.') && !/before (its|their) merge/.test(r12.res.detail) && !r12.res.detail.includes('merged before the trip'), r12.res.detail)
+  assert.equal(idx(r12.calls, 'T02 · progress'), -1, 'no close of an interrupted task')
+  drained('SC6 run 12', r12.q)
+  // The breaker never trips: the replanning answers, the task is closed as blocked, and the return still says its merge is unknown
+  const nb = await verdictless('SC6 no breaker', null, { 'T02 · replanning': [NOTHING], 'T02 · progress': [withProgress(SOK)] })
+  assert.deepEqual([nb.res.status, nb.res.tasks.map(t => [t.id, t.status, t.blocker]), nb.res.interrupted], ['partial', [['T02', 'blocked', ['integrator without an answer']]], undefined])
+  assert.deepEqual(nb.res.merged_unclosed, UNKNOWN)
+  const [nend] = progressOf(nb.calls, 'run end · progress')
+  assert.ok(!('merged_unclosed' in nend.E), 'merged_unclosed is not for run-end')
+  drained('SC6 no breaker', nb.q)
+  // An integrator call that throws (ENOTFOUND): no verdict either
+  const th = await verdictless('SC6 error', async () => { throw new Error('getaddrinfo ENOTFOUND') }, {})
+  assert.deepEqual(th.res.tasks.map(t => [t.id, t.status]), [['T02', 'failed']])
+  assert.deepEqual(th.res.merged_unclosed, UNKNOWN)
+  drained('SC6 error', th.q)
+  // A verdict, merged or not, and a run without a merge, add nothing outside the breaker
+  const v = await verdictless('SC6 verdict', withProgress({ ok: false, merged: false, detail: 'conflict' }), { 'T02 · replanning': [NOTHING], 'T02 · progress': [withProgress(SOK)] })
+  assert.ok(!('merged_unclosed' in v.res), 'a merge refused with a verdict is not unknown')
+  drained('SC6 verdict', v.q)
+  const g = await verdictless('SC6 merged', withProgress(MOK), { 'T02 · replanning': [NOTHING], 'T02 · progress': [withProgress(SOK)] })
+  assert.ok(!('merged_unclosed' in g.res), 'a task merged with a verdict adds nothing outside the breaker')
+  drained('SC6 merged', g.q)
 })
 await test('SC7: scope — a blind spot of attempt 1 (scope unread twice) does not survive attempt 2, whose scope is read (mutation W21 of T11R)', async () => {
   const COPY = { ...OUT, outside: ['src/b.ts'] }
@@ -2991,6 +3022,22 @@ await test('CH3: challenger — without an answer, or unable to run its pass (ok
     assert.equal(idx(calls, 'T00 · replanning'), -1, name + ': a blind spot of the challenge calls no replanner')
     drained(name, q)
   }
+  // A pass that counted no mutation (#12): an empty list, or only mutations of a test file (not counted). A blind spot, never a rejection
+  for (const [name, mutations] of [['CH3 empty', []], ['CH3 tests only', [MUT('tests/a.test.ts', 3, false), MUT('src/a.spec.ts', 4, false)]]]) {
+    const { res, calls, logs, q } = await scenario(name, challenged([{ ok: true, mutations }], { 'T00 · verification': [withProgress(ok(1))], 'T00 · evaluation': [withProgress({ verdict: 'pass' })] }), { ...AP, parallelism: 1 })
+    const t = res.tasks[0]
+    assert.equal(res.status, 'finished', name); assert.deepEqual([t.status, t.attempts, t.rejections], ['merged', 1, undefined], name)
+    assert.equal(idx(calls, 'T00 · fix 1'), -1, name)
+    assert.deepEqual(closeE(calls).entries, [{ type: 'blind-spot', severity: 'minor', description: 'challenge of T00: no mutation tried' }], name)
+    assert.equal(idx(calls, 'T00 · replanning'), -1, name + ': a blind spot of the challenge calls no replanner')
+    assert.ok(logs.some(l => l.startsWith('T00: challenge, ') && l.endsWith(' not detected')), name)
+    drained(name, q)
+  }
+  // At least one counted mutation, detected: no such entry
+  const cn = await scenario('CH3 counted', challenged([{ ok: true, mutations: [MUT('src/a.ts', 12, true), MUT('tests/a.test.ts', 3, false)] }], { 'T00 · verification': [withProgress(ok(1))], 'T00 · evaluation': [withProgress({ verdict: 'pass' })] }), { ...AP, parallelism: 1 })
+  assert.equal(cn.res.tasks[0].status, 'merged')
+  assert.deepEqual(closeE(cn.calls).entries || [], [], 'a pass with a counted mutation writes no blind spot')
+  drained('CH3 counted', cn.q)
   // A verification command refused to the agents is not given to the challenger; the others are
   const FORBIDDEN = 'sh scripts/e2e-local.sh'
   const { calls, q } = await scenario('CH3 forbidden', challenged([{ ok: true, mutations: [MUT('src/a.ts', 12, true)] }], {
@@ -3020,5 +3067,90 @@ await test('CH4: real progress.mjs, under the simulated isolation guard of X3 �
     assert.ok(fs.readFileSync(join(D.root, 'plans', 'p', 'HANDOFF.md'), 'utf8').includes(`- rejection · minor · attempt 1, challenge: ${SURVIVOR}\n`))
     assert.equal(spawnSync(process.execPath, [PROGRESS_SCRIPT, 'validate', 'plans/p'], { cwd: D.root }).status, 0)
   } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+// ——— 0.22.1 (#17): an equivalent mutant neither rejects nor blocks ———
+const EQ = (file, line, reason, change = 'if (ok) → if (!ok)') => ({ ...MUT(file, line, false, change), equivalent: true, ...(reason === undefined ? {} : { reason }) })
+const EQ_REASON = 'the guard repeats the check of the caller: no input reaches it'
+await test('CH5: challenger — an equivalent mutation (equivalent: true and a reason) is logged and not counted; one with no reason still rejects; a survivor the fix answers with a deviation is weighed by the evaluator, and the next pass is told the mutations already tried', async () => {
+  const merged = () => ({ 'T00 · verification': [withProgress(ok(1))], 'T00 · evaluation': [withProgress({ verdict: 'pass' })] })
+  // Case 1: one equivalent mutation, the others detected: merged at attempt 1, no rejection, no blind spot, one log line
+  const a = await scenario('CH5 equivalent', challenged([{ ok: true, mutations: [EQ('src/a.ts', 12, EQ_REASON), MUT('src/a.ts', 20, true), { ...MUT('src/b.ts', 7, true), equivalent: true, reason: 'a detected mutation is not equivalent' }] }], merged()), { ...AP, parallelism: 1 })
+  assert.equal(a.res.status, 'finished'); assert.deepEqual([a.res.tasks[0].status, a.res.tasks[0].attempts, a.res.tasks[0].rejections], ['merged', 1, undefined])
+  assert.equal(idx(a.calls, 'T00 · fix 1'), -1)
+  assert.deepEqual(closeE(a.calls).entries || [], [], 'an equivalent mutation writes no blind spot')
+  assert.ok(a.logs.includes(`T00: challenge, equivalent mutation not counted: src/a.ts:12, ${EQ_REASON}`) && a.logs.includes('T00: challenge, 3 mutation(s) tried, 0 not detected'), JSON.stringify(a.logs))
+  assert.equal(a.logs.filter(l => l.includes('equivalent mutation not counted')).length, 1, 'only the undetected equivalent mutation is logged')
+  drained('CH5 equivalent', a.q)
+  // An equivalent mutation still counts among the 3 of a pass: the fourth is dropped
+  const four = await scenario('CH5 cap', challenged([{ ok: true, mutations: [EQ('src/a.ts', 12, EQ_REASON), MUT('src/a.ts', 20, true), MUT('src/b.ts', 7, true), MUT('src/b.ts', 9, false)] }], merged()), { ...AP, parallelism: 1 })
+  assert.equal(four.res.tasks[0].status, 'merged'); assert.equal(four.res.tasks[0].rejections, undefined)
+  drained('CH5 cap', four.q)
+  // Without a reason (absent, empty or blank), or not flagged, or detected: counted as in 0.22.0
+  for (const [name, m] of [['no reason', EQ('src/a.ts', 12)], ['empty reason', EQ('src/a.ts', 12, '')], ['blank reason', EQ('src/a.ts', 12, '  \n ')], ['equivalent false', { ...EQ('src/a.ts', 12, EQ_REASON), equivalent: false }]]) {
+    const b = await scenario('CH5 ' + name, challenged([{ ok: true, mutations: [m] }, { ok: true, mutations: [MUT('src/a.ts', 20, true)] }], { 'T00 · verification': [withProgress(ok(1)), withProgress(ok(2))], 'T00 · evaluation': [withProgress({ verdict: 'pass' }), withProgress({ verdict: 'pass' })], 'T00 · fix 1': [withProgress(report(1))] }), { ...AP, parallelism: 1 })
+    assert.deepEqual([b.res.tasks[0].status, b.res.tasks[0].attempts, b.res.tasks[0].rejections], ['merged', 2, [{ attempt: 1, by: 'challenge', gaps: [SURVIVOR] }]], name)
+    assert.ok(!b.logs.some(l => l.includes('equivalent mutation not counted')), name)
+    drained('CH5 ' + name, b.q)
+  }
+  // Case 2: a survivor rejects attempt 1; the fix answers it with a deviation that says why it is equivalent; the evaluator is told
+  // to weigh it; the second pass is told the mutations of the first and finds no survivor; merged within max_fixes
+  const WHY = 'src/a.ts:12: the guard repeats the check of the caller, no test could observe it'
+  const pass1 = { ok: true, mutations: [MUT('src/a.ts', 12, false), MUT('src/a.ts', 20, true), MUT('tests/a.test.ts', 3, false)] }
+  const pass2 = { ok: true, mutations: [MUT('src/b.ts', 7, true), MUT('src/c.ts', 5, true)] }
+  const { res, calls, logs, q } = await scenario('CH5 deviation', challenged([pass1, pass2], {
+    'T00 · verification': [withProgress(ok(1)), withProgress(ok(2))], 'T00 · evaluation': [withProgress({ verdict: 'pass' }), withProgress({ verdict: 'pass' })],
+    'T00 · fix 1': [withProgress(report(1, { deviations: [{ type: 'deviation', description: WHY }] }))], 'T00 · replanning': [NOTHING] }), { ...AP, parallelism: 1, max_fixes: 1 })
+  assert.equal(res.status, 'finished'); assert.deepEqual([res.tasks[0].status, res.tasks[0].attempts], ['merged', 2])
+  assert.deepEqual(res.tasks[0].rejections, [{ attempt: 1, by: 'challenge', gaps: [SURVIVOR] }])
+  const fix = byLabel(calls, 'T00 · fix 1')[0].prompt
+  assert.ok(fix.includes('answer it with a deviation of your report that names the mutation (file:line) and says why no test could observe it') && fix.includes('The evaluator weighs that reason against the diff and accepts it only if it holds'))
+  const [e1, e2] = byLabel(calls, 'T00 · evaluation').map(c => c.prompt)
+  assert.ok(!e1.includes('rejected by the challenger'), 'the first evaluation has no survivor to weigh')
+  assert.ok(e2.includes('rejected by the challenger') && e2.includes(JSON.stringify([SURVIVOR])) && e2.includes('weigh its reason against the diff, and accept it only if it holds') && e2.includes(WHY), 'the second evaluation weighs the deviation of the fix')
+  const [c1, c2] = byLabel(calls, 'T00 · challenge').map(c => c.prompt)
+  assert.ok(!c1.includes('already tried'), 'the first pass has no list')
+  for (const x of ['Mutations already tried by the earlier passes of this task (file:line, change, result): do not try them again', '- src/a.ts:12, if (ok) → if (!ok), not detected', '- src/a.ts:20, if (ok) → if (!ok), detected by sh scripts/typecheck.sh', '- tests/a.test.ts:3, if (ok) → if (!ok), not detected']) assert.ok(c2.includes(x), 'second pass: ' + x)
+  assert.ok(c2.includes('"equivalent" true and its "reason"'))
+  assert.deepEqual(givenCommands(c2), givenCommands(c1), 'the list adds no command')
+  assert.ok(logs.includes('T00: challenge, 2 mutation(s) tried, 0 not detected'), JSON.stringify(logs))
+  drained('CH5 deviation', q)
+  // The list grows with each pass: a third pass lists the mutations of both
+  const third = await scenario('CH5 three passes', challenged([{ ok: true, mutations: [EQ('src/c.ts', 3, EQ_REASON), MUT('src/a.ts', 12, false)] }, { ok: true, mutations: [MUT('src/b.ts', 7, false)] }, pass2], {
+    'T00 · verification': [1, 2, 3].map(n => withProgress(ok(n))), 'T00 · evaluation': [1, 2, 3].map(() => withProgress({ verdict: 'pass' })),
+    'T00 · fix 1': [withProgress(report(1))], 'T00 · fix 2': [withProgress(report(2))] }), { ...AP, parallelism: 1, max_fixes: 2 })
+  const p3 = byLabel(third.calls, 'T00 · challenge')[2].prompt
+  assert.ok(p3.includes('- src/a.ts:12, if (ok) → if (!ok), not detected') && p3.includes('- src/b.ts:7, if (ok) → if (!ok), not detected'), 'third pass: both earlier passes listed')
+  assert.ok(p3.includes(`- src/c.ts:3, if (ok) → if (!ok), equivalent: ${EQ_REASON}`), 'third pass: an equivalent mutation is listed with its reason')
+  drained('CH5 three passes', third.q)
+})
+// An equivalent mutation of the real pass, with the real progress.mjs: the log and HANDOFF.md carry no rejection
+await test('CH5 real: progress.mjs — an equivalent mutation writes no rejection in progress.json, and none in HANDOFF.md', async () => {
+  const D = toyRepo()
+  try {
+    const { res } = await play('CH5 real', D, {
+      'plan-reader': [plan({ ...T0, challenge: true })], 'T00 · worker': [report(0)], 'T00 · verification': [ok(1)], 'T00 · evaluation': [{ verdict: 'pass' }],
+      'T00 · challenge · start': [{}], 'T00 · challenge': [{ ok: true, mutations: [EQ('src/a.ts', 12, EQ_REASON), MUT('src/a.ts', 20, true)] }],
+      'T00 · merge': [MOK], 'T00 · progress': [SOK], 'run end · progress': [{ commit: '', detail: '' }] }, { setup: ['npm ci'] })
+    assert.equal(res.status, 'finished')
+    const t = D.doc().tasks.find(x => x.id === 'T00')
+    assert.deepEqual([t.status, t.attempts, t.rejections || []], ['merged', 1, []])
+    assert.ok(!fs.readFileSync(join(D.root, 'plans', 'p', 'HANDOFF.md'), 'utf8').includes('rejection'))
+    assert.equal(spawnSync(process.execPath, [PROGRESS_SCRIPT, 'validate', 'plans/p'], { cwd: D.root }).status, 0)
+  } finally { fs.rmSync(D.root, { recursive: true, force: true }) }
+})
+// The digest false stop of run 14 (T37): the close of a task that opens no issue prints waits: [], and the clerk's copy keeps it
+await test('CL12: close — the schema requires every field the script prints, waits included; a copy with waits: [] closes the task without a stop issue; a copy that dropped it is not read (its digest differs)', async () => {
+  const { res, calls, q } = await scenario('CL12', { 'plan-reader': [planOpened(T00)], ...s00({ 'T00 · progress': [closeWith()] }), 'run end · progress': [COK] }, AP)
+  assert.equal(res.status, 'finished'); assert.equal(res.tasks[0].status, 'merged'); assert.equal(res.stop_issue, undefined)
+  const schema = byLabel(calls, 'T00 · progress')[0].opts.schema
+  assert.deepEqual(schema.properties.close.required, ['task', 'status', 'commit', 'rejected', 'discarded', 'issues', 'pending', 'waits', 'message', 'digest'])
+  assert.deepEqual(schema.properties.close.properties.waits, { type: 'array', items: { type: 'object', properties: { issue: { type: 'string' }, until: { type: 'string' }, holds: { type: 'array', items: { type: 'string' } } }, required: ['issue', 'until', 'holds'] } })
+  drained('CL12', q)
+  // The copy of run 14: the digest is the real one (waits included), the agent's copy lacks waits
+  const real = { task: 'T00', status: 'merged', commit: 'p1', rejected: [], discarded: [], issues: [], pending: [], waits: [], message: 'T00 merged' }
+  const dropped = { task: 'T00', status: 'merged', commit: 'p1', rejected: [], discarded: [], issues: [], pending: [], message: 'T00 merged', digest: payloadDigest(real, 'digest') }
+  const bad = await scenario('CL12 dropped', { 'plan-reader': [planOpened(T00)], ...s00({ 'T00 · progress': [withProgress({ close: dropped })] }), 'run end · progress': [COK] }, AP)
+  assert.deepEqual([bad.res.status, bad.res.stop_issue.title], ['awaiting-ruling', 'Progress of T00: output of close not read'])
+  drained('CL12 dropped', bad.q)
 })
 console.log(`scenarios: ALL GREEN (${n} cases)`)
