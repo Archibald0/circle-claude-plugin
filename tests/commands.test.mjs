@@ -93,6 +93,7 @@ try {
       assert.equal(fm['disable-model-invocation'], s === 'prepare' ? undefined : 'true', `${s}: disable-model-invocation`)
     }
     assert.equal(FM.prepare.fm.model, 'opus')
+    assert.match(FM.prepare.fm.description, /^For the orchestre plugin only\. Use when the user types \/orchestre:prepare, or names orchestre itself and asks to prepare, write or convert a plan for it\. Never on words such as orchestrator, agents, roles or master plan alone/, 'prepare: Claude starts it only when orchestre is named (#32)')
   })
 
   test('scripts and files cited exist; each script a skill launches is in its allowed-tools, and only those', () => {
@@ -1060,7 +1061,7 @@ try {
     const VMS = read(join(PLUGIN, 'hooks', 'view-model.mjs')), prefix = VMS.match(/const MUTATION_PREFIX = '([^']+)'/)
     assert.ok(prefix && WF.includes('`' + prefix[1] + '${where(m)}'), 'view-model.mjs strips the prefix run-phase.js writes on each challenger gap')
     // #14: README
-    for (const w of ['`[ Other… ]`', '`[ Accept the N recommended ]`', '`[ ✓ I did it ]`', 'withdraws a ruling or a `did`', 'challenge{"challenge<br/>', 'Going back to 0.19, 0.20 or 0.21 is not supported; going back within 0.22 is.', 'to 0.22.2.']) assert.ok(README.includes(w), `README.md: ${w}`)
+    for (const w of ['`[ Other… ]`', '`[ Accept the N recommended ]`', '`[ ✓ I did it ]`', 'withdraws a ruling or a `did`', 'challenge{"challenge<br/>', 'Going back to 0.19, 0.20 or 0.21 is not supported; going back within 0.22 is.', 'to 0.22.3.']) assert.ok(README.includes(w), `README.md: ${w}`)
     assert.ok(!README.includes('from 0.12 and from 0.11'), 'README.md: no stale upgrading line')
     // #15: the pre-flight and the challenger's worktrees; the downgrade text of 0.22.0 is pinned as that of 0.21.0 is
     assert.ok(REF.includes("the challenger's detached worktrees go with them when the run has no progress, and one that has changes or commits of its own is kept and reported"), 'reference.md: the challenger worktrees at the pre-flight')
@@ -1096,8 +1097,8 @@ try {
     // The version, the section, seven lines, the upgrade note, the commands cited
     const version = JSON.parse(read(join(PLUGIN, '.claude-plugin', 'plugin.json'))).version
     assert.ok(version >= '0.22.2', 'version 0.22.2 or later')
-    const top = CL.slice(CL.indexOf('\n## ') + 1), first = top.slice(0, top.indexOf('\n## ', 4))
-    assert.ok(/^## 0\.22\.2 — \d{4}-\d{2}-\d{2}: .+$/.test(first.split('\n')[0]), 'CHANGELOG.md starts with ## 0.22.2 — <date>: <title>')
+    const at = CL.indexOf('\n## 0.22.2 — ') + 1, first = CL.slice(at, CL.indexOf('\n## ', at + 4))
+    assert.ok(/^## 0\.22\.2 — \d{4}-\d{2}-\d{2}: .+$/.test(first.split('\n')[0]), 'CHANGELOG.md: section ## 0.22.2 — <date>: <title>')
     assert.deepEqual(first.split('\n').filter(l => /^Fixes #\d+\.$/.test(l)), Array.from({ length: 7 }, (_, i) => `Fixes #${22 + i}.`), 'CHANGELOG.md: Fixes #22. to Fixes #28.')
     assert.ok(!first.includes('#29'), 'CHANGELOG.md 0.22.2 does not cite #29')
     assert.ok(UPG.includes('## From 0.22.1 to 0.22.2') && UPG.includes('Going back to 0.22.1 is supported'), 'upgrading.md: the 0.22.2 section')

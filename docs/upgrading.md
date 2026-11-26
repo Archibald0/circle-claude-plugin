@@ -2,6 +2,13 @@
 
 Update the plugin between two runs, never during one: `/plugin marketplace update circle`, then `/reload-plugins` ([Update](reference.md#update)). Version history: [`CHANGELOG.md`](../CHANGELOG.md). Back to the [README](../README.md).
 
+## From 0.22.2 to 0.22.3
+
+`progress.json` stays `orchestre-progress/4` and the plans keep their format: 0.22.3 changes only the description of `/orchestre:prepare`, so going back to 0.22.2 is supported. Update between two runs, never during one, then `/reload-plugins`, or a new session.
+
+1. Nothing to migrate or to add.
+2. Claude starts `/orchestre:prepare` without the command only when the user names orchestre. To prepare a plan, type the command, or name orchestre in the request.
+
 ## From 0.22.1 to 0.22.2
 
 `progress.json` stays `orchestre-progress/4` and the plans keep their format: 0.22.2 changes no script and adds no field to `progress.json`, so a file that 0.22.2 wrote is read as it is by 0.22.1 (and by 0.22.0, with its false stop, below). Going back to 0.22.1 is supported. Update between two runs, never during one, then `/reload-plugins`, or a new session.
