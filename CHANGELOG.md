@@ -2,6 +2,15 @@
 
 Jusqu'à la 0.5, chaque version vient du pilote SPACE-Platform (plan `acces-par-metier`, 15 tâches, 4 phases). La 0.6.0 change l'empaquetage ; les suivantes viennent du premier projet mené avec le plugin (plan `mr-review-recall`).
 
+## 0.22.3 — 2026-11-26: /orchestre:prepare starts on its own only when orchestre is named
+
+`progress.json` stays `orchestre-progress/4` and the plans keep their format: 0.22.3 changes only the description of the skill `prepare`, so going back to 0.22.2 is supported. See [`docs/upgrading.md`](docs/upgrading.md).
+
+- `/orchestre:prepare`. Its description is the only text of the skill that Claude reads before starting it. It now limits the skill to the orchestre plugin: Claude starts it when the user types the command, or names orchestre and asks for a plan for it. The words orchestrator, agents, roles or master plan alone no longer start it, in any language. Before, a request for a master plan "for the orchestrator", meant for another tool, started it in a conversation about a training course. The typed command is unchanged.
+- Tests. `commands.test.mjs` checks that the description of `prepare` states that limit.
+
+Fixes #32.
+
 ## 0.22.2 — 2026-11-20: fewer stops: whole gaps in the step of a fix, and the texts after 0.22.1
 
 `progress.json` stays `orchestre-progress/4` and the plans keep their format: 0.22.2 changes no script and adds no field, so a file it wrote is read as it is by 0.22.1 and by 0.22.0, and going back within 0.22 is supported. See [`docs/upgrading.md`](docs/upgrading.md).

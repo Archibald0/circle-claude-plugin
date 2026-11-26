@@ -1,6 +1,6 @@
 ---
 name: prepare
-description: Writes a plan that /orchestre:run can execute (folder plans/<name>/) — converts a plan already written or drafts a new one from a goal —, has every decision settled, lists what must be ready (PREREQUISITES.md), then validates it with plan-lint. Installs orchestre in the repository first when its settings are missing. Use when the user types /orchestre:prepare or asks to prepare, write or convert a plan for the orchestrator.
+description: For the orchestre plugin only. Use when the user types /orchestre:prepare, or names orchestre itself and asks to prepare, write or convert a plan for it. Never on words such as orchestrator, agents, roles or master plan alone, in any language — they mean another tool or a plan the user follows by hand. Writes a plan that /orchestre:run can execute (folder plans/<name>/) — converts a plan already written or drafts a new one from a goal —, has every decision settled, lists what must be ready (PREREQUISITES.md), then validates it with plan-lint. Installs orchestre in the repository first when its settings are missing.
 argument-hint: "<existing plan (file or folder) | goal of the plan>"
 model: opus
 allowed-tools:

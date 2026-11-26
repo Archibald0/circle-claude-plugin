@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/orchestre-0.22.2-E8743B" alt="orchestre 0.22.2">
+  <img src="https://img.shields.io/badge/orchestre-0.22.3-E8743B" alt="orchestre 0.22.3">
   <img src="https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.287-1F2340" alt="Claude Code 2.1.287 or later">
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A5%2018-1F2340" alt="Node.js 18 or later">
 </p>
@@ -46,7 +46,7 @@ Once orchestre is [installed](#install), at the root of your repository, on its 
 /progress                                    # the live pane: what waits for you
 ```
 
-- `/orchestre:prepare` installs orchestre in the repository first if needed. It gives each task a model, and asks every open decision; you can defer some.
+- `/orchestre:prepare` installs orchestre in the repository first if needed. It gives each task a model, and asks every open decision; you can defer some. Claude starts it without the command only when you name orchestre: "prepare an orchestre plan for…". The words orchestrator or agents alone do not start it.
 - `/orchestre:run` asks the mode: stop at each phase (advised for a first plan), stop on a major deviation, or autonomous.
 - At the end, `plan/<name>` is ready for a pull request. The summary lists the auto-decisions and the files to review, and `[ PR draft in the prompt ]` in `/progress` drafts the PR text, with the reviews as a task list. What is left in "Your turn" closes from the pane, or with `/orchestre:done plans/<name>` in one answer, and `[ Close the plan ]` makes the plan disappear from the display. Pushing, merging into `main` and deploying stay with you.
 
@@ -174,7 +174,7 @@ More:
 
 - [`docs/reference.md`](docs/reference.md): installation, each command in detail, the progress display, what a run does, known limits, development.
 - [`docs/configuration.md`](docs/configuration.md): the settings orchestre writes into a repository, sharing with a team, `orchestre.config.json`.
-- [`docs/upgrading.md`](docs/upgrading.md): from each version to the next, 0.11 to 0.22.2.
+- [`docs/upgrading.md`](docs/upgrading.md): from each version to the next, 0.11 to 0.22.3.
 - [Plan format, `format.md`](plugins/orchestre/skills/prepare/format.md): tasks, `PROGRESS.md`, `PREREQUISITES.md`, `HANDOFF.md`, `DISCOVERY.md`, `orchestre.config.json`.
 - [`CHANGELOG.md`](CHANGELOG.md).
 
